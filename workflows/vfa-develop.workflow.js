@@ -424,9 +424,15 @@ function reviewerPrompt(wo, state, advisories, concerns, priorCriticals) {
     `hunt for where. You return findings; you have no way to approve anything, and an empty ` +
     `findings list is an observation rather than a blessing — the verdict is computed by the ` +
     `caller from what you return.\n\n` +
-    `WORKTREE — read it; run nothing:\n${state.worktree}\n` +
+    `WORKTREE — cd into it; everything below is read from there:\n${state.worktree}\n` +
     `BRANCH: ${state.branch}\n` +
-    `SERIES UNDER REVIEW: ${state.base_sha}..${state.head_sha}\n\n` +
+    `SERIES UNDER REVIEW: ${state.base_sha}..${state.head_sha}\n` +
+    `Walk that series commit by commit, oldest first — ` +
+    `git log --reverse -p ${state.base_sha}..${state.head_sha}, or git show <sha> per ` +
+    `commit. Your Bash is for READ-ONLY git only: log, show, diff. Never run anything that ` +
+    `writes, checks out, stages, or otherwise touches the tree — you are reading evidence, ` +
+    `not handling it. A commit labeled refactor that changes behavior is visible only in the ` +
+    `per-commit diff, which is why you have git at all.\n\n` +
     `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
     `CONTEXT THE CODER WAS GIVEN:\n${wo.context}\n\n` +
     `DECLARED LOCUS — an edit outside it is critical:\n${listOf(wo.locus)}\n\n` +
@@ -517,6 +523,10 @@ const noProgress = (fix, headBefore) =>
   fix.status === 'blocked' || fix.status === 'needs_context' ||
   (fix.commits || []).length === 0 || fix.head_sha === headBefore
 
+// interfaces §6: a fix verdict is `fixed`, `not_fixed` or `regressed`. The last two both say
+// the defect is still there, and the review loop treats them identically.
+const unfixedVerdict = (v) => v.status === 'not_fixed' || v.status === 'regressed'
+
 // Verify, and fix until the facts come back clean. The exit is `verifyOk`, computed here
 // from the verifier's facts. The escalation is computed too: a fix round that lands no new
 // commit has made no progress, and an identical next round would make none either. No
@@ -563,12 +573,22 @@ async function verifyUntilGreen(wo, state, trail) {
 
 // The review loop — interfaces §7 made literal.
 //
-// Two exits, both computed. Zero criticals ends it. Non-convergence escalates it: either a
-// fix round that lands nothing (§7.3a), or the same finding id reported unfixed in two
-// CONSECUTIVE rounds (§7.3b). `round` exists for the audit trail and appears in no exit
+// Two exits, both computed. Zero OPEN criticals ends it. Non-convergence escalates it:
+// either a fix round that lands nothing (§7.3a), or the same finding id reported unfixed in
+// two CONSECUTIVE rounds (§7.3b). `round` exists for the audit trail and appears in no exit
 // condition — IRON LAW §1.
+//
+// "Open" is deliberately wider than "reported this round". A round that rules a prior
+// critical not_fixed or regressed has said, in its own words, that the defect is still in
+// the tree — and a reviewer is also told not to pad a round, so it may well not restate a
+// finding it has just ruled on. Reading `findings` alone would then let a known-unfixed
+// critical exit the loop as approved, and would leave §7.3(b) unreachable, since a marker
+// needs the id in both places. So the verdicts are folded in here: a prior critical stays
+// open until a round rules it `fixed`. The charter asks the reviewer to re-report it too;
+// this is the half that does not depend on the model doing so.
 async function reviewLoop(wo, state, trail) {
   let priorCriticals = []
+  let unfixedLastRound = []
   let openCriticals = []
   let round = 0
 
@@ -588,29 +608,37 @@ async function reviewLoop(wo, state, trail) {
     const verdicts = review.fix_verdicts || []
     const criticals = findings.filter((f) => f.severity === 'critical')
 
-    openCriticals = criticals
-    state.fixCommits = []
-    trail.push({ round, findings, fix_commits: [] })
-    log(`${wo.id}: review round ${round} — ${criticals.length} critical, ${findings.length - criticals.length} other.`)
+    // A prior critical this round ruled anything but `fixed`, and did not restate under
+    // findings. Carried under its ORIGINAL id, so the next round's verdicts line up with it.
+    const stillOpen = priorCriticals.filter((p) =>
+      verdicts.some((v) => v.id === p.id && unfixedVerdict(v)) &&
+      !criticals.some((c) => c.id === p.id))
 
-    // The only exit that says the work is done, and it is a count of findings rather than
-    // anyone's claim about them.
-    if (criticals.length === 0) return null
+    const open = criticals.concat(stillOpen)
+
+    openCriticals = open
+    state.fixCommits = []
+    // The trail records what the reviewer actually returned, unmerged with anything computed
+    // here: it is the audit trail, and a round's raw output is what makes it worth reading.
+    trail.push({ round, findings, fix_commits: [] })
+    log(`${wo.id}: review round ${round} — ${criticals.length} critical, ${findings.length - criticals.length} other, ${stillOpen.length} carried over unfixed.`)
+
+    // The only exit that says the work is done, and it is a count of open defects rather
+    // than anyone's claim about them.
+    if (open.length === 0) return null
 
     // §7.3(b): the same id reported not_fixed or regressed in two consecutive rounds. The
     // marker was set at the end of last round; this round confirms it.
-    const stuck = verdicts.some((v) =>
-      (v.status === 'not_fixed' || v.status === 'regressed') &&
-      priorCriticals.some((p) => p.id === v.id && p.stuckOnce))
+    const stuck = verdicts.some((v) => unfixedVerdict(v) && unfixedLastRound.includes(v.id))
 
     if (stuck) {
       log(`ESCALATION ${wo.id}: the same critical survived two consecutive fix rounds.`)
-      return esc(wo, 'review_not_converging', criticals, trail, state)
+      return esc(wo, 'review_not_converging', open, trail, state)
     }
 
     const headBefore = state.head_sha
-    const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, criticals,
-      () => agent(coderFixPrompt(wo, state, reviewFixInstruction(criticals)), {
+    const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, open,
+      () => agent(coderFixPrompt(wo, state, reviewFixInstruction(open)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
         phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderTier,
       }))
@@ -621,9 +649,9 @@ async function reviewLoop(wo, state, trail) {
     // §7.3(a): nothing landed, so the next round would read the same code and say the same
     // thing about it.
     if (noProgress(fix, headBefore)) {
-      log(`ESCALATION ${wo.id}: the fix round landed no new commit against ${criticals.length} critical(s).`)
+      log(`ESCALATION ${wo.id}: the fix round landed no new commit against ${open.length} critical(s).`)
       return esc(wo, 'no_fix_progress',
-        criticals.concat([runtimeFinding(wo.id + '-nofix',
+        open.concat([runtimeFinding(wo.id + '-nofix',
           'the fix round ended at ' + (fix.head_sha || headBefore) + ' with no new commit',
           fix.summary || '')]),
         trail, state)
@@ -635,10 +663,10 @@ async function reviewLoop(wo, state, trail) {
     const stalled = await verifyUntilGreen(wo, state, trail)
     if (stalled) return stalled
 
-    priorCriticals = criticals.map((c) => ({
-      ...c,
-      stuckOnce: verdicts.some((v) => v.id === c.id && v.status !== 'fixed'),
-    }))
+    // Everything still open goes to the next reviewer, so it rules on it again; and the ids
+    // ruled unfixed this round arm the §7.3(b) marker for the round after.
+    priorCriticals = open
+    unfixedLastRound = verdicts.filter(unfixedVerdict).map((v) => v.id)
   }
 }
 
