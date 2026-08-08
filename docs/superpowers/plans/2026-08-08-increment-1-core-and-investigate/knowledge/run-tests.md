@@ -3,8 +3,21 @@
 From the plugin root (`vf-agentics/`):
 
 ```bash
-node --test test/
+node --test
 ```
+
+**Do not pass `test/` as an argument.** On Node 26.5.1 (this machine, Windows),
+`node --test test/` and `node --test test` both fail with:
+
+```
+Error: Cannot find module 'C:\...\vf-agentics\test'
+  code: 'MODULE_NOT_FOUND'
+```
+
+Node treats the bare positional argument as a module to load rather than a directory to
+scan, and exits `1` without running anything. Bare `node --test` uses Node's default test
+discovery and finds everything under `test/` correctly. This was hit independently by three
+agents in wave 1 and confirmed by the supervisor.
 
 Run a single file while iterating:
 

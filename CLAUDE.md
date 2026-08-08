@@ -12,7 +12,7 @@ over a generic codebase. Its runtime artifacts are declarative — agent markdow
 
 Run the checks with:
 
-    node tools/lint.mjs && node --test test/
+    node tools/lint.mjs && node --test
 
 ---
 
