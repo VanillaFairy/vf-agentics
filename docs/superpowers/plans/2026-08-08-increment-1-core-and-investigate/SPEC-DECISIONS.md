@@ -117,14 +117,47 @@ on a real file.
 
 ---
 
+## D9 — V1 does NOT short-circuit V3 (coverage-block)
+
+**Raised by:** the T06c audit. D1 settled that V1 short-circuits V2 and said nothing about V3.
+Measured: a file whose only return is bare yields two findings — V1 at line 0, V3 at the
+return's line.
+
+**Decision: keep both.** D1 existed because V1 and V2 both report at line 0, so the second adds
+nothing but noise. V3 carries a real line number pointing at real broken code, which is
+actionable. Different defect, different information, both worth saying.
+
+---
+
+## D10 — ES shorthand `coverage` must satisfy the rule ⚠️ REVERSES PART OF D8
+
+**Raised by:** T15, which hit it on the very first real workflow ever written.
+
+D8 accepted that `return { …, coverage }` (shorthand, no colon) goes undetected. In practice the
+plan's own reference implementation of `vfa-survey` was written that way, the rule fired a false
+V2 against a workflow that was entirely correct, and T15 had to rename a parameter to
+`coverageBlock` and write `coverage: coverageBlock` to get past it.
+
+A limitation that trips the first genuine use is not a limitation, it is a defect. **Shorthand
+must be recognized.** The auditor's suggested shape — accepting `coverage` followed by `:`, `,`
+or `}` — covers it.
+
+T15's explicit-key workaround is fine and reads well; it stays. This is about the next author.
+
+---
+
 ## D8 — Accepted limitations, recorded rather than fixed
 
 Raised by T06a; none is pinned by a test, and each needs a real parser to fix. Carried to T18 for
 human review rather than implemented.
 
+> **Superseded in part by D10/D11.** The shorthand row below was reversed once it bit the first
+> real workflow. `coverage` shorthand is now recognized in every position, including under a
+> spread. The rest of the table still stands.
+
 | Case | Behaviour | Why accepted |
 |---|---|---|
-| `return { ...base, coverage }` | shorthand property, no colon → **not** detected as coverage | Most likely of these to bite a real author. Worth a note in T18. |
+| ~~`return { ...base, coverage }`~~ | ~~shorthand, no colon → not detected~~ **Now detected** (D10/D11) | Reversed — it tripped `vfa-survey`, the first workflow ever written against the rule. |
 | `if (!x) return` | inline bare return → **not** flagged | The line-trim check only sees returns alone on a line. |
 | `const r = {…}; return r` | flagged by V1 | Spec-intended: it pushes authors to inline the returned object. |
 | `return { result: { coverage } }` | nested `coverage` **satisfies** the rule | Span-wide search, no nesting depth check. |
