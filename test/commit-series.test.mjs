@@ -33,6 +33,13 @@
 //     comparison), so no parseLog fixture contains a backslash.
 //   * Whether `and-subject` matching is case-sensitive.
 //   * Whether whitespace-only lines count as file paths, and whether paths are trimmed.
+//
+// UPDATE — follow-up red pass. Two of the items above are no longer open. The supervisor
+// ratified them in SPEC-DECISIONS.md after this file was first committed, so they are now
+// pinned: a commit breaching on several files emits ONE FINDING PER OFFENDING FILE, each
+// naming its own file (case 8 below), and `empty-commit` does NOT suppress the subject
+// checks on the same commit (case 14 below). The two bullets above describe the file as it
+// stood before those tests existed; every other bullet is still deliberately open.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -268,6 +275,45 @@ test('the locus-breach message names the offending file', () => {
   )
 })
 
+/** The multi-file breach fixture, shared by the two tests below so they cannot drift. */
+const BREACHES_TWICE = [
+  commit(SHA_A, 'add the parser', [
+    'lib/commit-series.mjs',
+    'docs/notes.md',
+    'bin/cli.mjs',
+  ]),
+]
+
+test('a commit breaching on two files gives one locus-breach finding per file', () => {
+  // Every other breach fixture in this file touches exactly one file outside the locus, so
+  // an implementation that folds a multi-file breach into a single combined finding — or
+  // that stops at the first offender it meets — sails past all of them.
+  assert.deepEqual(idsOf(analyzeSeries(BREACHES_TWICE, LOCUS)), [
+    `${SHA_A} locus-breach true`,
+    `${SHA_A} locus-breach true`,
+  ])
+})
+
+test('each of those findings names its own offending file, one file per message', () => {
+  // A per-file finding is only worth having if its message says which file it is about.
+  // Sorted before comparing: which finding comes back first is not contract.
+  const offenders = ['bin/cli.mjs', 'docs/notes.md'] // already in sort order
+
+  const named = analyzeSeries(BREACHES_TWICE, LOCUS)
+    .filter((f) => f.check === 'locus-breach')
+    .map((f) => {
+      const hits = offenders.filter((p) => f.message.includes(p))
+      assert.equal(
+        hits.length,
+        1,
+        `each message should name exactly one offender: ${JSON.stringify(f.message)}`,
+      )
+      return hits[0]
+    })
+
+  assert.deepEqual(named.sort(), offenders)
+})
+
 test('a path that merely starts with a locus entry is still outside the locus', () => {
   // `lib/commit-series.mjs.bak` is not `lib/commit-series.mjs` under any reading, and it
   // is what a `locus.some(l => file.startsWith(l))` implementation waves through.
@@ -401,6 +447,19 @@ test('two advisory checks can fire on the same subject', () => {
   assert.deepEqual(idsOf(found), [
     `${SHA_A} and-subject false`,
     `${SHA_A} subject-length false`,
+  ])
+})
+
+test('an empty commit with a WIP subject reports both checks, not just the first', () => {
+  // The other empty-commit fixture in this file carries a clean subject, so an implementation
+  // that emits `empty-commit` and then moves straight on to the next commit passes it. The
+  // checks are independent of one another and compose; a commit can be both empty and badly
+  // titled, and the author needs to be told both things at once.
+  const found = analyzeSeries([commit(SHA_A, 'WIP: nothing yet', [])], LOCUS)
+
+  assert.deepEqual(idsOf(found), [
+    `${SHA_A} empty-commit true`,
+    `${SHA_A} wip-subject true`,
   ])
 })
 
