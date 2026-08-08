@@ -56,6 +56,10 @@
 // behaviour anyone would call obviously right: case-sensitive locus comparison is a known
 // hazard on Windows and macOS, recorded as exactly that in SPEC-DECISIONS.md. It is pinned
 // so that changing it means reopening the decision, not quietly "fixing" a test.
+//
+// CURRENTLY RED, ON PURPOSE. The last section of this file — CRLF line endings, ruling 13 —
+// describes behaviour §3 now requires and the parser does not yet have. Those two tests are
+// expected to fail until the parser is changed. Everything before them passes.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -745,4 +749,49 @@ test('analyzeSeries is pure — the same series gives the same answer whatever r
   analyzeSeries([commit(SHA_B, 'add the parser', ['lib/commit-series.mjs'])], LOCUS)
 
   assert.deepEqual(analyzeSeries(commits, LOCUS), first)
+})
+
+// =========================================================================================
+// CRLF line endings (ruling 13) — RED
+// =========================================================================================
+//
+// These two tests FAIL against the implementation as it stands, and are committed that way
+// on purpose. They describe behaviour §3 now requires and the parser does not yet have; a
+// separate change makes them pass. Everything above this line is green.
+//
+// §3: a single trailing \r is stripped from each line before the line is interpreted, so
+// CRLF text parses identically to LF. Emptiness is judged AFTER that strip, which is what
+// makes a line of "\r" empty rather than a file path.
+//
+// Ruling 13 spells out why this was fixed rather than filed alongside the case-sensitivity
+// hazard, and the second test is the reason. On CRLF input a completely clean, fully
+// in-locus series comes back with four blocking locus-breach findings: every path keeps its
+// \r so none of them matches its locus entry, and git's blank separator line becomes a file
+// literally named "\r". Correct work would be bounced at the verifier gate with evidence
+// that reads exactly like a real breach. Case-sensitivity fails by MISSING a coupling,
+// which is visible; this fails by INVENTING findings against work that was fine, which is
+// not. Reachability is honestly defensive — git does not CRLF-translate log output through
+// a pipe — but `parseLog` is exported and pure, and a parser that fabricates findings on a
+// plausible input shape is worth the one line.
+
+/** The same text a CRLF-flavoured source would hand over: every \n becomes \r\n. */
+const crlf = (text) => text.replace(/\n/g, '\r\n')
+
+test('a CRLF record parses exactly like the same record with LF endings', () => {
+  const out = parseLog(crlf(record(SHA_A, 'add the parser', ['lib/commit-series.mjs'])))
+
+  assert.deepEqual(out, [
+    { sha: SHA_A, subject: 'add the parser', files: ['lib/commit-series.mjs'] },
+  ])
+})
+
+test('a clean CRLF series inside its locus produces no findings', () => {
+  // The end-to-end version of the test above, and the one that shows the damage: this is
+  // ordinary, well-behaved work, and today it comes back with four blocking findings.
+  const text = crlf(
+    record(SHA_A, 'add the commit series parser', ['lib/commit-series.mjs']) +
+      record(SHA_B, 'cover the locus checks', ['test/commit-series.test.mjs']),
+  )
+
+  assert.deepEqual(analyzeSeries(parseLog(text), LOCUS), [])
 })
