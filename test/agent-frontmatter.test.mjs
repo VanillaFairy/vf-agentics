@@ -85,6 +85,24 @@ test('accepts every allowed model', () => {
   }
 })
 
+test('a CRLF file is parsed exactly like an LF one', () => {
+  // Every fixture above is LF-joined, but `core.autocrlf` is true on Windows, so files on
+  // disk after a checkout carry \r\n. The opening delimiter was matched with .trim() while
+  // the closing one used an exact indexOf, so the terminator "---\r" was never found and
+  // every real agent file was reported as having no frontmatter. Invisible in the authoring
+  // worktree (the Write tool emits LF), visible on any fresh clone.
+  assert.deepEqual(check(good.replace(/\n/g, '\r\n'), FILE), [])
+})
+
+test('a bad value in a CRLF file is still reported on the real line', () => {
+  const src = good.replace('model: sonnet', 'model: nope').replace(/\n/g, '\r\n')
+  const found = check(src, FILE)
+
+  assert.equal(found.length, 1)
+  assert.equal(found[0].line, 5)
+  assert.match(found[0].message, /nope/)
+})
+
 test('reports the real line for a bad value', () => {
   const src = good.replace('model: sonnet', 'model: nope')
   const found = check(src, FILE)

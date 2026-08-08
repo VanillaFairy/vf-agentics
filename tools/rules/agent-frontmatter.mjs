@@ -17,8 +17,14 @@ const MODELS = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit'])
 
 /** @returns {{ values: Map<string, string>, lines: Map<string, number> } | null} */
 function parseFrontmatter(source) {
-  const lines = source.split('\n')
-  if (lines[0]?.trim() !== '---') return null
+  // Strip the CR once, here, rather than defending against it at each use site below.
+  // `core.autocrlf` is true on Windows, so a checked-out file's lines end in \r. That broke
+  // this parser twice over: the closing "---\r" was never found by an exact match, and the
+  // key pattern below could not match either, because JS treats \r as a line terminator and
+  // `.` refuses to consume it — so `(.*)$` failed on every single line. Normalizing at the
+  // boundary is the only place a reader has to think about it.
+  const lines = source.split('\n').map((line) => line.replace(/\r$/, ''))
+  if (lines[0] !== '---') return null
 
   const end = lines.indexOf('---', 1)
   if (end === -1) return null
