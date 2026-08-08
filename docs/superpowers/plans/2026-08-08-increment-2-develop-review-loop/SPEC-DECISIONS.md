@@ -135,6 +135,28 @@ contract rather than chosen:
 11. **What is a file-path line?** — any non-empty line after the record header, with no trimming
     (`line !== ''`). Real git output never emits whitespace-only lines here.
 12. **`subject-length` units** — JS `String.length`, i.e. UTF-16 code units. The natural reading.
+13. **CRLF input** — ruled after the T04c audit. `parseLog` **strips a single trailing `\r`**
+    from each line before interpreting it, so CRLF text parses identically to LF. Emptiness is
+    judged after the strip, so a `"\r"` line is empty and is not a file path. `interfaces.md` §3
+    now says so.
+
+    The audit found that on CRLF input a **completely clean, fully in-locus** series produces
+    four spurious blocking `locus-breach` findings: every path keeps its `\r`, and git's blank
+    separator line becomes a file literally named `"\r"`. Correct work would be rejected at the
+    verifier gate with plausible-looking evidence.
+
+    Fixed rather than recorded as an accepted hazard, unlike the case-sensitivity one. The
+    difference is the failure mode. Case-sensitivity fails by *missing* a coupling — visible,
+    and it takes a deliberately odd locus to trigger. CRLF fails by *inventing* blocking
+    findings against correct work, which is silent wrongness: the output is indistinguishable
+    from a real breach. The fix is one line and has no realistic downside — no filesystem in
+    play has paths ending in `\r`.
+
+    Reachability, recorded honestly: the audit could not construct a production path to it. The
+    CLI runs `execFileSync('git', …)` and captures stdout directly; git does not CRLF-translate
+    log output through a pipe, and `core.autocrlf` governs file contents, not `git log` output.
+    So this is defensive. But `parseLog` is an exported pure function, and a parser that
+    silently fabricates findings on a plausible input shape is worth one line to close.
 
 ---
 

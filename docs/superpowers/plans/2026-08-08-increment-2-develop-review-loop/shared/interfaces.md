@@ -117,6 +117,9 @@ to stdout, exit 0. On invalid input: prints `{"error": "<message>"}` to stdout, 
  *   git log --reverse --format='%x01%H%x02%s' --name-only <base>..HEAD
  * Records are delimited by \x01; within a record, \x02 separates sha from subject;
  * subsequent non-empty lines up to the next \x01 are the commit's file paths.
+ * Line endings: a single trailing \r is stripped from each line before it is
+ * interpreted, so CRLF input parses identically to LF. Emptiness is judged after
+ * that strip — a line of "\r" is empty and is not a file path.
  * @param {string} text
  * @returns {Array<{sha: string, subject: string, files: string[]}>}  oldest first
  */
