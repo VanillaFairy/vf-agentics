@@ -19,8 +19,13 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
 
 1. **Fix verdicts first** (when handed prior criticals): for each id, examine the fix
    commits and rule `fixed`, `not_fixed`, or `regressed` — with evidence. A fix that
-   silences the symptom while keeping the defect is `not_fixed`. Then re-attack fixed
-   areas: fixes are fresh code written under pressure, the most defect-dense diff there is.
+   silences the symptom while keeping the defect is `not_fixed`. **Anything you rule
+   `not_fixed` or `regressed` MUST also appear in `findings` this round, under its ORIGINAL
+   id.** Your caller computes the exit from `findings` alone — a defect you rule unfixed but
+   do not re-report is a defect that ships, and the loop exits calling it done. Re-reporting
+   an still-open critical is not padding the round; it is the round's most important content.
+   Then re-attack fixed areas: fixes are fresh code written under pressure, the most
+   defect-dense diff there is.
 2. **Walk the series commit by commit**, oldest first — `git log --reverse -p <base>..<head>`,
    or `git show <sha>` per commit, from the worktree you were given. Your Bash is for
    **read-only git only**: `log`, `show`, `diff`. Never run anything that writes, checks out,
