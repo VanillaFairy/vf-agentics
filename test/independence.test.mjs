@@ -19,20 +19,28 @@
 // wrong does not fail loudly — it produces either silent file conflicts between parallel
 // coders or needless serialization.
 //
+// NOW PINNED, at the bottom of this file. These were open questions when the suite was
+// first written; SPEC-DECISIONS.md has since ratified all of them, and an audit found that
+// mutants contradicting each one still passed the suite. Ruling numbers are that document's,
+// under "`lib/independence.mjs` (T03a's questions)":
+//   - Ruling 1 — ids WITHIN a wave appear in INPUT order, never sorted. Load-bearing rather
+//     than incidental: §1 has the planner paste CLI stdout verbatim for the workflow to
+//     `JSON.parse`, so the ordering has to be stable and predictable.
+//   - Ruling 2 — path comparison is CASE-SENSITIVE, with a known hazard accepted knowingly
+//     (see the test comments and SPEC-DECISIONS.md's closing section).
+//   - Ruling 3 — a designated shared file that appears in NO locus is a silent no-op.
+//   - Ruling 4 — a path repeated inside one order's own locus is legal, is not deduped, and
+//     has no effect on the partition.
+//   - Ruling 7 — empty `workOrders` with non-empty `sharedFiles` is `{waves:[], coupled:[]}`.
+//   - Ruling 8 — normalization is EXACTLY `\` to `/` and nothing else: no trimming, no
+//     stripping of a leading `./`, no casefolding.
+//
 // DELIBERATELY NOT PINNED (open spec questions, escalated rather than guessed — do not
 // read the absence of these assertions as permission to do anything in particular):
-//   - Order of ids WITHIN a single wave. §2 states "input order preserved" for `coupled`
-//     but says nothing for waves. Every fixture below whose wave holds two or more ids is
-//     arranged so input order and id order agree, so both readings pass.
-//   - Case sensitivity. "Exact string equality" is case-sensitive, but `src/A.js` and
-//     `src/a.js` are the same file on Windows and macOS.
-//   - Whether a designated shared file that appears in NO locus is an error, a warning, or
-//     a no-op. Every shared file in every fixture below appears in at least one locus.
-//   - Whether a path repeated within a single order's own locus is legal, deduped, or a
-//     TypeError.
-//   - The wording of any thrown message, and behaviour for malformed input beyond the two
-//     documented throw conditions (missing `locus`, non-array `locus`, missing
-//     `sharedFiles` argument, non-string entries).
+//   - The wording of any thrown message (ruling 6). Only `instanceof TypeError` plus a
+//     non-empty message is contract; nothing parses the text.
+//   - Behaviour for malformed input beyond the two documented throw conditions (ruling 5):
+//     missing `locus`, non-array `locus`, missing `sharedFiles` argument, non-string entries.
 //   - The CLI wrapper. Conventions say only the pure core is unit-tested; the CLI is
 //     smoke-tested at T03b and exercised end-to-end at T11.
 
@@ -355,6 +363,115 @@ test('work-order fields beyond id and locus are ignored', () => {
     ],
     [],
   )
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+})
+
+// --- within-wave ordering: input order, never sorted (ruling 1) --------------------------------
+
+test('within a wave, ids appear in input order rather than sorted', () => {
+  // Every other fixture in this file feeds ids whose input order already agrees with their
+  // sort order, so `waves.map(w => [...w].sort())` passes all of them. Here the two orders
+  // disagree: sorting yields ['W1', 'W5', 'W9'].
+  const out = partition(
+    [wo('W9', 'src/a.js'), wo('W1', 'src/b.js'), wo('W5', 'src/c.js')],
+    [],
+  )
+
+  assert.deepEqual(out, { waves: [['W9', 'W1', 'W5']], coupled: [] })
+})
+
+test('input order within a wave holds in every wave, not just the first', () => {
+  // Ids descend, and each wave holds two of them: W5 collides with W9 on src/a.js and W3
+  // with W7 on src/b.js, so first-fit gives two waves of two. Sorting either wave — or
+  // sorting only the wave a single-wave fixture would have exercised — is visible here.
+  const out = partition(
+    [wo('W9', 'src/a.js'), wo('W7', 'src/b.js'), wo('W5', 'src/a.js'), wo('W3', 'src/b.js')],
+    [],
+  )
+
+  assert.deepEqual(out, { waves: [['W9', 'W7'], ['W5', 'W3']], coupled: [] })
+})
+
+// --- case sensitivity, accepted as a known hazard (ruling 2) -----------------------------------
+
+test('two loci differing only in case are independent', () => {
+  // KNOWN HAZARD, ratified deliberately: on Windows and macOS src/A.js and src/a.js are the
+  // SAME file on disk, so this partition can hand one file to two parallel coders. §2 says
+  // "exact string equality", the plugin's contracts are built on it, and changing it would
+  // mean changing the independence contract itself — out of scope for this increment.
+  // Recorded in SPEC-DECISIONS.md under "Known hazard, accepted deliberately". This test
+  // locks the choice, so a well-meaning `.toLowerCase()` inside `normalize` cannot arrive
+  // as a silent "fix" to a hazard that was weighed and accepted.
+  const out = partition([wo('W1', 'src/A.js'), wo('W2', 'src/a.js')], [])
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+})
+
+test('a locus differing from a designated shared file only in case is not coupled', () => {
+  // The same accepted hazard, on the shared-file side of the comparison: src/Config.js is
+  // not src/config.js, so W1 stays in a wave. Casefolding in `normalize` would couple it.
+  const out = partition(
+    [wo('W1', 'src/Config.js'), wo('W2', 'src/a.js')],
+    ['src/config.js'],
+  )
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+})
+
+// --- a shared file nobody declares constrains nothing (ruling 3) --------------------------------
+
+test('a designated shared file appearing in no locus is a silent no-op', () => {
+  // §2's `@throws` list is exhaustive — duplicate ids and an empty locus, nothing else. A
+  // planner may designate a file defensively before any order claims it; that is not an
+  // error, and validating shared files against the union of all loci would make it one.
+  const out = partition(
+    [wo('W1', 'src/a.js'), wo('W2', 'src/b.js')],
+    ['src/nowhere.js'],
+  )
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+})
+
+// --- a repeated path inside one locus is legal and inert (ruling 4) -----------------------------
+
+test("a path repeated inside one order's own locus is legal and changes nothing", () => {
+  // Not in the `@throws` list, and it cannot matter: partition returns ids, never loci. The
+  // second assertion is the other half of the ruling — the duplicate is not deduped either,
+  // in place or otherwise. Rewriting caller data would change the locus the coder is later
+  // held to on every commit.
+  const orders = [{ id: 'W1', locus: ['src/a.js', 'src/a.js'] }, wo('W2', 'src/b.js')]
+
+  const out = partition(orders, [])
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+  assert.deepEqual(orders[0].locus, ['src/a.js', 'src/a.js'])
+})
+
+// --- empty work orders, with shared files designated anyway (ruling 7) --------------------------
+
+test('no work orders yields no waves even when shared files are designated', () => {
+  // There is nothing to couple, so `coupled` is empty too — designating a shared file does
+  // not conjure an entry, and an empty run is not an error.
+  const out = partition([], ['src/config.js'])
+
+  assert.deepEqual(out, { waves: [], coupled: [] })
+})
+
+// --- normalization is exactly `\` to `/`, and nothing more (ruling 8) ---------------------------
+
+test('a leading ./ is significant — ./src/a.js and src/a.js are different paths', () => {
+  // §2's normalization list has exactly one entry. Any extra helpfulness makes the locus
+  // fence fuzzy in a way neither the planner nor the coder can predict: an order could
+  // breach on a path the planner believed it had declared. Exact means exact.
+  const out = partition([wo('W1', './src/a.js'), wo('W2', 'src/a.js')], [])
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+})
+
+test('leading whitespace is significant — a padded locus entry misses a shared file', () => {
+  // ' src/a.js' does not match 'src/a.js'. A `normalize` that trims couples W1 here.
+  const out = partition([wo('W1', ' src/a.js'), wo('W2', 'src/b.js')], ['src/a.js'])
 
   assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
 })
