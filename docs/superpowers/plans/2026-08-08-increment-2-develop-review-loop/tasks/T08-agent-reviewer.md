@@ -84,7 +84,7 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
   refactor; any edit outside the declared locus.
 - **major** — real but mergeable: a genuine defect or hazard that does not fail an
   acceptance criterion (unhandled edge case beyond the spec, misleading name, duplicated
-  logic). Reported for the human gate; never loops.
+  logic). Reported in the result for the human gate; never loops.
 - **minor** — style. Reported once; never blocks, never loops.
 
 Severity inflation and deflation are both failures: a style nit dressed as critical stalls

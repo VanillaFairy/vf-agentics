@@ -99,7 +99,7 @@ export function parseLog(text) {}
  *   'empty-series'   blocking  — zero commits (sha: '')
  *   'empty-commit'   blocking  — a commit with no files
  *   'locus-breach'   blocking  — a commit touches a file outside the locus
- *   'wip-subject'    blocking  — subject matches /^(wip|fixup!|squash!|temp|tmp)\b/i
+ *   'wip-subject'    blocking  — subject matches /^(wip\b|fixup!|squash!|temp\b|tmp\b)/i
  *   'and-subject'    advisory  — subject contains ' and ' (the AND test, crude form)
  *   'subject-length' advisory  — subject longer than 72 characters
  */
