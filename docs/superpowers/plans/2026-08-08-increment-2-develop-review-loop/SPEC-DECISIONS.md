@@ -43,14 +43,32 @@ Deliberately *not* solved by deleting `\b` outright: that would flag `template r
 
 ## `lib/independence.mjs` (T03a's questions)
 
-1. **Within-wave id order** — **input order, and it is contract.** Revised after review: the
-   first ruling left this free, which was wrong. T03b's own acceptance criteria require the CLI
-   smoke test to print exactly `{"waves":[["W1","W2"]],"coupled":[]}` — a byte-exact stdout
-   assertion that pins within-wave order regardless of what this document says. And §1 has the
-   planner paste `partition_raw` as verbatim CLI stdout for the workflow to `JSON.parse`, so a
-   stable, deterministic ordering is load-bearing rather than incidental. `interfaces.md` §2 now
-   states it explicitly. T03a's tests assert it, which makes them correct rather than
-   over-pinned.
+1. **Within-wave id order** — **input order, and it is contract.** `interfaces.md` §2 states it
+   explicitly. The reason it is contract: §1 has the planner paste `partition_raw` as verbatim
+   CLI stdout for the workflow to `JSON.parse`, so a stable, deterministic ordering is
+   load-bearing rather than incidental.
+
+   **Correction — this ruling was first justified with two false claims, both since disproved by
+   the T03c audit.** The original text said "T03a's tests assert it, which makes them correct
+   rather than over-pinned", and leaned on T03b's byte-exact CLI smoke test as a second proof.
+   Neither holds:
+
+   - **T03a's tests do not assert it.** Every fixture with two or more ids in a wave is arranged
+     so input order and id-sort order agree — the test file's own header says exactly this under
+     "DELIBERATELY NOT PINNED". Verified by mutation: a `partition` that `.sort()`s each wave
+     passes all 27 tests, while one that `.reverse()`s each wave fails 10. Sorting is the mutant
+     that matters, and the suite lets it through.
+   - **The CLI smoke test does not discriminate it.** Its expected stdout is
+     `{"waves":[["W1","W2"]],"coupled":[]}` — W1 before W2, where input order and sort order
+     agree, so it passes under either reading. It is also a manual acceptance step in the task
+     file, not a persisted regression test.
+
+   How the error happened, since it is the more useful lesson: the wave-1 review asserted that
+   T03a had over-pinned within-wave order; that claim was adopted here as evidence without being
+   executed, and the commit message then repeated it as settled. Three layers of assertion, no
+   layer of verification. The conclusion survives on its own merits; the evidence did not.
+
+   The property is now enforced by GAP-1's test, not by this document.
 2. **Case sensitivity** — comparison stays **case-sensitive**, exactly as §2 says ("exact string
    equality after normalizing `\` to `/`"). See the hazard note below.
 3. **A designated shared file appearing in no locus** — silent no-op. The `@throws` list is
@@ -65,7 +83,21 @@ Deliberately *not* solved by deleting `\b` outright: that would flag `template r
 6. **TypeError message wording** — free. Only `instanceof TypeError` plus a non-empty message is
    contract. Nothing parses the text.
 7. **Empty `workOrders` with non-empty `sharedFiles`** — `{ waves: [], coupled: [] }`, following
-   from case 6. Not separately pinned.
+   from case 6.
+8. **Normalization is exactly `\` → `/`, and nothing more** — ruled after the T03c audit, which
+   found that a `normalize` adding `trim()` and leading-`./` stripping passes the whole suite.
+   §2 says "exact string equality after normalizing `\` to `/`", and that is the complete list.
+   `./src/a.js` and `src/a.js` are **different** paths; leading and trailing whitespace is
+   significant; no casefolding (see decision 2).
+
+   The reason to close this rather than leave it free: the locus is a promise the planner makes
+   and the coder is held to on every commit. Any implicit helpfulness in path matching makes the
+   fence fuzzy in a way neither of them can predict — an order could breach on a path the planner
+   believed it had declared. Exact means exact.
+
+**Rulings 1–4 and 7–8 above were unenforced by any test** until the T03c audit found that
+mutants contradicting each of them pass the suite. They are pinned by the GAP-1…GAP-6 tests,
+authored as a follow-up RED task. A ruling no test enforces is a preference, not a decision.
 
 **Both of T03a's flagged judgment calls are confirmed correct**, and both are compelled by the
 contract rather than chosen:
