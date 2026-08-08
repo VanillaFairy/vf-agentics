@@ -26,6 +26,11 @@ becomes executable control flow.
 ## Positive Constraints (DO)
 - Copy schema literals (WORK_ORDERS, CODER_RESULT, VERIFY, FINDINGS) verbatim from
   interfaces §1/§4/§5/§6 — scripts cannot import.
+- **Substitute `<plugin-root>` when building prompts.** `plannerPrompt` and `verifierPrompt`
+  each name a CLI under this plugin's `lib/`, but both agents run with their cwd in the
+  TARGET repo (`args.roots`), so a bare relative path resolves to the wrong place. Pass the
+  plugin's absolute root into those prompts (see interfaces, "`<plugin-root>`"). No prompt
+  may reach an agent still containing the literal placeholder.
 - Every `agent()` call: fully-qualified `agentType` (`vf-agentics:planner` etc.), explicit
   `phase`, explicit `effort`.
 - Intelligence dial exactly as the design §6 prescribes:

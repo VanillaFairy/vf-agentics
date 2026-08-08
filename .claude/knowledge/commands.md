@@ -35,6 +35,33 @@ than a specific line.
 node tools/lint.mjs && node --test
 ```
 
+## Syntax-check a workflow script
+`node --check` is useless on these — the body has a top-level `return`, which is legal in the
+runner's function shape but a syntax error as a standalone script. Compile it the way the runner
+does instead:
+```js
+const src = read(file).replace(/^export const/m, 'const')
+new (Object.getPrototypeOf(async function () {}).constructor)(
+  'args', 'agent', 'workflow', 'phase', 'log', 'pipeline', 'parallel', src)
+```
+Throws a real `SyntaxError` if the file is broken.
+
+## Run a workflow end to end offline
+Same construction, plus stub globals and scripted `agent()` returns. A `pipeline` stub of
+`for (const it of items) out.push(await s2(await s1(it), it))` matches the two-stage contract.
+This exercises the real control flow — loop exits, escalation paths, coverage derivation —
+without spending a single model call, and it caught two genuine bugs in `vfa-develop` before it
+was ever committed.
+
+It proves plumbing, not behaviour: it says nothing about whether a real agent honours its
+charter, so never report a simulation as a live run.
+
+## Prove per-rule lint coverage
+A green `node tools/lint.mjs` does not mean your file was checked — a rule whose `applies`
+pattern misses it is silently inapplicable. Import each `tools/rules/*.mjs`, test `applies`
+against the POSIX path, then call `check(src, path)` directly. Worth doing when adding a new
+runtime artifact type. (`SKILL.md` files, for instance, are matched by `no-turn-caps` only.)
+
 ## What the lint does and does not read
 The walk skips `.git`, `node_modules`, `docs`, and `test`. It checks the plugin's **runtime
 artifacts**, not the plan or the lint's own fixtures — a rule file containing `maxTurns` as a test

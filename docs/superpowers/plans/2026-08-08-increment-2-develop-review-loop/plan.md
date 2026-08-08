@@ -35,9 +35,21 @@ the `investigate` skill all exist and pass `node tools/lint.mjs && node --test`.
 This increment ships five new files of runtime surface (four agents + one workflow + one
 skill), two `lib/` modules, one lint rule, and the spec amendment. `diagnostician`
 (increment 3) and all UE implementation (increment 4) stay out — but T01's spec amendment
-now also records §5c, the UE content-work verification doctrine (verification modes per
-acceptance criterion, extraction deltas as the review artifact, work-order verification
-cadence), so increment 4 inherits ratified decisions instead of re-deriving them. The superpowers-plan-as-work-order
+records the full **adversarially verified** UE doctrine so later increments inherit
+ratified decisions instead of re-deriving them: §5c clauses 1–7 (verification modes,
+extraction-delta review, read AND write cadence, asset save/commit ownership,
+deterministic lib compute for assertions, editor-singleton/worktree reconciliation with
+rollback), §5d (UE read paths for investigate/diagnose), §5e (the capability adapter:
+doctrine binds to a closed capability vocabulary, never to a specific MCP server — a
+committed config initialized by the once-per-project `ue-init` command carrying the full
+toolset inventory plus the capability map, zero post-init discovery cost, rerun on MCP
+config change being the user's role, graded fencing, a write-scoped editor serial law —
+one writing agent in flight across all servers, reads harmless, sequential multi-server
+use by one agent being normal flow — and
+declared degradation when capabilities are absent), and §11 items 5–7
+(ratified-but-unscheduled: health runs, the rigor/intent axis, statistical verification).
+Every finding behind these survived a per-finding refutation pass; the corrections from
+that pass are folded into the text. The superpowers-plan-as-work-order
 source is deliberately NOT in scope — but the `preplanned` argument on `vfa-develop`
 (needed for the deferred frontier) is the seam a future increment will use for it.
 
@@ -105,7 +117,7 @@ review). The plan practices what it ships.
 
 | ID | Name | File | Description |
 |----|------|------|-------------|
-| T01 | Spec amendment | `tasks/T01-spec-amendment.md` | Fold review loop, commit discipline, and the UE verification doctrine (§5c) into the design doc |
+| T01 | Spec amendment | `tasks/T01-spec-amendment.md` | Fold review loop, commit discipline, and the verified UE doctrine (§5c.1–7, §5d, §11.5–7) into the design doc |
 | T02 | Rule: no-self-verdict | `tasks/T02-rule-no-self-verdict.md` | Ban verdict booleans in workflow schemas (IRON LAW §2) |
 | T03a | Independence tests | `tasks/T03a-independence-tests.md` | Pin the partition contract (red) |
 | T03b | Independence impl | `tasks/T03b-independence-impl.md` | Pure partition + CLI (green) |

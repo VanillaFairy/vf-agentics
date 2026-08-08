@@ -41,6 +41,16 @@ Not `.worktrees/` inside the repo. `test/plugin-manifest.test.mjs` reads
 `../../.claude-plugin/marketplace.json` — two hops up from `test/`, i.e. the *parent of the plugin
 root*. Only a sibling worktree makes that resolve to the real `vanillafairy/` marketplace.
 
+If you park worktrees one level deeper anyway (e.g. `vanillafairy/.wt-inc2/<TASK>`), the parent
+becomes `.wt-inc2/` and those two tests fail with `ENOENT` in **every** worktree. Fix it once for
+the whole directory rather than per worktree:
+```
+mkdir -p <worktree-parent>/.claude-plugin
+cp vanillafairy/.claude-plugin/marketplace.json <worktree-parent>/.claude-plugin/
+```
+Do not just tolerate the two failures. A permanently-red suite teaches every agent that a failing
+`node --test` is normal, and a real regression then hides in the known noise.
+
 ## Two tests read a file outside the repository
 `test/plugin-manifest.test.mjs` asserts on `../../.claude-plugin/marketplace.json`, which this
 repo does not contain or version. The suite is therefore **not hermetic**: a clone in a different
@@ -51,6 +61,22 @@ this suite red.
 Harmless. It comes from the user's *global* hooks directory (`core.hooksPath`), not from anything
 in this repo, and the commit lands correctly — check `git log` and `git status` rather than
 believing the message. Every agent that commits here will see it twice.
+
+The root cause, so nobody has to dig again: `common.py` in that hooks directory defines
+`is_pmi_repo()`, which parses `remote.origin.url` to decide whether the repo belongs to the
+`pmi_dev_team`/`dotmatics` workspaces. **This repo has no remote at all**, so parsing returns
+nothing and the `else` branch prints that line before returning `False`. The answer — "not a PMI
+repo, skip the PMI checks" — is correct; it is just announced with the word ERROR. Twice, because
+`pre-commit` and `commit-msg` each call it.
+
+## Never nest a template literal inside another one in a `.workflow.js`
+`coverage-block` and `workflow-meta` blank out strings by scanning for the next matching quote
+character. They do not track nesting, so an inner backtick **closes the outer string early** and
+everything after it is analysed as code — producing findings that make no sense against what you
+actually wrote. The same trap applies to a regex literal containing a quote (`/can't/`).
+
+Build list fragments in a named helper with `+` concatenation, and use `split()`/`join()` instead
+of a regex carrying a quote.
 
 ## Workflow scripts run in a sandbox with no module loader
 No `import`, no `require` — an import is a runtime failure, not a style issue. Also no

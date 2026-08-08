@@ -7,6 +7,19 @@ not invent variants. Increment 1's `shared/interfaces.md` remains authoritative 
 module contract, `tools/lint.mjs` exports, agent frontmatter, the coverage block, and the
 `vfa-survey` contract; nothing here changes those.
 
+## `<plugin-root>` — how agents reach this plugin's own `lib/`
+
+Agents in this pipeline run with their working directory in the **target repository** being
+changed (`args.roots`, default `.`), not in the plugin's install directory. A bare
+`node lib/independence.mjs` would therefore resolve against the target repo and fail.
+
+Every CLI invocation below is written `node <plugin-root>/lib/<module>.mjs`. `<plugin-root>`
+is the absolute path of the directory containing this plugin's `agents/`, `lib/`, and
+`tools/`. **The workflow substitutes the real absolute path when it builds each agent's
+prompt** — no agent discovers it, and no agent assumes its own cwd. An agent that receives a
+prompt still containing the literal `<plugin-root>` should treat that as a dispatch bug and
+escalate rather than guess.
+
 ---
 
 ## 1. Work orders (planner output)
@@ -38,6 +51,25 @@ const WORK_ORDERS = {
 The script parses `partition_raw` with `JSON.parse` in JS. A planner that "summarizes" the
 CLI output instead of pasting it breaks the run loudly at that parse — which is intended.
 
+### `HUMAN:` criteria — the one category the reviewer may not rule on
+
+Most acceptance criteria are mechanically checkable. Some genuinely are not: "the error
+message reads clearly", "this API shape is natural". The planner may write those, and writes
+them prefixed **`HUMAN:`** — a literal marker, so routing them is decidable rather than a
+matter of interpretation.
+
+The reviewer passes a `HUMAN:` criterion through untouched. Absence of diff evidence for one
+is never a finding, and it can never be critical. They reach the person at the gate instead,
+carried in the work order.
+
+Without this carve-out the two agents contradict each other: the planner is told to write
+such criteria, while the reviewer is told that a criterion it cannot connect to diff evidence
+is unmet — and an unmet criterion is critical. A `HUMAN:` criterion has no diff evidence by
+construction, so every work order carrying one would become a permanent critical that no fix
+round can clear, escalating as `review_not_converging` every time. This is the same rule the
+design's §5c.1–2 already ratified for UE content work ("aesthetics are never findings; taste
+belongs to the human gate"), applied to ordinary source work.
+
 ---
 
 ## 2. `lib/independence.mjs`
@@ -55,6 +87,7 @@ CLI output instead of pasting it breaks the run loudly at that parse — which i
  * @param {string[]} sharedFiles   repo-relative POSIX paths
  * @returns {{ waves: string[][], coupled: string[] }}
  *   waves: arrays of work-order ids, execution-ordered; never contains an empty wave.
+ *          Within a wave, ids appear in input order.
  *   coupled: ids routed to the main session, input order preserved.
  * @throws {TypeError} on duplicate ids or a work order with an empty locus.
  */
@@ -62,9 +95,13 @@ export function partition(workOrders, sharedFiles) {}
 ```
 
 Path comparison is exact string equality after normalizing `\` to `/`. No globbing.
+Locus and shared-file entries are **opaque strings** — non-file resource sentinels are
+valid designated shared resources (increment 4 uses `__editor__` for the editor-bound
+tree, per the design's §5c.7). The partition needs no special handling for them: exact
+equality already routes any order carrying a listed sentinel to `coupled`.
 
 **CLI** (same file, guarded by `import.meta.main`):
-`node lib/independence.mjs <input.json>` where the file contains
+`node <plugin-root>/lib/independence.mjs <input.json>` where the file contains
 `{ work_orders: [{id, locus}], shared_files: [] }`. Prints `JSON.stringify(partition(...))`
 to stdout, exit 0. On invalid input: prints `{"error": "<message>"}` to stdout, exit 1.
 
@@ -80,6 +117,9 @@ to stdout, exit 0. On invalid input: prints `{"error": "<message>"}` to stdout, 
  *   git log --reverse --format='%x01%H%x02%s' --name-only <base>..HEAD
  * Records are delimited by \x01; within a record, \x02 separates sha from subject;
  * subsequent non-empty lines up to the next \x01 are the commit's file paths.
+ * Line endings: a single trailing \r is stripped from each line before it is
+ * interpreted, so CRLF input parses identically to LF. Emptiness is judged after
+ * that strip — a line of "\r" is empty and is not a file path.
  * @param {string} text
  * @returns {Array<{sha: string, subject: string, files: string[]}>}  oldest first
  */
@@ -95,7 +135,7 @@ export function parseLog(text) {}
  *   'empty-series'   blocking  — zero commits (sha: '')
  *   'empty-commit'   blocking  — a commit with no files
  *   'locus-breach'   blocking  — a commit touches a file outside the locus
- *   'wip-subject'    blocking  — subject matches /^(wip|fixup!|squash!|temp|tmp)\b/i
+ *   'wip-subject'    blocking  — subject matches /^(wip\b|fixup!|squash!|temp\b|tmp\b)/i
  *   'and-subject'    advisory  — subject contains ' and ' (the AND test, crude form)
  *   'subject-length' advisory  — subject longer than 72 characters
  */
@@ -103,7 +143,7 @@ export function analyzeSeries(commits, locus) {}
 ```
 
 **CLI** (same file, `import.meta.main`, uses `node:child_process`): run inside a worktree,
-`node lib/commit-series.mjs --base <sha> --locus <p1> --locus <p2> ...` — executes the git
+`node <plugin-root>/lib/commit-series.mjs --base <sha> --locus <p1> --locus <p2> ...` — executes the git
 log command above, prints `JSON.stringify({ findings })`, exit 1 iff any `blocking` finding,
 else 0. Only `parseLog` and `analyzeSeries` are unit-tested; the CLI is exercised at T11.
 
@@ -180,6 +220,36 @@ const verifyOk = v => v.stop_reason === 'completed' && v.build_ok && v.suite_pas
   && !v.series_findings.some(f => f.blocking)
 ```
 
+### Verifier merge mode — its own shape
+
+`VERIFY` is `additionalProperties: false` and requires `discriminator` and `series_findings`,
+so it cannot carry a merge result. Merge mode returns:
+
+```js
+const MERGE_RESULT = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'merged_sha', 'conflicts', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
+    merged_sha: { type: 'string' },  // '' when the merge did not complete — a fact, not a verdict
+    conflicts: { type: 'array', items: { type: 'string' } },  // conflicting paths, verbatim from git
+    notes: { type: 'string' },
+  },
+}
+```
+
+Derived in JS by the caller — the skill (§9.2), since the workflow never merges:
+
+```js
+const mergeOk = m => m.stop_reason === 'completed' && m.merged_sha !== '' && m.conflicts.length === 0
+```
+
+Note what is absent, for the same reason as everywhere else: no `merged` boolean. Whether the
+merge succeeded is computed from the observed sha and conflict list, and a non-empty
+`conflicts` stops the merge run — wave-1 loci were pairwise disjoint, so a conflict means the
+planner's independence declaration was wrong, which is a defect worth seeing rather than
+resolving silently.
+
 ---
 
 ## 6. Reviewer findings — findings only, no verdict
@@ -218,8 +288,24 @@ makes that a lint error. The loop's exit condition is derived in JS:
 
 ```js
 const criticals = review.findings.filter(f => f.severity === 'critical')
-// exit iff criticals.length === 0
+
+// A prior critical the reviewer ruled `not_fixed`/`regressed` is STILL OPEN even when it did
+// not re-appear in this round's findings. The reviewer's charter requires re-reporting it
+// under its original id — but the exit must not depend on a model complying, so the loop
+// folds it in from `fix_verdicts` too.
+const stillOpen = priorCriticals.filter(p =>
+  review.fix_verdicts.some(v => v.id === p.id && v.status !== 'fixed') &&
+  !criticals.some(c => c.id === p.id))
+
+const open = criticals.concat(stillOpen)
+// exit iff open.length === 0
 ```
+
+Counting `findings` alone was the original contract and it was wrong: a round returning
+`fix_verdicts: [{id:'F1', status:'not_fixed'}]` with `findings: []` exited as **approved**, and
+the order shipped with a known-unfixed critical and `coverage.complete: true`. It also made
+§7.3(b) unreachable, since the stuck marker needed the id in both places. Do not narrow this
+back to `criticals.length === 0`.
 
 ### Severity ladder (authoritative — copied into `agents/reviewer.md` verbatim)
 
@@ -242,7 +328,9 @@ Per work order, after `verifyOk` first holds:
    worktree path, `base_sha..head_sha`, the coder's `concerns`, the advisory
    `series_findings`, and — from round 2 on — the prior round's criticals (id + claim +
    the fix commits since).
-2. Compute `criticals`. Zero → the order is **approved**; return the trail.
+2. Compute the **open set**: this round's criticals, plus any prior critical the reviewer ruled
+   `not_fixed`/`regressed` that it did not re-report (see §6). Empty → the order is
+   **approved**; return the trail.
 3. **Non-convergence escalation (computed, not judged):** escalate the order when either
    (a) the fix dispatch returns `commits` empty or status `blocked`/`needs_context`, or
    (b) any `fix_verdicts` entry reports `not_fixed`/`regressed` for the same finding id in
@@ -276,6 +364,11 @@ Per work order, after `verifyOk` first holds:
   roots:        String,          // default: '.'
   notes:        String,          // default: ''
   intelligence: 'normal'|'max',  // default: 'normal'
+  plugin_root:  String,          // REQUIRED in practice. Absolute path of this plugin's
+  //            root, interpolated into the planner and verifier prompts so they can reach
+  //            lib/ while their own cwd is the target repo. See "<plugin-root>" above. The
+  //            skill passes ${CLAUDE_PLUGIN_ROOT}; without it those agents halt rather than
+  //            measure the wrong tree.
   preplanned:   null | { work_orders, shared_files, partition_raw },
   //            default null. When set (a re-invocation for deferred orders, whose loci
   //            are now valid against the freshly merged base), survey and planning are
