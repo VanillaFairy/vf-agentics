@@ -248,7 +248,7 @@ vfa-survey (scoped to the change)
         v
 planner: work orders, each with a DECLARED LOCUS + acceptance criteria
         v
-node lib/independence.mjs  -> partition
+node <plugin-root>/lib/independence.mjs  -> partition
         |
    +----+--------------------------------+
    v                                     v
@@ -278,8 +278,9 @@ iff their declared loci are pairwise disjoint file sets and neither touches a de
 file (config, barrel/index, shared types). Anything else is coupled and stays in the main
 session. The test lives in `lib/independence.mjs` where it can be unit-tested.
 
-**Declared loci are verified, not trusted.** A `coder` that edits outside its locus is caught by
-`git diff --name-only` against the declaration, in the workflow script. Post-hoc check, not a
+**Declared loci are verified, not trusted.** A `coder` that edits outside its locus is caught
+per commit by `lib/commit-series.mjs`, which the `verifier` runs inside the work order's own
+worktree; the script derives the verdict from the findings it returns. Post-hoc check, not a
 `PreToolUse` hook — same guarantee, no hook infrastructure. Per IRON LAW §7, a `coder` that
 *needs* to widen its locus escalates rather than silently widening or giving up.
 
@@ -598,7 +599,7 @@ model answering fast" both unrequestable, and those are real requests.
 | Side-channel agent throws (`historian`, `doc-researcher`) | `.catch`, log, set `failed_channels`, carry into synthesis as "claims resting on this are unsupported" |
 | Scout not exhausted | Resume with what was found and what remains; only genuine exhaustion counts as incomplete |
 | Scout reports non-exhausted with no `uncovered` detail | Dead end — another round would be handed an empty task and launder itself into "exhausted". Record and stop. |
-| `coder` edits outside its declared locus | Caught post-hoc by `git diff --name-only`; escalates, never silently accepted |
+| `coder` edits outside its declared locus | Caught per commit by `lib/commit-series.mjs` (`locus-breach`, blocking), run by the `verifier`; escalates, never silently accepted |
 | New test passes on the pre-change commit | Rejected — the test proves nothing |
 | Budget exhausted | Loud incomplete verdict + `resumable`, so `resumeFromRunId` can finish it |
 | UE preflight fails | Halt before any fan-out, with the `VFA_UE_MCP_URL` hint |

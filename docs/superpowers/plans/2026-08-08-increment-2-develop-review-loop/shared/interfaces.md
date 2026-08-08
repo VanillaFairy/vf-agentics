@@ -220,6 +220,36 @@ const verifyOk = v => v.stop_reason === 'completed' && v.build_ok && v.suite_pas
   && !v.series_findings.some(f => f.blocking)
 ```
 
+### Verifier merge mode — its own shape
+
+`VERIFY` is `additionalProperties: false` and requires `discriminator` and `series_findings`,
+so it cannot carry a merge result. Merge mode returns:
+
+```js
+const MERGE_RESULT = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'merged_sha', 'conflicts', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
+    merged_sha: { type: 'string' },  // '' when the merge did not complete — a fact, not a verdict
+    conflicts: { type: 'array', items: { type: 'string' } },  // conflicting paths, verbatim from git
+    notes: { type: 'string' },
+  },
+}
+```
+
+Derived in JS by the caller — the skill (§9.2), since the workflow never merges:
+
+```js
+const mergeOk = m => m.stop_reason === 'completed' && m.merged_sha !== '' && m.conflicts.length === 0
+```
+
+Note what is absent, for the same reason as everywhere else: no `merged` boolean. Whether the
+merge succeeded is computed from the observed sha and conflict list, and a non-empty
+`conflicts` stops the merge run — wave-1 loci were pairwise disjoint, so a conflict means the
+planner's independence declaration was wrong, which is a defect worth seeing rather than
+resolving silently.
+
 ---
 
 ## 6. Reviewer findings — findings only, no verdict
@@ -316,6 +346,11 @@ Per work order, after `verifyOk` first holds:
   roots:        String,          // default: '.'
   notes:        String,          // default: ''
   intelligence: 'normal'|'max',  // default: 'normal'
+  plugin_root:  String,          // REQUIRED in practice. Absolute path of this plugin's
+  //            root, interpolated into the planner and verifier prompts so they can reach
+  //            lib/ while their own cwd is the target repo. See "<plugin-root>" above. The
+  //            skill passes ${CLAUDE_PLUGIN_ROOT}; without it those agents halt rather than
+  //            measure the wrong tree.
   preplanned:   null | { work_orders, shared_files, partition_raw },
   //            default null. When set (a re-invocation for deferred orders, whose loci
   //            are now valid against the freshly merged base), survey and planning are

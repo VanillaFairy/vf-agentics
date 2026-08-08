@@ -93,8 +93,8 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
 
 - **critical** — must not merge: violates or fails an acceptance criterion; introduces
   incorrect behavior; security or data-loss risk; a new test that does not discriminate
-  (would pass without the change); behavior change inside a commit presented as a
-  refactor; any edit outside the declared locus.
+  (would pass without the change); behavior change inside a commit presented as a refactor;
+  any edit outside the declared locus.
 - **major** — real but mergeable: a genuine defect or hazard that does not fail an
   acceptance criterion (unhandled edge case beyond the spec, misleading name, duplicated
   logic). Reported in the result for the human gate; never loops.
