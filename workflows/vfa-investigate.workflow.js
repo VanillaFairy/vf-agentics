@@ -1,0 +1,185 @@
+export const meta = {
+  name: 'vfa-investigate',
+  description: 'Answer one large question about the local codebase from evidence — current code, git history and vendor documentation — and return an ordered task list or a written report.',
+  whenToUse: 'Use for "can we replace X with Y", "how does subsystem X work", "when did X break", or any question needing several parts of the codebase read, plus history or external documentation, before a decision.',
+  phases: [
+    { title: 'Survey' },
+    { title: 'Synthesize' },
+  ],
+}
+
+// ---------------------------------------------------------------- schema
+//
+// No minItems / maxItems / minLength / maxLength. The task ceiling is expressed in the
+// prompt as behaviour and enforced in JS below.
+
+const TASKS = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['tasks', 'summary', 'gaps'],
+  properties: {
+    summary: { type: 'string' },
+    gaps: { type: 'array', items: { type: 'string' } },
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ref', 'subject', 'description', 'activeForm', 'blocked_by'],
+        properties: {
+          ref: { type: 'string' },
+          subject: { type: 'string' },
+          description: { type: 'string' },
+          activeForm: { type: 'string' },
+          blocked_by: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+}
+
+// ---------------------------------------------------------------- inputs
+
+const input = typeof args === 'string' ? { question: args } : (args || {})
+const question = input.question || ''
+const roots = input.roots || '.'
+const notes = input.notes || ''
+const asTasks = Boolean(input.as_tasks)
+const intelligence = input.intelligence === 'max' ? 'max' : 'normal'
+const judge = intelligence === 'max' ? { model: 'fable' } : {}
+
+const MAX_TASKS = 12
+
+function investigateResult(mode, tasks, report, coverageBlock) {
+  return { question, mode, tasks, report, coverage: coverageBlock }
+}
+
+if (!question) {
+  return investigateResult('report', null, null, {
+    complete: false,
+    dropped: [],
+    incomplete: [],
+    failed_channels: [],
+    unreached: ['no question was supplied, so nothing was investigated'],
+    resumable: { runId: null, remaining: [] },
+  })
+}
+
+// ---------------------------------------------------------------- 1. survey
+
+phase('Survey')
+
+const survey = await workflow('vfa-survey', {
+  question,
+  roots,
+  notes,
+  intelligence,
+})
+
+// The survey never throws and always returns its documented shape, so a missing coverage
+// block means something changed underneath us. Say so rather than inventing one.
+if (!survey || !survey.coverage) {
+  return investigateResult('report', null, null, {
+    complete: false,
+    dropped: [],
+    incomplete: [],
+    failed_channels: ['survey'],
+    unreached: ['vfa-survey returned no coverage block; the evidence phase did not complete'],
+    resumable: { runId: null, remaining: [] },
+  })
+}
+
+const c = survey.coverage
+
+// ---------------------------------------------------------------- 2. synthesize
+
+phase('Synthesize')
+
+// The structured coverage block is returned untouched. These lines exist so the PROSE also
+// names what was missing — a report that reads smoothly while resting on two-thirds of the
+// evidence is exactly what IRON LAW §4 forbids.
+const caveats =
+  (c.dropped.length > 0
+    ? `NOTE: these topics produced no result and are missing from the evidence: ` +
+      `${c.dropped.join(', ')}. Name them and say what they would have answered.\n\n` : '') +
+  (c.incomplete.length > 0
+    ? `NOTE: these topics could not be searched to exhaustion: ${c.incomplete.join(', ')}. ` +
+      `Lead with that limit. Do not present the answer as settled, and say what would have ` +
+      `to be searched to settle it.\n\n` : '') +
+  (c.failed_channels.includes('history')
+    ? `NOTE: the git history search failed. Any claim about when or why something changed ` +
+      `is unsupported. Say so.\n\n` : '') +
+  (c.failed_channels.includes('docs')
+    ? `NOTE: documentation research failed. Any claim resting on vendor behaviour is ` +
+      `unsupported. Say so.\n\n` : '') +
+  (c.unreached.length > 0
+    ? `NOTE: not reached at all: ${c.unreached.join('; ')}.\n\n` : '')
+
+const evidence =
+  `PER-TOPIC FINDINGS:\n${JSON.stringify(survey.verdicts, null, 1)}\n\n` +
+  (survey.history ? `GIT HISTORY:\n${survey.history}\n\n` : '') +
+  (survey.docs ? `EXTERNAL DOCUMENTATION:\n${survey.docs}\n\n` : '') +
+  caveats
+
+if (asTasks) {
+  const result = await agent(
+    `Turn this investigation into an ordered task list.\n\n` +
+    `QUESTION: ${question}\n\n` + evidence +
+    `Subjects are imperative and short. Every description must stand alone — carry the ` +
+    `path:line references and enough context to act on without seeing this investigation. ` +
+    `"ref" is a local id used only by blocked_by. Put anything the investigation could not ` +
+    `establish in "gaps"; do not invent a task to paper over it. Return at most ` +
+    `${MAX_TASKS} tasks — merge rather than exceed.`,
+    { agentType: 'vf-agentics:analyst', effort: 'high', schema: TASKS,
+      label: 'synthesize:tasks', ...judge },
+  ).catch((e) => {
+    log(`WARNING: task synthesis failed: ${e && e.message}`)
+    return null
+  })
+
+  if (!result) {
+    return investigateResult('tasks', null, null, {
+      complete: false,
+      dropped: c.dropped,
+      incomplete: c.incomplete,
+      failed_channels: c.failed_channels.concat(['synthesis']),
+      unreached: c.unreached.concat(['synthesis failed; the evidence was gathered but not turned into tasks']),
+      resumable: c.resumable,
+    })
+  }
+
+  // The schema cannot cap array length, so enforce it here.
+  if (result.tasks.length > MAX_TASKS) {
+    log(`Synthesis returned ${result.tasks.length} tasks; keeping ${MAX_TASKS}.`)
+    const cut = result.tasks.slice(MAX_TASKS).map((t) => t.subject)
+    result.tasks = result.tasks.slice(0, MAX_TASKS)
+    result.gaps = result.gaps.concat(cut.map((s) => `dropped over the ${MAX_TASKS}-task cap: ${s}`))
+  }
+
+  return investigateResult('tasks', result, null, c)
+}
+
+const report = await agent(
+  `Write the final answer to this question.\n\n` +
+  `QUESTION: ${question}\n\n` + evidence +
+  `Lead with the recommendation in one or two sentences. Then the reasons that decide it, ` +
+  `each tied to a path:line, a commit, or a URL. Then risks and open questions, only where ` +
+  `they change the decision. Do not restate the question. Do not list options you rejected.`,
+  { agentType: 'vf-agentics:analyst', effort: 'high', label: 'synthesize', ...judge },
+).catch((e) => {
+  log(`WARNING: report synthesis failed: ${e && e.message}`)
+  return null
+})
+
+if (!report) {
+  return investigateResult('report', null, null, {
+    complete: false,
+    dropped: c.dropped,
+    incomplete: c.incomplete,
+    failed_channels: c.failed_channels.concat(['synthesis']),
+    unreached: c.unreached.concat(['synthesis failed; the evidence was gathered but not written up']),
+    resumable: c.resumable,
+  })
+}
+
+return investigateResult('report', null, report, c)
