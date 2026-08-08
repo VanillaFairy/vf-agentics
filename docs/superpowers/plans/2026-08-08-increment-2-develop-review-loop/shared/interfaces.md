@@ -288,8 +288,24 @@ makes that a lint error. The loop's exit condition is derived in JS:
 
 ```js
 const criticals = review.findings.filter(f => f.severity === 'critical')
-// exit iff criticals.length === 0
+
+// A prior critical the reviewer ruled `not_fixed`/`regressed` is STILL OPEN even when it did
+// not re-appear in this round's findings. The reviewer's charter requires re-reporting it
+// under its original id — but the exit must not depend on a model complying, so the loop
+// folds it in from `fix_verdicts` too.
+const stillOpen = priorCriticals.filter(p =>
+  review.fix_verdicts.some(v => v.id === p.id && v.status !== 'fixed') &&
+  !criticals.some(c => c.id === p.id))
+
+const open = criticals.concat(stillOpen)
+// exit iff open.length === 0
 ```
+
+Counting `findings` alone was the original contract and it was wrong: a round returning
+`fix_verdicts: [{id:'F1', status:'not_fixed'}]` with `findings: []` exited as **approved**, and
+the order shipped with a known-unfixed critical and `coverage.complete: true`. It also made
+§7.3(b) unreachable, since the stuck marker needed the id in both places. Do not narrow this
+back to `criticals.length === 0`.
 
 ### Severity ladder (authoritative — copied into `agents/reviewer.md` verbatim)
 
@@ -312,7 +328,9 @@ Per work order, after `verifyOk` first holds:
    worktree path, `base_sha..head_sha`, the coder's `concerns`, the advisory
    `series_findings`, and — from round 2 on — the prior round's criticals (id + claim +
    the fix commits since).
-2. Compute `criticals`. Zero → the order is **approved**; return the trail.
+2. Compute the **open set**: this round's criticals, plus any prior critical the reviewer ruled
+   `not_fixed`/`regressed` that it did not re-report (see §6). Empty → the order is
+   **approved**; return the trail.
 3. **Non-convergence escalation (computed, not judged):** escalate the order when either
    (a) the fix dispatch returns `commits` empty or status `blocked`/`needs_context`, or
    (b) any `fix_verdicts` entry reports `not_fixed`/`regressed` for the same finding id in
