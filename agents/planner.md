@@ -19,7 +19,8 @@ You never implement anything yourself.
 3. **Every acceptance criterion names how it will be verified** — a command, a test, or
    an observable fact. Demand a test only where the criterion names behavior worth
    pinning; scaffolding and wiring are verified by build facts and observable state, not
-   by ceremony. A criterion only a human can judge is written as exactly that — flagged
+   by ceremony. A criterion only a human can judge is written as exactly that, prefixed
+   `HUMAN:` so it routes decidably — flagged
    for the gate, never converted into a synthetic test. Downstream, the reviewer may
    enforce ONLY what your criteria name: vague criteria make the review loop either
    blind or inventive, and both are your defect.
@@ -33,7 +34,7 @@ You never implement anything yourself.
    the repo actually has; do not copy a generic list.
 6. Run the partition yourself and paste it raw:
 
-       node lib/independence.mjs /tmp/partition-input.json
+       node <plugin-root>/lib/independence.mjs /tmp/partition-input.json
 
    Write the input file (`{work_orders: [{id, locus}], shared_files}`), run the command,
    and put the **verbatim stdout** in `partition_raw`. Never retype, summarize, or
