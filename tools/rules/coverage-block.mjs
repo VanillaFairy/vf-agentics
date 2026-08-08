@@ -7,16 +7,26 @@
 //
 // Most of a workflow script is prompt text, and prompt text is full of braces, the word
 // return, and ${} interpolations — all of which read as code to a naive scan. So strings and
-// comments are blanked out first, and everything below runs on what is left.
+// comments are blanked out first, and everything below runs on what is left. Everything:
+// blanking the source and then reading any part of the ORIGINAL back out un-hides exactly
+// what the blanking was for, and inside a returned object that turns a sentence of prose
+// into a coverage block.
 //
 // Three findings:
 //   V1 (line 0)     nothing is returned at all — undefined reaches the caller
 //   V2 (line 0)     something is returned, but no returned object carries a coverage key
 //   V3 (that line)  a bare `return` — an early exit with no result and no coverage
 //
+// Both spellings of the key count: `coverage:` and ES shorthand `coverage`, the latter in
+// every position it can occupy — first key, last key, somewhere in the middle, with or
+// without a trailing comma, on one line or written out one key per line (D10/D11). The first
+// real workflow written against this rule had to rename a parameter to work around the
+// shorthand form being rejected, which is the linter being wrong rather than the workflow.
+//
 // Deliberately NOT flagged, because catching them needs a real parser and this repo has no
 // dependencies. All four are covered by human review at T18:
-//   - `return { ...base, coverage }`  -> shorthand, no colon, so the key is not seen
+//   - `return { ...base }`            -> a coverage key that arrives only through a spread
+//                                        lives in another object the rule cannot follow
 //   - `if (!x) return`                -> an inline bare return shares its line with code
 //   - `const r = {...}; return r`     -> no object literal at the return, so V1 fires
 //   - a helper's `return {...}`       -> telling script scope from function scope needs a
@@ -47,7 +57,7 @@ export function check(source) {
         `indistinguishable from a crash, and from a complete answer. IRON LAW §4: a ` +
         `partial result must never be indistinguishable from a whole one.`,
     })
-  } else if (!returnsCoverage(source, code)) {
+  } else if (!returnsCoverage(code)) {
     violations.push({
       line: 0,
       message:
@@ -74,18 +84,35 @@ export function check(source) {
 }
 
 /**
- * True when at least one returned object literal has a `coverage:` key.
+ * `coverage` sitting where a key can sit: straight after the object's `{`, or after a comma,
+ * with nothing but whitespace in between. From there it is a key either way it is written —
+ * `coverage:` with a colon, or ES shorthand, where the next thing along is the comma or the
+ * brace that ends the property.
  *
- * The span of each object is measured on the BLANKED source, so a stray brace in a prompt
- * cannot close the object early; the key is then looked for in the ORIGINAL text over that
- * span, where a `coverage:` that lives inside a string or comment has become spaces.
+ * That leading `{` or `,` is doing two jobs. It keeps `has_coverage` out in both spellings,
+ * since the character before the word is an underscore rather than a delimiter. And it keeps
+ * out a `coverage` that is a VALUE rather than a key — in `{ hits: coverage }` a colon sits
+ * in front of the word, so the object is not carrying a coverage block by that name.
+ *
+ * Allowing whitespace to span newlines is what makes the multi-line shorthand work; matching
+ * only `coverage\s*\}` would accept `{ question, coverage }` and reject `{ coverage, hits }`
+ * and every object written out one key per line.
  */
-function returnsCoverage(source, code) {
+const COVERAGE_KEY = /[{,]\s*coverage\s*(?::|(?=[,}]))/
+
+/**
+ * True when at least one returned object literal carries a `coverage` key.
+ *
+ * All of this runs on the BLANKED source. The span of each object is brace-matched there, so
+ * a stray brace in a prompt cannot close the object early, and the key is looked for in that
+ * same blanked span, where a `coverage` living inside a string or a comment has become
+ * spaces. Measuring the span on one text and reading it out of the other is what once let a
+ * sentence of prose inside the returned object pass as the coverage block.
+ */
+function returnsCoverage(code) {
   for (const match of code.matchAll(/\breturn\s*\{/g)) {
     const open = match.index + match[0].length - 1
-    const span = source.slice(open, endOfObject(code, open))
-    // The leading delimiter keeps `has_coverage:` and friends from passing as the key.
-    if (/(?:^|[{,\s])coverage\s*:/.test(span)) return true
+    if (COVERAGE_KEY.test(code.slice(open, endOfObject(code, open)))) return true
   }
   return false
 }
