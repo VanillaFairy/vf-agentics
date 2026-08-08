@@ -50,9 +50,30 @@ export async function loadRules(root) {
   const rules = []
   for (const name of entries.filter((n) => n.endsWith('.mjs')).sort()) {
     const mod = await import(pathToFileURL(join(dir, name)).href)
-    rules.push({ id: mod.id, applies: mod.applies, check: mod.check })
+    rules.push(validated(mod, name))
   }
   return rules
+}
+
+/**
+ * Check one freshly-imported rule module against the contract, or throw naming the file.
+ *
+ * Rule modules are authored in parallel by agents who cannot see each other's code, so a
+ * typo'd export is a live risk. Without this check the failure surfaces much later and much
+ * worse: `applies` being undefined throws a bare TypeError inside lintSource on the FIRST
+ * file scanned — any file, not just the ones that rule cares about — so one bad module takes
+ * down every other rule's run, with a stack trace that never names the offender. A mismatched
+ * `id` is quieter still: nothing throws, findings are just attributed to the wrong rule.
+ */
+function validated(mod, name) {
+  const stem = name.slice(0, -'.mjs'.length)
+  const fail = (why) => { throw new Error(`tools/rules/${name}: ${why}`) }
+
+  if (mod.id !== stem) fail(`exported id ${JSON.stringify(mod.id)} must equal '${stem}'`)
+  if (!(mod.applies instanceof RegExp)) fail("'applies' must be a RegExp")
+  if (typeof mod.check !== 'function') fail("'check' must be a function")
+
+  return { id: mod.id, applies: mod.applies, check: mod.check }
 }
 
 async function collectFiles(dir, out) {

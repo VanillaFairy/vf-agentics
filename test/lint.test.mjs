@@ -7,7 +7,10 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { lintSource, formatFindings } from '../tools/lint.mjs'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { lintSource, formatFindings, loadRules } from '../tools/lint.mjs'
 
 const workflowRule = {
   id: 'fake-workflow-rule',
@@ -70,4 +73,91 @@ test('formatFindings renders one line per finding, file first', () => {
     'workflows/a.workflow.js:3  [r1] first\n' +
     'agents/b.md:0  [r2] second',
   )
+})
+
+// --- loadRules: the contract gate ------------------------------------------------
+//
+// Rule modules are written in parallel by agents who cannot see each other's code, so the
+// orchestrator refuses to load one that breaks the contract and names the file when it does.
+// Each fixture below is a real .mjs on disk, because that is the only way to exercise the
+// dynamic import path these guards live on.
+
+/** Build a throwaway plugin root containing tools/rules/<name> for each entry. */
+async function pluginWithRules(files) {
+  const root = await mkdtemp(join(tmpdir(), 'vfa-lint-'))
+  await mkdir(join(root, 'tools', 'rules'), { recursive: true })
+  for (const [name, source] of Object.entries(files)) {
+    await writeFile(join(root, 'tools', 'rules', name), source, 'utf8')
+  }
+  return root
+}
+
+const wellFormed = (id, applies = '/\\.workflow\\.js$/') => `
+export const id = '${id}'
+export const applies = ${applies}
+export function check() { return [] }
+`
+
+test('a plugin with no tools/rules yet loads no rules and does not throw', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vfa-lint-'))
+  try {
+    assert.deepEqual(await loadRules(root), [])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('well-formed rules load in filename order', async () => {
+  const root = await pluginWithRules({
+    'b-rule.mjs': wellFormed('b-rule'),
+    'a-rule.mjs': wellFormed('a-rule'),
+    'notes.txt': 'not a rule',
+  })
+  try {
+    const rules = await loadRules(root)
+
+    assert.deepEqual(rules.map((r) => r.id), ['a-rule', 'b-rule'])
+    assert.ok(rules[0].applies instanceof RegExp)
+    assert.equal(typeof rules[0].check, 'function')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('an id that disagrees with its filename is rejected, naming the file', async () => {
+  const root = await pluginWithRules({ 'no-imports.mjs': wellFormed('no-improts') })
+  try {
+    await assert.rejects(loadRules(root), /no-imports\.mjs.*no-improts.*must equal 'no-imports'/s)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('a misspelled applies export is rejected, naming the file', async () => {
+  const root = await pluginWithRules({
+    'no-imports.mjs': `
+      export const id = 'no-imports'
+      export const applise = /\\.workflow\\.js$/
+      export function check() { return [] }
+    `,
+  })
+  try {
+    await assert.rejects(loadRules(root), /no-imports\.mjs.*'applies' must be a RegExp/s)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('a missing check export is rejected, naming the file', async () => {
+  const root = await pluginWithRules({
+    'no-imports.mjs': `
+      export const id = 'no-imports'
+      export const applies = /\\.workflow\\.js$/
+    `,
+  })
+  try {
+    await assert.rejects(loadRules(root), /no-imports\.mjs.*'check' must be a function/s)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
