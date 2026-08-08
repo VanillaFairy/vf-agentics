@@ -11,6 +11,23 @@
 // command exit status — a fact. `approved` / `passed` / `ok` / ... describe a judgment about
 // acceptability — a verdict. The ban is by exact key name, which is crude and exactly as
 // decidable as this rule needs to be.
+//
+// Known limits, both from the same root cause: the match is a regex over raw text, not a
+// parser, and a parser is deliberately out of scope for a ban this crude.
+//   - False positive: a schema-shaped fragment inside a comment or string still matches,
+//     because nothing here distinguishes code from prose — e.g.
+//     `// Example of what NOT to write: approved: { type: 'boolean' }` gets flagged even
+//     though it declares nothing. Telling "real schema" from "text that looks like one"
+//     needs a parser.
+//   - False negative: a nested object sitting between the banned key and its `type` escapes,
+//     because `[^}]*` cannot cross the inner object's closing `}` — e.g.
+//     `accepted: { description: { note: 'nested' }, type: 'boolean' }` is not flagged. Brace
+//     depth tracking (as `tools/rules/coverage-block.mjs` does for its own object spans)
+//     would close this, at the cost of the parser this rule is choosing not to grow.
+// Both are accepted: the spec calls this ban "crude and exactly as decidable as we need",
+// and every schema in this plugin is hand-written by an agent working from the shared
+// interfaces doc, not adversarially obfuscated — the failure mode this rule exists to catch
+// is an honest `approved: { type: 'boolean' }`, which it catches every time.
 
 /** Stable rule id. MUST equal the filename without extension. */
 export const id = 'no-self-verdict'
