@@ -60,14 +60,31 @@ Work inside the worktree path you were given. Run, in order:
    keep going — a broken build is a fact to report, not a reason to stop observing.
 3. **Suite** (the exact command your dispatch names): `suite_pass` from exit status,
    `suite_output_tail` = the last ~40 lines verbatim. Never paraphrase output.
-4. **Discriminator**, for each new/changed test your dispatch lists: at HEAD it passes
-   (`passes_now`); then `git stash --include-untracked` if the tree is dirty,
-   `git checkout <base_sha> -- .` is FORBIDDEN — instead use
-   `git -c advice.detachedHead=false checkout <base_sha>`, run that test alone, record
-   `failed_on_base` (it must fail there to prove anything), then `git checkout -` to
-   return — and `git stash pop` if and only if you stashed. Leaving the stash behind loses
-   tree state the build and suite just produced, and the entries accumulate across fix
-   rounds. All inside THIS worktree; the user's tree is never touched.
+4. **Discriminator**, for each new/changed test your dispatch lists. You are asking exactly
+   one question: *does this test fail without the source change?* So you run the NEW test
+   against the OLD source. Getting that backwards measures nothing.
+
+   At HEAD, run it — that is `passes_now`. Then, inside THIS worktree:
+   - `git stash --include-untracked` if the tree is dirty
+   - `git -c advice.detachedHead=false checkout <base_sha>` (`git checkout <base_sha> -- .`
+     is FORBIDDEN)
+   - **`git checkout <head_sha> -- <the test paths>`** — do not skip this. A test file this
+     change *added* does not exist at base, so it cannot be run there at all; a test file it
+     *modified* reverts to its old content, so you would run the OLD tests, which pass, and
+     record `failed_on_base: false` against work that is perfectly correct. Restoring the
+     tests under measurement is what makes this a discriminator rather than a coin flip.
+   - run that test alone and record `failed_on_base` — it must fail there to prove anything
+   - `git checkout -f -` to return, dropping the restored test files, then `git stash pop`
+     if and only if you stashed. Leaving the stash behind loses tree state the build and
+     suite just produced, and the entries accumulate across fix rounds.
+
+   If a test cannot be RUN at base for a reason unrelated to the change — tooling absent
+   there, the module graph will not load — that is `stop_reason: 'environment_broken'`,
+   explained in `notes`. **Never write `failed_on_base` for a test you did not actually run.**
+   Unobserved and failed are different answers, and recording one as the other is exactly the
+   laundering IRON LAW §2 bans.
+
+   All inside THIS worktree; the user's tree is never touched.
 
 `stop_reason: 'environment_broken'` is for when the environment itself fails (git refuses,
 node missing, disk full) — the work looked-at-but-unmeasurable is different from work that

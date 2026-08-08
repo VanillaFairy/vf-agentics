@@ -160,6 +160,33 @@ contract rather than chosen:
 
 ---
 
+## The discriminator runs new tests against old source (T11 finding)
+
+Ruled after T11 demonstrated the original procedure could not work. `agents/verifier.md`
+step 4 said to check out `base_sha` as a whole tree and run the test there. That reverts the
+*test* along with the source, so:
+
+- a test file the change **added** does not exist at base — it cannot be run at all, and
+  `failed_on_base` could only ever be fabricated;
+- a test **added to an existing file** reverts to its old content, so the OLD tests run
+  against old source, pass, and yield `failed_on_base: false` → `verifyOk` is false → a fix
+  round the coder cannot satisfy → `verify_failed_repeatedly`. Correct work, permanently
+  rejected, with plausible-looking evidence.
+
+Reproduced on a real repo before ruling: with `stats.mjs` + a new `median.test.mjs`, the
+charter's sequence prints `Could not find 'median.test.mjs'` at base.
+
+**Decision:** after checking out `base_sha`, restore the tests under measurement from HEAD —
+`git checkout <head_sha> -- <test paths>` — then run them. Old source, new test. Verified:
+the test then fails at base with `does not provide an export named 'median'` and passes at
+HEAD, and `git checkout -f -` plus `git stash pop` returns the worktree to its exact prior
+state including untracked build artifacts.
+
+The second half of the ruling matters as much: **a test that cannot be run at base is
+`environment_broken`, never `failed_on_base: true`.** Unobserved and failed are different
+answers. This is the same distinction the charter already draws three lines further down,
+now applied to the case that actually arises.
+
 ## Known hazard, accepted deliberately: case-sensitive path comparison
 
 Both modules compare paths case-sensitively, because §2 says "exact string equality" and the
