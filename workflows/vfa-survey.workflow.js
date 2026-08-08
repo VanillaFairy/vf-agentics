@@ -115,12 +115,9 @@ function coverageOf(dropped, incomplete, failedChannels, unreached) {
 // Every exit path below returns this shape. A caller that receives `undefined` cannot tell
 // "nothing found" from "nothing ran", and that is the failure this plugin exists to prevent.
 //
-// `coverage:` is written out in full rather than as ES shorthand. The `coverage-block` rule
-// looks for a literal `coverage:` inside a returned object literal — a documented limitation,
-// since telling shorthand from a plain identifier needs a parser this repo deliberately does
-// not have. Naming the parameter `coverageBlock` keeps the explicit key from reading as a
-// redundant `coverage: coverage`, and keeps the rule genuinely able to tell the key's presence
-// from its absence.
+// The parameter is named `coverageBlock` so the key can be written out as `coverage:` without
+// reading as a redundant `coverage: coverage`. Style only — `coverage-block` understands ES
+// shorthand in every position, so `{ …, coverage }` would lint clean too.
 function surveyResult(topics, verdicts, history, docs, coverageBlock) {
   return { question, topics, verdicts, history, docs, coverage: coverageBlock }
 }
@@ -294,7 +291,15 @@ const findings = await pipeline(
     `\n\nDo not search yourself. Judge what these show. Set topic to exactly "${topic.key}".`,
     { agentType: 'vf-agentics:analyst', effort: 'high', schema: VERDICT,
       phase: 'Analyze', label: `analyze:${topic.key}`, ...judge },
-  ),
+  ).catch((e) => {
+    // The only unguarded agent call would be this one. `findings.filter(Boolean)` below
+    // already assumes a failed item arrives as falsy; catching here makes that true whatever
+    // pipeline() does with a rejection, and keeps the promise in §6 that survey never throws.
+    // The topic then falls into `dropped`, so coverage.complete goes false rather than the
+    // whole run dying and the caller getting nothing it can reason about.
+    log(`${topic.key}: analysis failed (${e && e.message}); reporting the topic as dropped.`)
+    return null
+  }),
 )
 
 // ---------------------------------------------------------- 5. account

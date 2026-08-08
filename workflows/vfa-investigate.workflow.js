@@ -50,6 +50,9 @@ const judge = intelligence === 'max' ? { model: 'fable' } : {}
 
 const MAX_TASKS = 12
 
+// The parameter is named `coverageBlock` so the key can be written out as `coverage:` without
+// reading as a redundant `coverage: coverage`. Style only, matching `vfa-survey` — the
+// `coverage-block` rule understands ES shorthand, so `{ …, coverage }` would lint clean too.
 function investigateResult(mode, tasks, report, coverageBlock) {
   return { question, mode, tasks, report, coverage: coverageBlock }
 }
@@ -149,14 +152,27 @@ if (asTasks) {
   }
 
   // The schema cannot cap array length, so enforce it here.
+  //
+  // Losing tasks to the cap is a real loss of coverage, so it is recorded in BOTH places:
+  // in `gaps` for the reader, and in the coverage block so `complete` goes false. Recording
+  // it only in `gaps` would let a truncated task list come back `complete: true` — a partial
+  // result indistinguishable from a whole one, which is the single failure this plugin
+  // exists to prevent. `vfa-survey` accounts for its own topic cap the same way, by putting
+  // overflow into `dropped` rather than into a side note.
+  let coverage = c
+
   if (result.tasks.length > MAX_TASKS) {
     log(`Synthesis returned ${result.tasks.length} tasks; keeping ${MAX_TASKS}.`)
-    const cut = result.tasks.slice(MAX_TASKS).map((t) => t.subject)
+    const cut = result.tasks
+      .slice(MAX_TASKS)
+      .map((t) => `dropped over the ${MAX_TASKS}-task cap: ${t.subject}`)
+
     result.tasks = result.tasks.slice(0, MAX_TASKS)
-    result.gaps = result.gaps.concat(cut.map((s) => `dropped over the ${MAX_TASKS}-task cap: ${s}`))
+    result.gaps = result.gaps.concat(cut)
+    coverage = { ...c, complete: false, unreached: c.unreached.concat(cut) }
   }
 
-  return investigateResult('tasks', result, null, c)
+  return investigateResult('tasks', result, null, coverage)
 }
 
 const report = await agent(

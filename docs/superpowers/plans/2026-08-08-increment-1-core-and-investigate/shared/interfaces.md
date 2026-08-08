@@ -183,7 +183,16 @@ coverage: {
                               // and unreached are ALL empty. Never taken from an agent.
   dropped:         [String],  // topic keys that produced no result at all
   incomplete:      [String],  // topic keys searched and resumed but never exhausted
-  failed_channels: [String],  // 'history' and/or 'docs' — side channels that threw
+  failed_channels: [String],  // side channels that THREW. 'history' and/or 'docs' from
+                              // vfa-survey; vfa-investigate also emits 'survey' and
+                              // 'synthesis'.
+                              //
+                              // LIMITATION (increment 1): a side channel that returns but is
+                              // TRUNCATED is not reflected here, and therefore does not make
+                              // `complete` false. history and docs report completeness only as
+                              // prose ("Coverage: complete"), which nothing reads in JS. Only
+                              // the scout channel has a machine-checked stop_reason. Giving the
+                              // side channels the same treatment is increment-2 work.
   unreached:       [String],  // human-readable surface nobody covered
   resumable:       { runId: String|null, remaining: [String] },
 }

@@ -77,8 +77,13 @@ after it, and never as a footnote:
 
 - `dropped` — topics that produced no result at all
 - `incomplete` — searched and resumed, still not exhausted
-- `failed_channels` — history, docs, or synthesis failed; any claim resting on them is unsupported
+- `failed_channels` — a channel failed; any claim resting on it is unsupported. `history`,
+  `docs`, `survey` or `synthesis`
 - `unreached` — surface nobody covered
+
+In task mode, also read `result.tasks.gaps` and state it. That is where the synthesis records
+what the evidence could not settle, and what it refused to invent a task for. A task list can be
+well-formed and still rest on a hole; `gaps` is the only place that hole is named.
 
 Then the one-line finding that shapes the answer, and in task mode the task count and what the
 first one is.
