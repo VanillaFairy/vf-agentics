@@ -65,6 +65,52 @@ test('flags two banned keys in one file as two findings', () => {
   assert.match(found[1].message, /lgtm/)
 })
 
+test('flags every key in the banned list', () => {
+  // Mirrors test/no-schema-bounds.test.mjs's "flags all four banned keys": a literal copy
+  // of the rule's BANNED_KEYS, kept here rather than exported, since the rule module's
+  // contract is exactly `id`, `applies`, `check` and this is not reason enough to widen it.
+  // If a key is ever typo'd or dropped from the rule, this loop is what catches it — the
+  // four keys covered by name above are not the whole list.
+  const bannedKeys = [
+    'approved', 'approve', 'passed', 'ok', 'accepted', 'lgtm', 'complete', 'success', 'valid',
+  ]
+
+  for (const key of bannedKeys) {
+    const found = check(`${key}: { type: 'boolean' }`, FILE)
+    assert.equal(found.length, 1, `${key} should be flagged`)
+    assert.match(found[0].message, new RegExp(key))
+  }
+})
+
+test('flags two banned keys declared on the same line', () => {
+  const src = "{ ok: { type: 'boolean' }, valid: { type: 'boolean' } }"
+
+  const found = check(src, FILE)
+  assert.equal(found.length, 2)
+  assert.deepEqual(found.map((v) => v.line), [1, 1])
+  assert.match(found[0].message, /ok/)
+  assert.match(found[1].message, /valid/)
+})
+
+test('flags a key and its type on separate lines, on the key line', () => {
+  // Pins the claim in the rule's header comment: [^}]* deliberately spans newlines so a
+  // schema written one property per line — how every real schema in this codebase is
+  // written — still matches. Asserting the line is the KEY's line, not the type's line,
+  // is what would catch a future "tightening" of [^}]* to [^}\n]*: that change only ever
+  // produces fewer findings, so only a positive case here can catch it.
+  const src = [
+    'properties: {',
+    '  accepted: {',
+    "    type: 'boolean',",
+    '  },',
+    '}',
+  ].join('\n')
+
+  const found = check(src, FILE)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].line, 2)
+})
+
 test('does not flag fact-named booleans build_ok or suite_pass', () => {
   const src = [
     "build_ok: { type: 'boolean' },",
@@ -74,8 +120,13 @@ test('does not flag fact-named booleans build_ok or suite_pass', () => {
   assert.deepEqual(check(src, FILE), [])
 })
 
-test('does not flag a key that is not an exact match, or a non-boolean type', () => {
-  const src = "passed_tests: { type: 'array', items: { type: 'string' } }"
+test('does not flag a key that merely contains a banned key as a substring', () => {
+  const src = "passed_tests: { type: 'boolean' }"
+  assert.deepEqual(check(src, FILE), [])
+})
+
+test('does not flag an exact-match key whose type is not boolean', () => {
+  const src = "passed: { type: 'array', items: { type: 'string' } }"
   assert.deepEqual(check(src, FILE), [])
 })
 
