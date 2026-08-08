@@ -57,7 +57,12 @@ description: Use when the user asks to implement a change, feature, or fix throu
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working
    tree is dirty, tell the user what is uncommitted and get an explicit go/no-go before
    any workflow runs.
-2. Invoke the `vfa-develop` workflow with `{change, roots, notes, intelligence}`.
+2. Invoke the `vfa-develop` workflow with
+   `{change, roots, notes, intelligence, plugin_root}`. `plugin_root` is this plugin's
+   absolute root (`${CLAUDE_PLUGIN_ROOT}`); the workflow interpolates it into the planner
+   and verifier prompts so they can reach `lib/` while their own cwd is the target repo.
+   Passing it is not optional — without it those agents halt rather than measure the
+   wrong tree.
 3. On return, walk the result IN THIS ORDER — escalations first, never last:
    a. **Escalations**: present each (id, reason, unresolved criticals, trail tail) to the
       human. These are decisions, not information.
@@ -71,7 +76,8 @@ description: Use when the user asks to implement a change, feature, or fix throu
       `vf-agentics:verifier` in merge mode. A reported conflict STOPS the merge run —
       surface it as a planner-defect finding; never resolve it silently.
    d. **Deferred frontier**: if `deferred` is non-empty, re-run
-      `node lib/independence.mjs` over the deferred orders against the merged tree,
+      `node "${CLAUDE_PLUGIN_ROOT}/lib/independence.mjs"` over the deferred orders against
+      the merged tree (your cwd is the user's repo, not the plugin),
       then re-invoke `vfa-develop` with `preplanned` carrying them. Repeat from step 3.
       The frontier shrinks every iteration or escalates — it never spins.
    e. **Integration review**: dispatch one fresh `vf-agentics:reviewer` over the full

@@ -29,9 +29,14 @@ findings-only closes it.
   authoritative text, two locations, zero drift.
 
 ## Negative Constraints (DO NOT)
-- Do NOT give it Edit/Write/Bash. `Read, Grep, Glob` only — it reads worktrees and diffs
-  via Read/Grep on the paths it is handed. (Design lists "git diff" as its input, which
-  arrives as files/paths from the caller, not as a Bash capability.)
+- Do NOT give it Edit or Write. It never changes a byte, and that is the fence that matters.
+- **Bash is granted for read-only git only** (`git log`, `git show`, `git diff`). Its method
+  requires walking a commit series commit by commit, and detecting a behavior change
+  presented as a refactor is only possible from a per-commit diff — reading files at HEAD
+  shows the final state, which is a different and much weaker review. The design's §3 row
+  has always listed this agent's surface as "Read Grep Glob, git diff"; granting Bash aligns
+  the agent file with the design rather than widening it. The prompt must say read-only git
+  and nothing else.
 - Do NOT include any softening about "being constructive" — the charter is refutation.
 
 ## Implementation Steps
@@ -43,8 +48,8 @@ Create `agents/reviewer.md` with exactly this content:
 ```markdown
 ---
 name: reviewer
-description: Adversarially reviews one work order's commit series against its acceptance criteria and returns typed findings on a fixed severity ladder. Never approves, never edits, never runs commands. Fresh instance per review round.
-tools: Read, Grep, Glob
+description: Adversarially reviews one work order's commit series against its acceptance criteria and returns typed findings on a fixed severity ladder. Never approves and never edits; runs read-only git to read the series. Fresh instance per review round.
+tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
@@ -64,9 +69,14 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
    commits and rule `fixed`, `not_fixed`, or `regressed` — with evidence. A fix that
    silences the symptom while keeping the defect is `not_fixed`. Then re-attack fixed
    areas: fixes are fresh code written under pressure, the most defect-dense diff there is.
-2. **Walk the series commit by commit**, oldest first. Per commit: does it do what its
-   subject says, and nothing else? A commit labeled refactor that changes behavior is a
-   critical finding (dishonest series). A commit mixing concerns hides defects — flag it.
+2. **Walk the series commit by commit**, oldest first — `git log --reverse -p <base>..<head>`,
+   or `git show <sha>` per commit, from the worktree you were given. Your Bash is for
+   **read-only git only**: `log`, `show`, `diff`. Never run anything that writes, checks out,
+   stages, or otherwise touches the tree — you are reading evidence, not handling it. Per
+   commit: does it do what its subject says, and nothing else? A commit labeled refactor that
+   changes behavior is a critical finding (dishonest series) — and you can only see that in
+   the per-commit diff, which is why you have git at all. A commit mixing concerns hides
+   defects — flag it.
 3. **Then the whole diff against the acceptance criteria**, one criterion at a time:
    construct the concrete input or state under which the implementation violates it. A
    criterion you cannot connect to evidence in the diff is unmet — a finding, not a doubt.
@@ -104,8 +114,9 @@ after honest attack IS your report.
 
 - [ ] **Step 2: Lint** — `node tools/lint.mjs` → `OK: no findings`.
 - [ ] **Step 3: Verify** — `grep -n "^tools:" agents/reviewer.md` → exactly
-  `tools: Read, Grep, Glob`; the ladder text diffs clean against `shared/interfaces.md` §6
-  (same three bullets, same wording).
+  `tools: Read, Grep, Glob, Bash` (no Edit, no Write); the ladder text diffs clean against
+  `shared/interfaces.md` §6 (same three bullets, same wording); the read-only-git restriction
+  is present and unsoftened.
 - [ ] **Step 4: Commit**
 
 ```bash
