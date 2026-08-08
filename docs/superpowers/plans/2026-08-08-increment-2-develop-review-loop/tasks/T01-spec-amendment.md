@@ -456,7 +456,7 @@ EOF
       clauses 1–7, §5d, and §5e — with the serial-law sentence reworded to the
       write-scoped editor form (one writer in flight across all servers; reads harmless;
       sequential multi-server use by one agent is normal flow)
-- [ ] §7 carries all five new rows; §8 carries all twelve new checks; §9 records both
+- [ ] §7 carries all five new rows; §8 carries all thirteen new checks; §9 records both
       decisions; §11 carries items 5–7
 - [ ] `holds is always script-computed`, the `__editor__` sentinel, the commit-ownership
       clause, the tree-ownership reconciliation, the closed capability vocabulary, the

@@ -43,8 +43,14 @@ Deliberately *not* solved by deleting `\b` outright: that would flag `template r
 
 ## `lib/independence.mjs` (T03a's questions)
 
-1. **Within-wave id order** — not pinned. First-fit packing in input order already yields input
-   order naturally; no consumer depends on it. Left free.
+1. **Within-wave id order** — **input order, and it is contract.** Revised after review: the
+   first ruling left this free, which was wrong. T03b's own acceptance criteria require the CLI
+   smoke test to print exactly `{"waves":[["W1","W2"]],"coupled":[]}` — a byte-exact stdout
+   assertion that pins within-wave order regardless of what this document says. And §1 has the
+   planner paste `partition_raw` as verbatim CLI stdout for the workflow to `JSON.parse`, so a
+   stable, deterministic ordering is load-bearing rather than incidental. `interfaces.md` §2 now
+   states it explicitly. T03a's tests assert it, which makes them correct rather than
+   over-pinned.
 2. **Case sensitivity** — comparison stays **case-sensitive**, exactly as §2 says ("exact string
    equality after normalizing `\` to `/`"). See the hazard note below.
 3. **A designated shared file appearing in no locus** — silent no-op. The `@throws` list is

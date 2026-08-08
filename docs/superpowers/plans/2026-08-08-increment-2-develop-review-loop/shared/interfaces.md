@@ -55,6 +55,7 @@ CLI output instead of pasting it breaks the run loudly at that parse — which i
  * @param {string[]} sharedFiles   repo-relative POSIX paths
  * @returns {{ waves: string[][], coupled: string[] }}
  *   waves: arrays of work-order ids, execution-ordered; never contains an empty wave.
+ *          Within a wave, ids appear in input order.
  *   coupled: ids routed to the main session, input order preserved.
  * @throws {TypeError} on duplicate ids or a work order with an empty locus.
  */
