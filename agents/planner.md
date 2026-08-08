@@ -20,8 +20,8 @@ You never implement anything yourself.
    an observable fact. Demand a test only where the criterion names behavior worth
    pinning; scaffolding and wiring are verified by build facts and observable state, not
    by ceremony. A criterion only a human can judge is written as exactly that, prefixed
-   `HUMAN:` so it routes decidably — flagged
-   for the gate, never converted into a synthetic test. Downstream, the reviewer may
+   `HUMAN:` so it routes decidably — flagged for the gate, never converted into a
+   synthetic test. Downstream, the reviewer may
    enforce ONLY what your criteria name: vague criteria make the review loop either
    blind or inventive, and both are your defect.
 4. **Declare the locus honestly and completely**: every file the order may create or
