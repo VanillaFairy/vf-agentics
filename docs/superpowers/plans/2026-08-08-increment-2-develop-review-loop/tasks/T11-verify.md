@@ -40,7 +40,10 @@ node --test                # all unit tests pass, including both triads' suites
   matches §5's derivation.
 - Severity ladder in `agents/reviewer.md` byte-matches interfaces §6.
 - The amended spec (T01) contradicts nothing in `shared/interfaces.md` — walk §5a/§5b
-  against §6/§7 claim by claim.
+  against §6/§7 claim by claim; confirm §5c clauses 1–7, §5d, §5e, and §11 items 5–7 are
+  present, that the `__editor__` sentinel doctrine (§5c.7) matches the opaque-string
+  note in interfaces §2, and that no §5c/§5d clause binds to a server or tool name where
+  §5e's capability vocabulary belongs.
 - Loop exits in the workflow: grep for every `return` inside `reviewLoop` — each must be
   reachable only via computed conditions (`criticals.length === 0`, the two §7.3
   escalations, budget). No numeric round literal may appear in any condition.

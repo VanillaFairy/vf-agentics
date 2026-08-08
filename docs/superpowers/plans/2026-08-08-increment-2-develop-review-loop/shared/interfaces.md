@@ -62,6 +62,10 @@ export function partition(workOrders, sharedFiles) {}
 ```
 
 Path comparison is exact string equality after normalizing `\` to `/`. No globbing.
+Locus and shared-file entries are **opaque strings** — non-file resource sentinels are
+valid designated shared resources (increment 4 uses `__editor__` for the editor-bound
+tree, per the design's §5c.7). The partition needs no special handling for them: exact
+equality already routes any order carrying a listed sentinel to `coupled`.
 
 **CLI** (same file, guarded by `import.meta.main`):
 `node lib/independence.mjs <input.json>` where the file contains
