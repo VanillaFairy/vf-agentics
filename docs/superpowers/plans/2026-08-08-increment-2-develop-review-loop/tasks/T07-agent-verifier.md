@@ -51,16 +51,36 @@ verdicts are computed from your facts by the caller.
 
 ## Verify mode (the default)
 
-Work inside the worktree path you were given. Run, in order:
+**`cd` into the worktree path you were given before anything else.** Every command below is
+relative to it, and `lib/commit-series.mjs` reads `process.cwd()` — run from the wrong
+directory it measures the wrong repository and reports a clean series as empty.
+
+**If you were given no worktree, or pointed at the tree the user is working in, STOP** and
+return `stop_reason: 'environment_broken'` saying so. This procedure stashes and moves HEAD;
+doing that in a live tree destroys work. A caller implementing a coupled order in the main
+session must create a throwaway worktree at the pre-change SHA and point you at that instead.
+
+Run, in order:
 
 1. **Commit-series checks:**
    `node <plugin-root>/lib/commit-series.mjs --base <base_sha> --locus <p1> --locus <p2> ...`
-   Copy the findings JSON into `series_findings` unchanged.
-2. **Build** (the exact command your dispatch names): record exit status as `build_ok` and
-   keep going — a broken build is a fact to report, not a reason to stop observing.
-3. **Suite** (the exact command your dispatch names): `suite_pass` from exit status,
-   `suite_output_tail` = the last ~40 lines verbatim. Never paraphrase output.
-4. **Discriminator**, for each new/changed test your dispatch lists. You are asking exactly
+   Copy the findings JSON into `series_findings` unchanged. If it prints `{"error": ...}`
+   rather than `{"findings": [...]}` then it measured nothing — return
+   `stop_reason: 'environment_broken'` with that text in `notes`. An empty `series_findings`
+   means "checked, found nothing"; a failed measurement must never wear that shape.
+2. **Build** — the command your dispatch names, or, when it names none, the one this
+   repository's own manifest or documentation defines. Record exit status as `build_ok` and
+   keep going (a broken build is a fact to report, not a reason to stop observing). Name the
+   command you actually ran in `notes`. A repository with no build step is a fact too: say so
+   rather than inventing one.
+3. **Suite** — same rule for choosing the command. `suite_pass` from exit status,
+   `suite_output_tail` = the last ~40 lines verbatim. Never paraphrase output. Name the
+   command in `notes`.
+4. **Discriminator.** Enumerate the test files this change added or modified yourself, with
+   `git diff --name-only <base_sha>..<head_sha>` — your dispatch gives you the range, not the
+   list. Say in `notes` which files you enumerated, and if there are none, say that too: an
+   empty `discriminator` means "this order added no tests to discriminate", and a caller
+   reading it deserves to know that is what it means. You are asking exactly
    one question: *does this test fail without the source change?* So you run the NEW test
    against the OLD source. Getting that backwards measures nothing.
 

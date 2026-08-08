@@ -67,18 +67,32 @@ description: Use when the user asks to implement a change, feature, or fix throu
    a. **Escalations**: present each (id, reason, unresolved criticals, trail tail) to the
       human. These are decisions, not information.
    b. **Coupled orders**: implement each in this session, yourself, under the coder's
-      commit discipline (focused single-concern commits, locus honored). Then drive the
+      commit discipline (focused single-concern commits, locus honored). **Before dispatching
+      the verifier, create a throwaway worktree at the pre-change SHA and point it there** —
+      its discriminator stashes and moves HEAD, so aiming it at the tree the user is sitting
+      in destroys their work, and the design forbids it in as many words. Then drive the
       SAME review contract via the Agent tool: `vf-agentics:verifier` (facts), then fresh
       `vf-agentics:reviewer` rounds until the criticals you count are zero — the
       interfaces §7 exit and escalation conditions apply to you verbatim. You count
       findings; you never ask the reviewer whether it approves.
-   c. **Merges**: for each approved branch in `implemented` order, dispatch
-      `vf-agentics:verifier` in merge mode. A reported conflict STOPS the merge run —
-      surface it as a planner-defect finding; never resolve it silently.
+   c. **Merges**: **do not start merging while any escalation is open** — get an explicit
+      go/no-go from the human first, exactly as you did for a dirty tree. Then, for each
+      approved branch in `implemented` order, dispatch `vf-agentics:verifier` in merge mode.
+      It returns `MERGE_RESULT` (interfaces §5); derive the outcome yourself —
+      `mergeOk = stop_reason === 'completed' && merged_sha !== '' && conflicts.length === 0` —
+      and never read "no conflicts" alone as success, since an `environment_broken` merge has
+      none either. Anything that is not `mergeOk` STOPS the merge run. Surface a conflict as a
+      planner-defect finding; never resolve it silently. Report which branches merged and
+      which did not — a half-merged run that reads as whole is the §4 failure.
    d. **Deferred frontier**: if `deferred` is non-empty, re-run
       `node "${CLAUDE_PLUGIN_ROOT}/lib/independence.mjs"` over the deferred orders against
-      the merged tree (your cwd is the user's repo, not the plugin),
-      then re-invoke `vfa-develop` with `preplanned` carrying them. Repeat from step 3.
+      the merged tree (your cwd is the user's repo, not the plugin), then re-invoke
+      `vfa-develop` with **the full argument set** — `change`, `roots`, `notes`,
+      `intelligence`, `plugin_root`, plus `preplanned` carrying them. Omitting `change` makes
+      the workflow return empty immediately and the deferred ids vanish from the report.
+      **Accumulate across iterations:** each round's escalations, coupled, and still-deferred
+      ids join the running totals, so the final report covers every order from every
+      iteration, not only the last. Repeat from step 3.
       The frontier shrinks every iteration or escalates — it never spins.
    e. **Integration review**: dispatch one fresh `vf-agentics:reviewer` over the full
       merged diff (merge-base..HEAD). Criticals here go to the human with the trail —
@@ -93,6 +107,12 @@ description: Use when the user asks to implement a change, feature, or fix throu
   derivation). You never soften, recompute, or paraphrase them.
 - Show the review evidence compactly: per order — commits, rounds, open majors. Majors
   are the human's decision queue, not noise to trim.
+- **Surface every `HUMAN:` acceptance criterion, per order, as its own section.** The planner
+  writes these for criteria only a person can judge, and the reviewer is required to pass them
+  through untouched rather than rule on them. You are the terminal consumer: if you do not put
+  them in front of the human, nothing does, and a criterion the plan deliberately routed to the
+  gate is silently dropped instead. List them verbatim, prefix included, next to the order they
+  belong to.
 
 ## Afterwards
 
