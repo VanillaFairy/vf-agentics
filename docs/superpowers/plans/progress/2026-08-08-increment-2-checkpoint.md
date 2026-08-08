@@ -4,110 +4,133 @@ Executor: superpowers:subagent-driven-development, single session.
 Integration branch: `increment-2`, branched from `a400551` (the increment-1 merge). `master` untouched.
 Worktrees: `c:/work/claude/vanillafairy/.wt-inc2/<TASK>`, one per task, branch `task/<TASK>`.
 
-## Status
+## Status — all 15 planned tasks done, plus 6 inserted from findings
 
 | Wave | Tasks | State |
 |---|---|---|
-| 1 | T01, T02, T03a, T04a, T05, T06, T07, T08 | **merged** at `4798c94` |
-| 2 | T03b, T04b | running |
-| 3 | T03c, T04c, T09 | pending |
-| 4 | T10 | pending |
-| 5 | T11 | pending |
+| 1 | T01, T02, T03a, T04a, T05, T06, T07, T08 | merged |
+| 2 | T03b, T04b | merged, both separation gates passed |
+| 3 | T03c, T04c (audits), T09 | merged |
+| 4 | T10 | merged |
+| 5 | T11 (verify) | run — layers 1–2 pass, layer 3 blocked (see below) |
+| — | inserted: T03d, T04d, T04e, T12, T14, planfix, reviewerfix | merged |
 
-Wave 1 merged with `--no-ff`, one merge per task, **zero conflicts** — the loci really were disjoint.
+Gates at time of writing: `node tools/lint.mjs` → `OK: no findings`; `node --test` → **231/231**.
 
-After the merge: `node tools/lint.mjs` → `OK: no findings`. `node --test` fails on exactly two files,
-`test/independence.test.mjs` and `test/commit-series.test.mjs`, because their implementations do not
-exist yet. That is the adversarial-TDD flow working: RED merges before GREEN so the implementer's
-worktree physically contains the locked tests and the separation gate has something to diff.
+Every merge was `--no-ff`, one per task, **zero conflicts across all of them** — the declared
+loci really were disjoint.
 
-## Per-task record
+## Tasks inserted during execution, and why
 
-| Task | Commits | Spec review | Quality review |
-|---|---|---|---|
-| T01 spec amendment | `70a2ff8` | ✅ every step verified byte-level | n/a (docs) |
-| T02 no-self-verdict | `84b2a54`, `7082014`, `e7f49eb` | ✅ | ✅ approve, 2 follow-ups applied |
-| T03a independence tests (red) | `0be08ff` | ✅ | ✅ |
-| T04a commit-series tests (red) | `8a982db`, `9656a1e` | ✅ | ✅ + gap tests added |
-| T05 planner | `e56bab3` | ✅ byte-identical | ✅ |
-| T06 coder | `b9f10b0` | ✅ byte-identical | ✅ |
-| T07 verifier | `4f77743` | ✅ byte-identical | ✅ |
-| T08 reviewer | `8bbeade` | ✅ + one ratified correction | ✅ |
+The plan had 15 tasks. Six more were created from findings, each dispatched to a fresh agent:
 
-### Separation-gate inputs for wave 2
+| Task | Origin | What it did |
+|---|---|---|
+| `planfix` | wave-1 quality review | Applied 3 owner-ratified cross-agent corrections |
+| `T03d` | T03c audit | Locked 6 partition rulings no test enforced |
+| `T04d` | T04c audit | Locked 9 commit-series rulings + a CRLF red test |
+| `T04e` | T04d's red test | The CRLF fix (separation-gated) |
+| `reviewerfix` | T09's concern | Gave the reviewer read-only git |
+| `T12` | T11 | Fixed the discriminator (blocking) |
+| `T14` | T11 | Byte-level resync of planner and reviewer |
 
-```
-T03a RED = 0be08ff1f454995d71ba3498c1c4382165cfc549   tests: test/independence.test.mjs
-T04a RED = 9656a1e2c91f88fec0418f79a5c0414ccce6d108   tests: test/commit-series.test.mjs
-```
+## Defects found and fixed
 
-Both verified as ancestors of `increment-2` HEAD, with the locked test files present at each RED
-commit. Expect the gate's check #4 (distinct authorship) to WARN rather than pass: every commit
-carries the same git author and a `Co-Authored-By` trailer rather than an `Agent:` trailer. Role
-separation here is guaranteed structurally — each role went to a different fresh subagent, and the
-implementers received artifacts only (spec + committed tests), never the test authors' reasoning.
+Ordered by how badly each would have bitten.
 
-## Defects found and fixed during wave 1
+1. **The discriminator could not work** (T11, blocking). `agents/verifier.md` checked out
+   `base_sha` as a whole tree, which reverts the *test* along with the source. An added test
+   file does not exist at base, so `failed_on_base` could only be fabricated; a test added to
+   an existing file reverts to its old content, passes, and yields `failed_on_base: false` →
+   `verifyOk` false → a fix round the coder cannot satisfy → `verify_failed_repeatedly`.
+   Correct work rejected on essentially every run. Reproduced on a real repo, fixed to restore
+   the tests under measurement from HEAD (new test, old source), and the fix verified the same
+   way. This is the increment's headline property; it was broken as specified.
+2. **`wip-subject`'s regex was wrong** (T04a RED). `/^(wip|fixup!|squash!|temp|tmp)\b/i`
+   cannot match `fixup! x` — `\b` needs a word character on one side and after `!` comes a
+   space. Corrected to `/^(wip\b|fixup!|squash!|temp\b|tmp\b)/i`.
+3. **CRLF made `parseLog` fabricate blocking findings** (T04c audit). A clean, fully in-locus
+   series reported four `locus-breach` findings because git's blank separator became a file
+   named `"\r"`. Fixed by stripping one trailing `\r` — deliberately *not* `trim()`, which
+   would have broken the ruling that whitespace-only lines are significant.
+4. **A human-judgment criterion could never converge** (wave-1 quality review). The planner may
+   write criteria only a person can judge; the reviewer treated any criterion without diff
+   evidence as an unmet — therefore critical — finding. Resolved with a literal `HUMAN:`
+   marker the reviewer passes through to the gate.
+5. **The reviewer could not see the commits it reviews** (T09). Its method walks a series
+   commit by commit, but its grant was `Read, Grep, Glob`. Now has Bash for read-only git;
+   still no Edit, no Write. The design's §3 row had always said "Read Grep Glob, git diff".
+6. **`<plugin-root>` was undefined** and used inconsistently; both agents run with cwd in the
+   target repo, so bare relative paths resolved wrong. Defined in interfaces, interpolated by
+   the workflow, passed by the skill.
+7. **The discriminator stashed without restoring**, losing tree state and accumulating stashes.
+8. **Severity-ladder drift** between T08's embedded copy and interfaces §6, twice — once in
+   wording, once in line-wrapping.
+9. Smaller: T01's acceptance-criteria count slip; `plugin_root` and merge mode missing from the
+   contracts; two stale mechanism sentences in the design spec.
 
-1. **The `wip-subject` regex in `interfaces.md` §3 was wrong.** `/^(wip|fixup!|squash!|temp|tmp)\b/i`
-   cannot match `fixup! x`: `\b` needs a word character on one side, and after `!` comes a space.
-   T04a's required cases demand it flag. Corrected to `/^(wip\b|fixup!|squash!|temp\b|tmp\b)/i`,
-   which still leaves `wipe` and `template` clean. This is the defect the red/green split exists to
-   catch — one agent writing both sides would have relaxed the test to match the buggy regex.
-2. **Severity-ladder drift.** T08's task file embedded a stale copy missing "in the result". The
-   implementer diffed programmatically, deviated correctly toward `interfaces.md` §6 (its declared
-   authoritative source), and reported it. Task file realigned.
-3. **Within-wave id order was under-specified**, and the first ruling ("free") was wrong: T03b's
-   acceptance criteria already require byte-exact CLI stdout, and `partition_raw` is consumed
-   verbatim downstream. `interfaces.md` §2 now states input order explicitly.
-4. **Two ratified behaviours had no test.** A multi-file locus breach, and an empty commit that also
-   carries a WIP subject. A fresh RED author added three tests and demonstrated four plausible wrong
-   implementations that score 35/35 on the old suite and fail the new one.
-5. **T01 acceptance-criteria count slip** (twelve → thirteen), matching its own Step 7 block.
-6. **Worktree test-environment gap** — see `knowledge/worktree-marketplace-fixture.md`.
+## 15 ratified rulings had no test enforcing them
 
-19 ambiguities escalated by the RED authors are ratified in `SPEC-DECISIONS.md`.
+The two audits ran mutation experiments against the real suites: **5 of 22 mutants survived**
+for `independence`, **10 of 28** for `commit-series`. Every survivor contradicted a ratified
+decision while keeping the suite green. Both implementations were *correct* — `commit-series`
+implemented nine behaviours no test required, because its author read the decisions rather than
+reverse-engineering the assertions. So these were missing fences, not bugs.
 
-## Open plan-level defects — need the plan owner's decision
+T03d and T04d closed them, and every lock was mutation-verified: each mutant was first confirmed
+to pass the old suite, then confirmed killed by the new one. A ruling no test enforces is a
+preference, not a decision.
 
-These are defects in the **plan's specified content**, not in any implementation. The four agent
-files reproduce their fenced blocks faithfully, so these must be fixed at the source (task files /
-`interfaces.md`) and the affected agent files regenerated. All three were raised by the wave-1
-quality review, which recommends resolving them **before T09** builds the workflow on top.
+## A correction worth keeping
 
-1. **A human-judgment acceptance criterion becomes an unfixable critical.** `planner.md` is told to
-   write criteria only a human can judge "as exactly that — flagged for the gate, never converted
-   into a synthetic test". But `reviewer.md` says "A criterion you cannot connect to evidence in the
-   diff is unmet — a finding, not a doubt", and the ladder makes failing an acceptance criterion
-   *critical*. A human-only criterion has no diff evidence by definition, so it is automatically
-   critical, no fix round can clear it, and §7's non-convergence rule escalates every such work
-   order. Increment 4's UE doctrine already solved this (`unverifiable: [criterion]`, "Aesthetics are
-   never findings"); the carve-out was never ported back to increment 2's general case.
-2. **`<plugin-root>` is undefined and used inconsistently.** `verifier.md` runs
-   `node <plugin-root>/lib/commit-series.mjs`; `planner.md` runs bare `node lib/independence.mjs`.
-   The placeholder appears exactly once in the whole plan tree and is defined nowhere; `interfaces.md`
-   §2/§3 show the bare form for both. Both agents run against a target repo (`roots`, default `.`),
-   so the bare form likely fails to resolve in any real invocation.
-3. **The discriminator stashes but never restores.** `verifier.md`'s procedure runs
-   `git stash --include-untracked` when the tree is dirty, checks out `base_sha`, runs the test, and
-   returns via `git checkout -` — with no `git stash pop`. The build and suite ran immediately
-   before and may have left artifacts. The loop can also re-dispatch the verifier into the same
-   worktree across fix rounds, so entries could accumulate.
+`SPEC-DECISIONS.md` ruling 1 was first justified with two false claims — that T03a's tests
+pinned within-wave ordering, and that T03b's CLI smoke test discriminated it. Neither is true:
+a `partition` that sorts each wave passes all 27 original tests, and the smoke fixture has W1
+before W2 where both readings agree. A wave-1 review asserted it, the ratification adopted the
+assertion as evidence, and the commit message repeated it as settled — three layers, no
+execution. The T03c audit disproved it with one mutant.
 
-Also open, from T01's review: the `ue-develop` ASCII diagram still hardcodes
-`preflight: does list_toolsets resolve?`, an Epic-specific call that now contradicts §5e's
-capability-based preflight. No task in this plan owns that line; T11's consistency sweep should
-surface it independently.
+The conclusion survived on its merits; the evidence did not. The ruling now records this, and
+the property is enforced by GAP-1's test rather than by assertion.
+
+## T11 verification — honest state
+
+- **Layer 1, gates:** pass. Lint clean, 231/231.
+- **Layer 2, consistency:** pass. All four schemas and `verifyOk` byte-identical to interfaces;
+  §5a/§5b claims checked against §3/§6/§7 one by one; §5c–§5e and §11.5–7 present; zero server
+  or tool names in §5c/§5d where §5e's capability vocabulary belongs; all six `reviewLoop`
+  returns reachable only through computed conditions, with `round` appearing in no condition.
+- **Negative lint drill:** pass. `approved: { type: 'boolean' }` injected into a scratch copy of
+  the real workflow produces a `no-self-verdict` finding, exit 1. The rule bites.
+- **Both `lib/` CLIs:** exercised against a real git repo — exit codes, JSON shape, blocking
+  semantics, wave packing, coupling, and the error contract all as specified.
+- **Layer 3, the two live drills: NOT RUN.** `vf-agentics` is published in the marketplace but
+  absent from `enabledPlugins` in `C:/Users/dragm/.claude/settings.json`, so its agent types do
+  not resolve and `vfa-develop` is not a registered workflow. Enabling a plugin needs a fresh
+  session. **No simulation was run in their place and none is claimed.** T11's report carries a
+  ready-to-follow procedure.
+
+## Remaining work
+
+1. **Run the live drills** (T11 steps 4–5) in a fresh session, after adding
+   `"vf-agentics@vanillafairy": true` to `enabledPlugins`. Run them *after* T12's discriminator
+   fix, since drill A's fourth assertion is exactly what T12 repairs. Full procedure is in
+   T11's report.
+2. The T03d/T04d/T04e/T12/T14 follow-ups were executed and committed but never written up as
+   task files under `tasks/`. Process gap, not a correctness one.
 
 ## Knowledge entries added
 
-- `knowledge/worktree-marketplace-fixture.md` — worktrees need a `marketplace.json` in their parent
-  directory or two tests fail for reasons unrelated to any change.
+- `knowledge/worktree-marketplace-fixture.md` — worktrees need `marketplace.json` in their
+  parent directory or two tests fail for reasons unrelated to any change.
+- `knowledge/benign-git-hook-error.md` — `ERROR: Failed to parse repository information` on
+  commit is a global hook reporting "not a PMI repo" using the word ERROR. Five agents stopped
+  to investigate it before it was written down.
 
-Carried from increment 1 and still accurate: `knowledge/iron-law.md`, `run-lint.md`, `run-tests.md`.
+Carried from increment 1: `knowledge/iron-law.md`, `run-lint.md`, `run-tests.md`.
 
 ## Resuming
 
-If this session dies: `increment-2` holds all merged work; `task/*` branches hold per-task history;
-worktrees under `.wt-inc2/` can be recreated with `git worktree add`. Re-read this file plus
-`SPEC-DECISIONS.md` before continuing, and run the separation gate before merging any GREEN task.
+`increment-2` holds all merged work; `task/*` branches hold per-task history; worktrees under
+`.wt-inc2/` are recreatable with `git worktree add`. Read this file and `SPEC-DECISIONS.md`
+before continuing, and run `check-separation.sh` before merging any GREEN task.
