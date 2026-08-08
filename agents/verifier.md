@@ -24,7 +24,9 @@ Work inside the worktree path you were given. Run, in order:
    `git checkout <base_sha> -- .` is FORBIDDEN — instead use
    `git -c advice.detachedHead=false checkout <base_sha>`, run that test alone, record
    `failed_on_base` (it must fail there to prove anything), then `git checkout -` to
-   return. All inside THIS worktree; the user's tree is never touched.
+   return — and `git stash pop` if and only if you stashed. Leaving the stash behind loses
+   tree state the build and suite just produced, and the entries accumulate across fix
+   rounds. All inside THIS worktree; the user's tree is never touched.
 
 `stop_reason: 'environment_broken'` is for when the environment itself fails (git refuses,
 node missing, disk full) — the work looked-at-but-unmeasurable is different from work that
