@@ -7,6 +7,19 @@ not invent variants. Increment 1's `shared/interfaces.md` remains authoritative 
 module contract, `tools/lint.mjs` exports, agent frontmatter, the coverage block, and the
 `vfa-survey` contract; nothing here changes those.
 
+## `<plugin-root>` — how agents reach this plugin's own `lib/`
+
+Agents in this pipeline run with their working directory in the **target repository** being
+changed (`args.roots`, default `.`), not in the plugin's install directory. A bare
+`node lib/independence.mjs` would therefore resolve against the target repo and fail.
+
+Every CLI invocation below is written `node <plugin-root>/lib/<module>.mjs`. `<plugin-root>`
+is the absolute path of the directory containing this plugin's `agents/`, `lib/`, and
+`tools/`. **The workflow substitutes the real absolute path when it builds each agent's
+prompt** — no agent discovers it, and no agent assumes its own cwd. An agent that receives a
+prompt still containing the literal `<plugin-root>` should treat that as a dispatch bug and
+escalate rather than guess.
+
 ---
 
 ## 1. Work orders (planner output)
@@ -37,6 +50,25 @@ const WORK_ORDERS = {
 
 The script parses `partition_raw` with `JSON.parse` in JS. A planner that "summarizes" the
 CLI output instead of pasting it breaks the run loudly at that parse — which is intended.
+
+### `HUMAN:` criteria — the one category the reviewer may not rule on
+
+Most acceptance criteria are mechanically checkable. Some genuinely are not: "the error
+message reads clearly", "this API shape is natural". The planner may write those, and writes
+them prefixed **`HUMAN:`** — a literal marker, so routing them is decidable rather than a
+matter of interpretation.
+
+The reviewer passes a `HUMAN:` criterion through untouched. Absence of diff evidence for one
+is never a finding, and it can never be critical. They reach the person at the gate instead,
+carried in the work order.
+
+Without this carve-out the two agents contradict each other: the planner is told to write
+such criteria, while the reviewer is told that a criterion it cannot connect to diff evidence
+is unmet — and an unmet criterion is critical. A `HUMAN:` criterion has no diff evidence by
+construction, so every work order carrying one would become a permanent critical that no fix
+round can clear, escalating as `review_not_converging` every time. This is the same rule the
+design's §5c.1–2 already ratified for UE content work ("aesthetics are never findings; taste
+belongs to the human gate"), applied to ordinary source work.
 
 ---
 
@@ -69,7 +101,7 @@ tree, per the design's §5c.7). The partition needs no special handling for them
 equality already routes any order carrying a listed sentinel to `coupled`.
 
 **CLI** (same file, guarded by `import.meta.main`):
-`node lib/independence.mjs <input.json>` where the file contains
+`node <plugin-root>/lib/independence.mjs <input.json>` where the file contains
 `{ work_orders: [{id, locus}], shared_files: [] }`. Prints `JSON.stringify(partition(...))`
 to stdout, exit 0. On invalid input: prints `{"error": "<message>"}` to stdout, exit 1.
 
@@ -108,7 +140,7 @@ export function analyzeSeries(commits, locus) {}
 ```
 
 **CLI** (same file, `import.meta.main`, uses `node:child_process`): run inside a worktree,
-`node lib/commit-series.mjs --base <sha> --locus <p1> --locus <p2> ...` — executes the git
+`node <plugin-root>/lib/commit-series.mjs --base <sha> --locus <p1> --locus <p2> ...` — executes the git
 log command above, prints `JSON.stringify({ findings })`, exit 1 iff any `blocking` finding,
 else 0. Only `parseLog` and `analyzeSeries` are unit-tested; the CLI is exercised at T11.
 

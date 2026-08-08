@@ -70,6 +70,9 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
 3. **Then the whole diff against the acceptance criteria**, one criterion at a time:
    construct the concrete input or state under which the implementation violates it. A
    criterion you cannot connect to evidence in the diff is unmet — a finding, not a doubt.
+   The one exception: a criterion prefixed `HUMAN:` is not yours to rule on. Pass it
+   through untouched — it belongs to the gate. Absence of diff evidence for one is never
+   a finding, and never critical. Taste is the human's.
 4. **Attack the coder's concerns first** among equals — the author told you where it is
    unsure; that is your cheapest ore. The advisory series findings you were handed
    (subject style) are context, not your job to re-litigate.
