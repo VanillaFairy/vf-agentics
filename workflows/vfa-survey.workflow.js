@@ -22,9 +22,9 @@ export const meta = {
 // stripped before the schema reaches the model, so a contract written only in a comment
 // binds nobody — and the coverage fields are load-bearing.
 
-// The coverage contract every evidence-gathering agent answers to. Completeness is DERIVED
-// in JS from stop_reason, and a resume is driven by not_reached, so both have to arrive
-// filled in.
+// The coverage contract every evidence-gathering agent answers to: the scouts, the historian
+// and the doc-researcher alike. Completeness is DERIVED in JS from stop_reason, and a resume
+// is driven by not_reached, so both have to arrive filled in.
 //
 // no_match and not_reached stay separate on purpose. "I looked and it is not there" is a
 // FINDING — often the one that decides the question. "I never looked" is a HOLE. Merging them

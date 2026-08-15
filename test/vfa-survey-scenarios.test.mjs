@@ -3,7 +3,9 @@
 // Lint judges form and cannot reach any of this: whether a channel nobody ran is recorded,
 // whether a verdict is matched to its topic by position or by a string the model retyped,
 // whether a half-finished channel still reports complete. Each test below pins a way a
-// PARTIAL result could come back wearing the shape of a WHOLE one (IRON LAW §4).
+// PARTIAL result could come back wearing the shape of a WHOLE one (IRON LAW §4) — three of
+// them were live defects, found by diffing against the sibling `investigate` plugin that had
+// already been through a field run.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

@@ -1,6 +1,9 @@
 # Shared Interfaces
 
-**Version:** 1.0
+**Version:** 1.1 — the evidence-coverage contract now covers the history and docs channels
+too, and `uncovered` is split into `no_match` and `not_reached`. Both changes close the
+increment-1 limitation recorded in §5, and both were proven out in the sibling `investigate`
+plugin before being brought across.
 
 Every contract crossing a task boundary. If you are implementing a task, the shapes here are
 authoritative — do not invent variants.
@@ -115,8 +118,8 @@ below are written without descriptions for readability; the implementation carri
 
 ### The coverage contract
 
-Every evidence-gathering agent answers to the same four fields, so that completeness can be
-derived in JS rather than asserted in prose:
+Every evidence-gathering agent — the scouts, the historian, the doc-researcher — answers to
+the same four fields, so that completeness can be derived in JS rather than asserted in prose:
 
 ```js
 {
