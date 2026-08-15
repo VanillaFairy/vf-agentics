@@ -156,6 +156,19 @@ const HITS = {
   },
 }
 
+// The history and docs channels. Their evidence is narrative, so `findings` is prose — but
+// their coverage is machine-readable, because a channel that stalled halfway and one that
+// finished both arrive as a confident essay.
+const HISTORY = {
+  type: 'object', additionalProperties: false,
+  required: ['findings', 'searched', 'stop_reason', 'no_match', 'not_reached'],
+  properties: {
+    findings: { type: 'string' },
+    ...coverageFields,
+  },
+}
+const DOCS = { /* identical shape to HISTORY, different field descriptions */ }
+
 const VERDICT = {
   type: 'object', additionalProperties: false,
   required: ['topic', 'conclusion', 'evidence', 'risks'],
@@ -200,7 +213,12 @@ coverage: {
   complete:        Boolean,   // DERIVED. true iff dropped, incomplete, failed_channels,
                               // and unreached are ALL empty. Never taken from an agent.
   dropped:         [String],  // topic keys that produced no result at all
-  incomplete:      [String],  // topic keys searched and resumed but never exhausted
+  incomplete:      [String],  // searched, not exhausted. Topic keys that were resumed and
+                              // still ran out, AND the names of evidence channels that
+                              // returned with stop_reason !== 'exhausted'. Both are the same
+                              // thing to a consumer: real evidence, known to be partial, and
+                              // resumable — which is why they share a field and both land in
+                              // resumable.remaining.
   failed_channels: [String],  // channels that were REQUESTED and produced no result at all.
                               // 'history' and/or 'docs' from vfa-survey; vfa-investigate also
                               // emits 'survey' and 'synthesis'. Three causes, one meaning: the
@@ -209,12 +227,11 @@ coverage: {
                               // last one used to be neither researched nor failed, so the
                               // channel silently never ran and coverage still read complete.
                               //
-                              // LIMITATION (increment 1): a side channel that returns but is
-                              // TRUNCATED is not reflected here, and therefore does not make
-                              // `complete` false. history and docs report completeness only as
-                              // prose ("Coverage: complete"), which nothing reads in JS. Only
-                              // the scout channel has a machine-checked stop_reason. Giving the
-                              // side channels the same treatment is increment-2 work.
+                              // RESOLVED in 1.1 (was an increment-1 limitation): a channel that
+                              // returns but is TRUNCATED now lands in `incomplete`, so it makes
+                              // `complete` false. Previously history and docs reported
+                              // completeness only as prose ("Coverage: complete") that nothing
+                              // read in JS, and only the scout channel had a stop_reason.
   unreached:       [String],  // human-readable surface nobody covered
   resumable:       { runId: String|null, remaining: [String] },
 }
@@ -249,11 +266,22 @@ stays distinguishable from "forgotten to fill in". `remaining` is
   question: String,
   topics:   [String],            // every planned topic key, including ones that failed
   verdicts: [VERDICT],           // one per topic that produced a result
-  history:  String|null,         // null when not requested OR when the channel failed
-  docs:     String|null,
+  history:  String|null,         // null when not requested OR when the channel produced
+                                 // nothing. Otherwise the channel's `findings` with its own
+                                 // coverage limits composed in: what it looked for and did
+                                 // not find, and — when it did not exhaust — what it never
+                                 // reached, marked as making dependent claims provisional.
+                                 // Consumers interpolate this into a synthesis prompt under
+                                 // their own heading, so it carries none of its own.
+  docs:     String|null,         // same composition
   coverage: Coverage,            // §5
 }
 ```
+
+The channels are schema'd (`HISTORY` / `DOCS` in §4) but their **return type stays a string**
+on purpose: every consumer feeds them straight into a synthesis prompt, so composing the
+coverage into the prose keeps the evidence and its limits together without changing a single
+call site. The machine-readable half is derived into `coverage` where consumers already look.
 
 **Error contract:** on a planning failure that yields zero topics, `vfa-survey` still returns
 this shape — `verdicts: []`, and `coverage.unreached` naming what was never searched. It never

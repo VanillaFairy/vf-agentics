@@ -80,7 +80,8 @@ Read `result.coverage`. **When `complete` is false, the gap leads** — before t
 after it, and never as a footnote:
 
 - `dropped` — topics that produced no result at all
-- `incomplete` — searched and resumed, still not exhausted
+- `incomplete` — searched and resumed, still not exhausted. Names topics, and also `history`
+  or `docs` when an evidence channel returned without finishing its search
 - `failed_channels` — a requested channel produced nothing at all, so any claim resting on it
   is unsupported. `history`, `docs`, `survey` or `synthesis`. It covers three causes that mean
   the same thing downstream: the agent threw, it returned nothing, or the planner marked the

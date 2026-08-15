@@ -144,15 +144,18 @@ const caveats =
   (c.dropped.length > 0
     ? `NOTE: these topics produced no result and are missing from the evidence: ` +
       `${c.dropped.join(', ')}. Name them and say what they would have answered.\n\n` : '') +
+  // `incomplete` carries topic keys and, since the evidence channels gained a stop_reason,
+  // the names of channels that returned without exhausting their search. Both mean the same
+  // thing to the reader — real evidence, known to be partial — so they share one caveat.
   (c.incomplete.length > 0
-    ? `NOTE: these topics could not be searched to exhaustion: ${c.incomplete.join(', ')}. ` +
-      `Lead with that limit. Do not present the answer as settled, and say what would have ` +
-      `to be searched to settle it.\n\n` : '') +
+    ? `NOTE: these topics and evidence channels could not be searched to exhaustion: ` +
+      `${c.incomplete.join(', ')}. Lead with that limit. Do not present the answer as ` +
+      `settled, and say what would have to be searched to settle it.\n\n` : '') +
   (c.failed_channels.includes('history')
-    ? `NOTE: the git history search failed. Any claim about when or why something changed ` +
-      `is unsupported. Say so.\n\n` : '') +
+    ? `NOTE: the git history search did not run. Any claim about when or why something ` +
+      `changed is unsupported. Say so.\n\n` : '') +
   (c.failed_channels.includes('docs')
-    ? `NOTE: documentation research failed. Any claim resting on vendor behaviour is ` +
+    ? `NOTE: documentation research did not run. Any claim resting on vendor behaviour is ` +
       `unsupported. Say so.\n\n` : '') +
   (c.unreached.length > 0
     ? `NOTE: not reached at all: ${c.unreached.join('; ')}.\n\n` : '')

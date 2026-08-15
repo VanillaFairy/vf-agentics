@@ -102,6 +102,34 @@ const HITS = {
   },
 }
 
+// History and docs return narrative evidence, so `findings` stays prose. They answer the same
+// coverage contract as the scouts anyway: without it, a channel that stalled halfway is
+// indistinguishable from one that finished, because both arrive as a confident essay. That
+// was increment 1's stated limitation — the side channels reported completeness only as prose
+// nothing read in JS, so a truncated-but-returned channel still left coverage.complete true.
+const evidenceSchema = (findingsDescription, searchedDescription) => ({
+  type: 'object',
+  additionalProperties: false,
+  required: ['findings'].concat(COVERAGE_FIELDS),
+  properties: {
+    findings: { type: 'string', description: findingsDescription },
+    ...coverageFields(searchedDescription),
+  },
+})
+
+const HISTORY = evidenceSchema(
+  'The commits that matter, in the format your agent instructions specify: sha, date, author, ' +
+  'subject, and the path:line of what changed. Include ruled-out candidates where they save ' +
+  'the reader work. Never guess a commit.',
+  'Every ref, path, and date range you actually searched, plus the git commands behind them.',
+)
+
+const DOCS = evidenceSchema(
+  'The facts you established, each with the URL that owns it on the same line. Mark a claim ' +
+  '"unconfirmed" when only a secondary source carries it.',
+  'Every search query and URL you actually read.',
+)
+
 const VERDICT = {
   type: 'object',
   additionalProperties: false,
@@ -256,7 +284,8 @@ const historyChannel = sideChannel(
   'git history search', plan.history_needed, plan.history_question,
   (ask) => agent(
     `${ask}\n\nRepositories: ${roots}\nContext: ${question}`,
-    { agentType: 'vf-agentics:historian', effort: 'low', phase: 'History', label: 'history' },
+    { agentType: 'vf-agentics:historian', effort: 'low', schema: HISTORY,
+      phase: 'History', label: 'history' },
   ),
 )
 
@@ -265,7 +294,8 @@ const docsChannel = sideChannel(
   (ask) => agent(
     `Research this against primary sources and report the facts with URLs.\n\n` +
     `${ask}\n\nContext: ${question}`,
-    { agentType: 'vf-agentics:doc-researcher', effort: 'low', phase: 'Docs', label: 'docs' },
+    { agentType: 'vf-agentics:doc-researcher', effort: 'low', schema: DOCS,
+      phase: 'Docs', label: 'docs' },
   ),
 )
 
@@ -400,6 +430,33 @@ const failedChannels = []
 if (history.requested && !history.result) failedChannels.push('history')
 if (docs.requested && !docs.result) failedChannels.push('docs')
 
+// A channel that RETURNED but did not exhaust its search is not a failure and not a success.
+// It belongs with the partially-searched topics: real evidence, known to be incomplete, and
+// resumable. Before the channels carried a stop_reason this case was invisible, and a
+// half-read history left coverage.complete true.
+const truncatedChannels = []
+if (history.result && history.result.stop_reason !== 'exhausted') truncatedChannels.push('history')
+if (docs.result && docs.result.stop_reason !== 'exhausted') truncatedChannels.push('docs')
+
+if (truncatedChannels.length > 0) {
+  log(`WARNING: evidence channel(s) returned without exhausting the search: ${truncatedChannels.join(', ')}`)
+}
+
+// Compose what the channel established WITH the limits of how it established it, so the
+// evidence and its coverage travel as one string. Consumers interpolate this into a synthesis
+// prompt under their own heading, which is why no heading appears here.
+function channelEvidence(channel) {
+  if (!channel.requested || !channel.result) return null
+  const r = channel.result
+  return r.findings +
+    (r.no_match ? `\n\nLooked for and did not find: ${r.no_match}` : '') +
+    (r.stop_reason === 'exhausted'
+      ? ''
+      : `\n\nCOVERAGE LIMIT (${r.stop_reason}) — never reached: ${r.not_reached}. Any claim ` +
+        `depending on the unreached part is provisional. Say so rather than presenting it ` +
+        `as settled.`)
+}
+
 // Overflow topics are already counted in `dropped` above — they were planned and produced
 // no result. They are deliberately NOT also listed in `unreached`: double-reporting would
 // make coverage read worse than it is and duplicate them in resumable.remaining.
@@ -409,14 +466,14 @@ const unreached = []
 // that produced nothing at all is already in `dropped`, so this filter prevents it being
 // counted twice.
 const droppedKeys = new Set(dropped)
-const incomplete = partial.filter((k) => !droppedKeys.has(k))
+const incomplete = partial.filter((k) => !droppedKeys.has(k)).concat(truncatedChannels)
 
 return surveyResult(
   // Includes overflow, so the caller sees every topic that was planned — not just the
   // ones that survived the cap.
   plan.topics.map((t) => t.key).concat(overflow),
   verdicts,
-  history.result || null,
-  docs.result || null,
+  channelEvidence(history),
+  channelEvidence(docs),
   coverageOf(dropped, incomplete, failedChannels, unreached),
 )

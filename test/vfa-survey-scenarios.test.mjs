@@ -25,6 +25,12 @@ const HITS = (over = {}) => ({
   ...over,
 })
 
+const EVIDENCE = (over = {}) => ({
+  findings: 'what the channel established',
+  searched: ['git log -S thing'], stop_reason: 'exhausted', no_match: '', not_reached: '',
+  ...over,
+})
+
 const VERDICT = (topic) => ({ topic, conclusion: 'c', evidence: ['src/x.js:1'], risks: [] })
 
 const run = (script, over = {}) => runWorkflow(WF, {
@@ -143,4 +149,40 @@ test('a scout that stops without naming what it missed is a dead end, not a resu
   assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:')).length, 1)
   assert.deepEqual(result.coverage.incomplete, ['a'])
   assert.equal(result.coverage.complete, false)
+})
+
+// ------------------------------------------------------ evidence-channel coverage
+
+test('a channel that returns without exhausting its search makes coverage incomplete', async () => {
+  const { result } = await run({
+    plan: PLAN({ history_needed: true, history_question: 'when did X change' }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+    history: EVIDENCE({ stop_reason: 'budget', not_reached: 'every ref older than 2024' }),
+  })
+
+  // Truncated is neither failed nor finished. Before the channels carried a stop_reason this
+  // was invisible in JS, and a half-read history came back complete.
+  assert.deepEqual(result.coverage.failed_channels, [])
+  assert.ok(result.coverage.incomplete.includes('history'))
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.resumable.remaining.includes('history'),
+    'a truncated channel is resumable work and must say so')
+  assert.match(result.history, /COVERAGE LIMIT \(budget\)/)
+  assert.match(result.history, /every ref older than 2024/)
+})
+
+test("a channel's evidence of absence travels with its findings", async () => {
+  const { result } = await run({
+    plan: PLAN({ history_needed: true, history_question: 'when did X change' }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+    history: EVIDENCE({ no_match: 'no commit ever touched the timer path' }),
+  })
+
+  // "Searched and genuinely not there" is a finding, and often the one that settles the
+  // question. It must reach synthesis, and it must not read as a coverage limit.
+  assert.match(result.history, /Looked for and did not find: no commit ever touched the timer path/)
+  assert.doesNotMatch(result.history, /COVERAGE LIMIT/)
+  assert.equal(result.coverage.complete, true)
 })
