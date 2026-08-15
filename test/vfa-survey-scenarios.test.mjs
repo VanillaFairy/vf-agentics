@@ -63,3 +63,34 @@ test('a channel that throws is recorded without discarding the work already paid
   assert.equal(result.docs, null)
   assert.equal(result.verdicts.length, 1, 'a failed channel must not empty the verdicts')
 })
+
+// ---------------------------------------------------------------- reconciliation
+
+test('a verdict is matched to its topic by position, not by the key the analyst echoed', async () => {
+  const { result } = await run({
+    plan: PLAN({ topics: [{ key: 'a', find: 'find a' }, { key: 'b', find: 'find b' }] }),
+    'scout:': HITS(),
+    'analyze:a': VERDICT('typo-not-a'),
+    'analyze:b': VERDICT('b'),
+  })
+
+  // Matching on the echoed string counted this verdict as evidence AND its topic as dropped,
+  // at the same time: the answer was built on both topics while reporting one as missing.
+  assert.equal(result.verdicts.length, 2)
+  assert.deepEqual(result.coverage.dropped, [])
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a topic whose analysis fails is dropped exactly once and fails coverage', async () => {
+  const { result } = await run({
+    plan: PLAN({ topics: [{ key: 'a', find: 'find a' }, { key: 'b', find: 'find b' }] }),
+    'scout:': HITS(),
+    'analyze:a': () => { throw new Error('analyst died') },
+    'analyze:b': VERDICT('b'),
+  })
+
+  assert.equal(result.verdicts.length, 1)
+  assert.deepEqual(result.coverage.dropped, ['a'])
+  assert.deepEqual(result.coverage.incomplete, [], 'a dropped topic must not also count as incomplete')
+  assert.equal(result.coverage.complete, false)
+})

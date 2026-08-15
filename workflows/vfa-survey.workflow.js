@@ -323,8 +323,8 @@ const findings = await pipeline(
     { agentType: 'vf-agentics:analyst', effort: 'high', schema: VERDICT,
       phase: 'Analyze', label: `analyze:${topic.key}`, ...judge },
   ).catch((e) => {
-    // The only unguarded agent call would be this one. `findings.filter(Boolean)` below
-    // already assumes a failed item arrives as falsy; catching here makes that true whatever
+    // The only unguarded agent call would be this one. The reconciliation below already
+    // assumes a failed item arrives as falsy; catching here makes that true whatever
     // pipeline() does with a rejection, and keeps the promise in §6 that survey never throws.
     // The topic then falls into `dropped`, so coverage.complete goes false rather than the
     // whole run dying and the caller getting nothing it can reason about.
@@ -335,9 +335,17 @@ const findings = await pipeline(
 
 // ---------------------------------------------------------- 5. account
 
-const verdicts = findings.filter(Boolean)
-const covered = new Set(verdicts.map((v) => v.topic))
-const dropped = plan.topics.map((t) => t.key).filter((k) => !covered.has(k)).concat(overflow)
+// Reconcile by pipeline index, not by the topic string the analyst echoed back. pipeline()
+// preserves order, so this is exact and needs no cooperation from the model — a verdict that
+// came back under a mistyped key used to be counted as dropped and included as evidence at
+// the same time.
+const verdicts = []
+const dropped = []
+plan.topics.forEach((topic, i) => {
+  if (findings[i]) verdicts.push(findings[i])
+  else dropped.push(topic.key)
+})
+dropped.push(...overflow)
 
 if (dropped.length > 0) log(`WARNING: no result for topic(s): ${dropped.join(', ')}`)
 if (partial.length > 0) log(`WARNING: could not search to exhaustion: ${partial.join(', ')}`)
@@ -360,7 +368,8 @@ const unreached = []
 // A topic that produced a verdict but never exhausted its search is still incomplete. One
 // that produced nothing at all is already in `dropped`, so this filter prevents it being
 // counted twice.
-const incomplete = partial.filter((k) => covered.has(k))
+const droppedKeys = new Set(dropped)
+const incomplete = partial.filter((k) => !droppedKeys.has(k))
 
 return surveyResult(
   // Includes overflow, so the caller sees every topic that was planned — not just the
