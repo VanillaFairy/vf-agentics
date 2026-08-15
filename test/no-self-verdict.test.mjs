@@ -146,12 +146,12 @@ test('the real VERIFY schema from shared/interfaces.md section 5 is clean', () =
   const src = `
 const VERIFY = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'build_ok', 'suite_pass', 'suite_output_tail',
+  required: ['stop_reason', 'build', 'suite', 'suite_output_tail',
              'discriminator', 'series_findings', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
-    build_ok: { type: 'boolean' },      // observed exit status — a fact, not a judgment
-    suite_pass: { type: 'boolean' },
+    build: { type: 'string', enum: ['passed', 'failed', 'absent'] },  // observed — a fact, not a judgment
+    suite: { type: 'string', enum: ['passed', 'failed', 'absent'] },
     suite_output_tail: { type: 'string' },  // last ~40 lines of real output, verbatim
     discriminator: { type: 'array', items: {
       type: 'object', additionalProperties: false,

@@ -29,17 +29,36 @@ You never implement anything yourself.
    a file you forgot becomes a blocking breach for an honest coder. When two orders truly
    need the same file, give the shared edit its own order or accept coupling; never
    "share" a locus.
-5. Designate `shared_files`: config roots, lockfiles, barrel/index files, shared type
+5. **Declare `deps` honestly.** File-disjoint loci are not build-independence: when an
+   order's context names types, files, commands, or modules another order creates, that
+   order's id goes in its `deps`, and the partition waves it later mechanically. An order
+   supplying the build manifest, lockfile, compiler config, or shared constants is a
+   **provider** — every consumer names it in `deps`, and it must never touch a designated
+   shared file, because the partition refuses a plan whose provider is coupled rather
+   than schedule a wave of work against a toolchain that never lands. An integration
+   order depends on every order it wires together. Mark `contract: true` on an order
+   whose output other orders build against (vocabulary notes, shared types, interfaces):
+   downstream, majors block a contract order the way criticals block any other.
+6. Designate `shared_files`: config roots, lockfiles, barrel/index files, shared type
    definitions — files where any touch couples an order to the session. Start from what
-   the repo actually has; do not copy a generic list.
-6. Run the partition yourself and paste it raw:
+   the repo actually has; do not copy a generic list. A provider order (step 5) does not
+   belong here — providers are scheduled first, not routed out of the pipeline.
+7. Compare the survey's coverage gaps against what the change itself names or leans on.
+   A gap the change explicitly depends on goes in `blocking_gaps` (the gap, then what
+   depends on it); the workflow then withholds dispatch and hands your plan back for
+   confirmation, which is intended. Gaps that touch nothing the change asked for go in
+   `notes` instead.
+8. Run the partition yourself and paste it raw:
 
        node <plugin-root>/lib/independence.mjs /tmp/partition-input.json
 
-   Write the input file (`{work_orders: [{id, locus}], shared_files}`), run the command,
-   and put the **verbatim stdout** in `partition_raw`. Never retype, summarize, or
-   "correct" it — the workflow parses it with JSON.parse, and your paraphrase would be
-   the laundering IRON LAW §2 forbids.
+   Write the input file (`{work_orders: [{id, locus, deps}], shared_files}`), run the
+   command, and put the **verbatim stdout** in `partition_raw`. Never retype, summarize,
+   or "correct" it — the workflow parses it with JSON.parse, and your paraphrase would be
+   the laundering IRON LAW §2 forbids. If it prints `{"error": ...}`, the defect is in
+   your plan (a dependency cycle, a dep naming no order, a provider routed to the
+   session): fix the decomposition and re-run it, and paste an error verbatim only when
+   you cannot resolve it.
 
 ## Output
 

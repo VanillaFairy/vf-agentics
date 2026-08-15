@@ -19,10 +19,11 @@ to the current directory; pass `notes` only when the user gave extra constraints
    is dirty, tell the user what is uncommitted and get an explicit go/no-go before any
    workflow runs.
 
-2. Invoke the workflow:
+2. Invoke the workflow — the name is plugin-namespaced; the bare `vfa-develop` does not
+   resolve:
 
    ```
-   Workflow({ name: 'vfa-develop', args: { change, roots, notes, intelligence, plugin_root } })
+   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, intelligence, plugin_root } })
    ```
 
    `plugin_root` is this plugin's absolute root (`${CLAUDE_PLUGIN_ROOT}`); the workflow
@@ -30,12 +31,28 @@ to the current directory; pass `notes` only when the user gave extra constraints
    while their own cwd is the target repo. Passing it is not optional — without it, those
    agents halt rather than measure the wrong tree.
 
-3. On return, walk the result IN THIS ORDER — escalations first, never last:
+   **Record the `runId` from the launch result now.** The script cannot read its own run
+   id (its `coverage.resumable.runId` says exactly that), so the id you record here is
+   the only handle that pairs with `resumable.remaining` when escalated work needs
+   resuming.
+
+3. On return, first check `checkpoint`. When it is non-null, **nothing was dispatched**:
+   the survey could not reach evidence the change description itself names, and the
+   planner flagged it. Present `checkpoint.blocking_gaps` to the human. On a go, re-invoke
+   the workflow with the full argument set plus `preplanned: checkpoint.preplanned` —
+   survey and planning are skipped and dispatch proceeds. On a no-go, stop; the plan in
+   the result is the deliverable. Do not implement anything yourself on this path.
+
+   Otherwise walk the result IN THIS ORDER — escalations first, never last:
 
    a. **Escalations.** Present each (id, reason, unresolved criticals, trail tail) to the
       human. These are decisions, not information — do not resolve them yourself.
 
-   b. **Coupled orders.** Implement each in this session, yourself, under the coder's commit
+   b. **Coupled orders.** Each `coupled` entry carries the full order body — id, title,
+      locus, acceptance, context, deps, contract — so nothing needs joining back up by
+      hand. Honor `deps` (implement providers before their consumers) and, for an order
+      with `contract: true`, hold majors open the way criticals are held below. Implement
+      each in this session, yourself, under the coder's commit
       discipline (focused single-concern commits, locus honored). **Before dispatching the
       verifier, create a throwaway worktree at the pre-change SHA and point it there —
       never the tree the user is sitting in.** The verifier's discriminator stashes,
@@ -74,8 +91,9 @@ to the current directory; pass `notes` only when the user gave extra constraints
 
    d. **Deferred frontier.** If `deferred` is non-empty: re-run
       `node "${CLAUDE_PLUGIN_ROOT}/lib/independence.mjs"` over the deferred orders against
-      the merged tree (your cwd is the user's repo, not the plugin), then re-invoke
-      `vfa-develop` with **the full argument set** — `change`, `roots`, `notes`,
+      the merged tree (your cwd is the user's repo, not the plugin; the input carries
+      `{id, locus, deps}` per order), then re-invoke
+      `vf-agentics:vfa-develop` with **the full argument set** — `change`, `roots`, `notes`,
       `intelligence`, `plugin_root` — plus `preplanned` carrying them. The workflow guards
       on `change` before it looks at `preplanned`; omit it and the call returns empty
       immediately, and the deferred ids from this iteration vanish from the report instead

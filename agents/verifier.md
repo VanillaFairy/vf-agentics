@@ -28,11 +28,14 @@ Run, in order:
    `stop_reason: 'environment_broken'` with that text in `notes`. An empty `series_findings`
    means "checked, found nothing"; a failed measurement must never wear that shape.
 2. **Build** — the command your dispatch names, or, when it names none, the one this
-   repository's own manifest or documentation defines. Record exit status as `build_ok` and
-   keep going (a broken build is a fact to report, not a reason to stop observing). Name the
-   command you actually ran in `notes`. A repository with no build step is a fact too: say so
-   rather than inventing one.
-3. **Suite** — same rule for choosing the command. `suite_pass` from exit status,
+   repository's own manifest or documentation defines. Record `build` as `passed` or
+   `failed` from the observed exit status and keep going (a broken build is a fact to
+   report, not a reason to stop observing). Name the command you actually ran in `notes`.
+   A repository that defines no build command at this commit is recorded as `absent`,
+   with what you looked for in `notes` — absent is a fact about repo state and failed is
+   an observed non-zero exit; recording one as the other is the laundering IRON LAW §2
+   forbids, in either direction.
+3. **Suite** — same rules for choosing the command and for `passed` / `failed` / `absent`.
    `suite_output_tail` = the last ~40 lines verbatim. Never paraphrase output. Name the
    command in `notes`.
 4. **Discriminator.** Enumerate the test files this change added or modified yourself, with

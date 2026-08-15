@@ -97,6 +97,12 @@ const judge = intelligence === 'max' ? { model: 'fable' } : {}
 // agent: an agent cannot assert its own completeness, because that is exactly the
 // laundering §2 forbids.
 
+// The runtime does not expose a workflow's own run id to its script, so it cannot be
+// written into `resumable` — and a null there is indistinguishable from a field nobody
+// filled in. The Workflow launch result carries the real id; the caller records it at
+// launch and pairs it with `remaining`.
+const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Workflow launch result'
+
 function coverageOf(dropped, incomplete, failedChannels, unreached) {
   return {
     complete:
@@ -108,7 +114,7 @@ function coverageOf(dropped, incomplete, failedChannels, unreached) {
     incomplete,
     failed_channels: failedChannels,
     unreached,
-    resumable: { runId: null, remaining: dropped.concat(incomplete) },
+    resumable: { runId: RUN_ID, remaining: dropped.concat(incomplete) },
   }
 }
 

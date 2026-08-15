@@ -20,27 +20,30 @@ export const meta = {
 // them, so a bound written here would silently do nothing or turn a good result into a
 // dropped one. Every bound lives in the prompt as behaviour and is enforced in JS.
 //
-// No verdict booleans either. `build_ok` and `suite_pass` name an observed command exit
-// status, which is a fact. `approved` / `passed` would name a judgment, and the moment a
-// schema offers one, the loop's exit condition migrates out of JS and into a model's
-// self-assessment. Every verdict in this file is computed below.
+// No verdict booleans either. `build` and `suite` name an observed command exit status, or
+// the observed absence of any such command — facts either way. `approved` / `passed` would
+// name a judgment, and the moment a schema offers one, the loop's exit condition migrates
+// out of JS and into a model's self-assessment. Every verdict in this file is computed below.
 
 const WORK_ORDERS = {
   type: 'object', additionalProperties: false,
-  required: ['work_orders', 'shared_files', 'partition_raw', 'notes'],
+  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'notes'],
   properties: {
     work_orders: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['id', 'title', 'locus', 'acceptance', 'context'],
+      required: ['id', 'title', 'locus', 'acceptance', 'context', 'deps', 'contract'],
       properties: {
         id: { type: 'string' },        // 'W1', 'W2', ... unique within the run
         title: { type: 'string' },     // imperative, passes the AND test
         locus: { type: 'array', items: { type: 'string' } },  // EVERY file it may create/modify, repo-relative POSIX
         acceptance: { type: 'array', items: { type: 'string' } },  // each independently checkable
         context: { type: 'string' },   // what the coder needs to know, self-contained
+        deps: { type: 'array', items: { type: 'string' } },  // ids whose OUTPUT this order builds on; the partition waves it after them
+        contract: { type: 'boolean' }, // other orders build against this order's definitions — majors block it downstream
       } } },
     shared_files: { type: 'array', items: { type: 'string' } },  // designated shared files for the independence test
     partition_raw: { type: 'string' }, // VERBATIM stdout of `node lib/independence.mjs <input>` — never retyped
+    blocking_gaps: { type: 'array', items: { type: 'string' } },  // survey gaps the change itself leans on; non-empty withholds dispatch
     notes: { type: 'string' },
   },
 }
@@ -67,12 +70,16 @@ const CODER_RESULT = {
 
 const VERIFY = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'build_ok', 'suite_pass', 'suite_output_tail',
+  required: ['stop_reason', 'build', 'suite', 'suite_output_tail',
              'discriminator', 'series_findings', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
-    build_ok: { type: 'boolean' },      // observed exit status — a fact, not a judgment
-    suite_pass: { type: 'boolean' },
+    // Observed facts, not judgments. 'absent' — the repository defines no such command at
+    // this commit — is a repo-state fact the old boolean flattened into 'failed', and that
+    // flattening once escalated seven orders whose only defect was a not-yet-landed
+    // toolchain. Unmeasurable and failed are different answers (IRON LAW §2).
+    build: { type: 'string', enum: ['passed', 'failed', 'absent'] },
+    suite: { type: 'string', enum: ['passed', 'failed', 'absent'] },
     suite_output_tail: { type: 'string' },  // last ~40 lines of real output, verbatim
     discriminator: { type: 'array', items: {
       type: 'object', additionalProperties: false,
@@ -121,7 +128,8 @@ const FINDINGS = {
 // interfaces §5, verbatim. The verifier reports facts; this line is the only place they
 // become a pass or a failure.
 
-const verifyOk = v => v.stop_reason === 'completed' && v.build_ok && v.suite_pass
+const verifyOk = v => v.stop_reason === 'completed'
+  && v.build !== 'failed' && v.suite !== 'failed'
   && v.discriminator.every(d => d.failed_on_base && d.passes_now)
   && !v.series_findings.some(f => f.blocking)
 
@@ -187,17 +195,35 @@ const rootWarning = pluginRoot === SHELL_ROOT
 
 // ---------------------------------------------------------------- result shape
 //
+// The runtime does not expose a workflow's own run id to its script, so it cannot be
+// written into `resumable` — and a null there is indistinguishable from a field nobody
+// filled in. The Workflow launch result carries the real id; the skill records it at
+// launch and pairs it with `remaining`. A reason string keeps "not knowable here"
+// distinct from "forgotten".
+const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Workflow launch result'
+
+// The coupled path is the follow-up with the most work attached, so it carries full order
+// bodies rather than bare ids the session would have to join back up itself. An id the
+// partition emitted that matches no order still travels, as a stub naming only itself.
+let orderById = new Map()
+
+const coupledOrder = (id) => orderById.get(id) ||
+  { id, title: '', locus: [], acceptance: [], context: '', deps: [], contract: false }
+
 // interfaces §8. Every exit path goes through this function, so a caller never receives
 // undefined and never receives a bare error string — it always receives something whose
-// coverage block says what did and did not happen.
-function developResult(workOrders, implemented, escalations, coupled, deferred, surveyCoverage, coverageBlock) {
+// coverage block says what did and did not happen. `checkpoint` is null except on the
+// evidence-checkpoint exit, where it carries the planner's full output ready to pass back
+// as `preplanned`.
+function developResult(workOrders, implemented, escalations, coupledIds, deferred, surveyCoverage, coverageBlock, checkpoint) {
   return {
     change,
     work_orders: workOrders,
-    coupled,
+    coupled: coupledIds.map(coupledOrder),
     deferred,
     implemented,
     escalations,
+    checkpoint: checkpoint || null,
     survey_coverage: surveyCoverage,
     coverage: coverageBlock,
   }
@@ -221,7 +247,7 @@ function coverageOf(escalations, coupled, deferred, surveyCoverage, failedChanne
       .concat(deferred.map(deferredNote))
       .concat(escalations.map(escalationNote)),
     resumable: {
-      runId: null,
+      runId: RUN_ID,
       remaining: coupled.concat(deferred).concat(escalations.map((e) => e.id)),
     },
   }
@@ -238,7 +264,7 @@ if (!change.trim()) {
     incomplete: [],
     failed_channels: [],
     unreached: ['no change was supplied, so nothing was planned or implemented'],
-    resumable: { runId: null, remaining: [] },
+    resumable: { runId: RUN_ID, remaining: [] },
   })
 }
 
@@ -289,7 +315,7 @@ async function dispatch(wo, state, trail, what, open, run) {
 function haltedEsc(wo, state, trail, open, note) {
   log(`ESCALATION ${wo.id}: ${note}`)
   const finding = runtimeFinding(wo.id + '-halt', note, 'recorded by vfa-develop at dispatch')
-  trail.push({ round: trail.length + 1, findings: [finding], fix_commits: [] })
+  trail.push({ round: trail.length + 1, kind: 'halt', findings: [finding], fix_commits: [] })
   return esc(wo, 'budget', open.concat([finding]), trail, state)
 }
 
@@ -332,13 +358,34 @@ function plannerPrompt(surveyEvidence) {
     `repo-relative with forward slashes. The locus is enforced per commit downstream, so a ` +
     `file you forget becomes a blocking breach for an honest coder. Acceptance criteria are ` +
     `independently checkable and each names how it will be verified. ${acceptanceNote}\n\n` +
+    `Declare deps honestly: when an order's context names types, files, commands, or ` +
+    `modules that another order creates, that order's id goes in deps. File-disjoint loci ` +
+    `are NOT build-independence — an order supplying the build manifest, lockfile, compiler ` +
+    `config, or shared constants is a provider: every consumer names it in deps, and it ` +
+    `must never touch a designated shared file, because the partition refuses a plan whose ` +
+    `provider is coupled rather than schedule work against a toolchain that never lands. ` +
+    `An integration order that wires other orders together depends on every order it ` +
+    `wires. deps is [] only when an order truly builds on nothing here.\n\n` +
+    `Set contract true on an order whose output other orders build against — a vocabulary ` +
+    `note, shared type definitions, an interface. An ambiguity in a contract propagates ` +
+    `into every consumer, so majors block a contract order downstream the way criticals ` +
+    `block any other.\n\n` +
+    `Compare the survey's coverage gaps against what the change itself names or leans on. ` +
+    `A gap the change explicitly depends on goes in blocking_gaps — one entry per gap: the ` +
+    `gap, then what depends on it. A non-empty blocking_gaps makes the workflow withhold ` +
+    `dispatch and hand your plan back for confirmation; that is intended, and cheap next ` +
+    `to implementing against evidence the request demanded and never got. Gaps that touch ` +
+    `nothing the change asked for stay out of blocking_gaps and go in notes.\n\n` +
     `Then run the partition yourself and paste its output raw:\n\n` +
     `   node "${pluginRoot}/lib/independence.mjs" <input.json>\n` +
     rootWarning +
-    `\nWrite the input file as {"work_orders": [{"id", "locus"}], "shared_files": []}, run ` +
-    `the command, and put its VERBATIM stdout in partition_raw. The workflow parses that ` +
-    `string with JSON.parse — a summary, a retype or a correction breaks the run right ` +
-    `there, which is intended. Put the survey coverage limits you inherited, and any locus ` +
+    `\nWrite the input file as {"work_orders": [{"id", "locus", "deps"}], "shared_files": ` +
+    `[]}, run the command, and put its VERBATIM stdout in partition_raw. The workflow ` +
+    `parses that string with JSON.parse — a summary, a retype or a correction breaks the ` +
+    `run right there, which is intended. If it prints {"error": ...}, the defect is in ` +
+    `your plan (a dependency cycle, a dep naming no order, a provider routed to the ` +
+    `session): fix the decomposition and re-run it, and paste an error verbatim only when ` +
+    `you cannot resolve it. Put the survey coverage limits you inherited, and any locus ` +
     `you are less than certain about, in notes.`
 }
 
@@ -399,8 +446,11 @@ function verifierPrompt(wo, state) {
     `   Copy the findings array from its JSON stdout into series_findings unchanged.\n\n` +
     `2. Build, then 3. the test suite. Take both commands from the caller notes below when ` +
     `they name them, otherwise from the repository's own documentation or manifest, and ` +
-    `record in notes exactly which commands you ran. A broken build is a fact to report, ` +
-    `not a reason to stop observing.\n\n` +
+    `record in notes exactly which commands you ran. Record each as passed or failed from ` +
+    `the observed exit status; a repository that defines no build or no suite command at ` +
+    `this commit is recorded as absent, with what you looked for in notes. Absent is a ` +
+    `fact about repo state and failed is an observed non-zero exit — never write one as ` +
+    `the other. A broken build is a fact to report, not a reason to stop observing.\n\n` +
     `4. Discriminator: every test file added or changed between ${state.base_sha} and ` +
     `${state.head_sha} — enumerate them from the diff. For each, record whether it passes ` +
     `now, and whether it FAILED at ${state.base_sha} in this same worktree. A test that ` +
@@ -412,13 +462,21 @@ function verifierPrompt(wo, state) {
     `the IRON LAW forbids.`
 }
 
-function reviewerPrompt(wo, state, advisories, concerns, priorCriticals) {
-  const prior = priorCriticals.length === 0 ? '' :
-    `CRITICALS FROM THE PREVIOUS ROUND — rule on each one in fix_verdicts (fixed / ` +
+function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
+  const prior = priorBlockers.length === 0 ? '' :
+    `FINDINGS HELD OPEN FROM THE PREVIOUS ROUND — rule on each one in fix_verdicts (fixed / ` +
     `not_fixed / regressed) with evidence, then re-attack the areas that were touched: ` +
     `fresh code written under pressure is the most defect-dense diff there is. Treat both ` +
-    `the fix and the original finding with suspicion.\n${criticalsText(priorCriticals)}\n\n` +
+    `the fix and the original finding with suspicion.\n${criticalsText(priorBlockers)}\n\n` +
     `COMMITS LANDED SINCE THAT ROUND:\n${commitLines(state.fixCommits)}\n\n`
+
+  const contractNote = wo.contract === true
+    ? `This order is a CONTRACT other orders build against. A term defined twice, two ` +
+      `sections a consumer could read as disagreeing, or a definition that supports two ` +
+      `incompatible implementations is a real defect here, severity major at least — and ` +
+      `for this order majors are held open like criticals, because an ambiguity in a ` +
+      `contract propagates into every consumer.\n\n`
+    : ''
 
   return `Adversarially review one work order's commit series. Assume it is subtly wrong and ` +
     `hunt for where. You return findings; you have no way to approve anything, and an empty ` +
@@ -439,6 +497,7 @@ function reviewerPrompt(wo, state, advisories, concerns, priorCriticals) {
     `ACCEPTANCE CRITERIA, verbatim and in the planner's words. They are the contract, and ` +
     `they are the only thing you may enforce:\n${listOf(wo.acceptance)}\n\n` +
     `${acceptanceNote} Do not filter it, do not rewrite it, never raise a finding for it.\n\n` +
+    contractNote +
     `COMMITS, OLDEST FIRST:\n${commitLines(state.commits)}\n\n` +
     `THE CODER'S OWN CONCERNS — attack these first among equals. The author told you where ` +
     `it is unsure, and that is your cheapest ore:\n${listOf(concerns)}\n\n` +
@@ -471,10 +530,12 @@ function verifyFailureFindings(wo, v) {
     out.push(runtimeFinding(wo.id + '-env',
       'verification could not run to completion: ' + v.stop_reason, v.notes || ''))
   }
-  if (!v.build_ok) {
+  // 'absent' produces no finding: a repository that defines no build or suite command is a
+  // repo-state fact recorded in notes, not a defect a fix round could address.
+  if (v.build === 'failed') {
     out.push(runtimeFinding(wo.id + '-build', 'the build command exited non-zero', v.notes || ''))
   }
-  if (!v.suite_pass) {
+  if (v.suite === 'failed') {
     out.push(runtimeFinding(wo.id + '-suite', 'the test suite exited non-zero',
       v.suite_output_tail || ''))
   }
@@ -497,8 +558,8 @@ const verifyFixInstruction = (failures) =>
   'MECHANICAL VERIFICATION FAILED. These are observed facts, not opinions:\n' +
   criticalsText(failures)
 
-const reviewFixInstruction = (criticals) =>
-  'REVIEW FINDINGS TO FIX — criticals only:\n' + criticalsText(criticals)
+const reviewFixInstruction = (blockers) =>
+  'REVIEW FINDINGS TO FIX — the blocking set for this order:\n' + criticalsText(blockers)
 
 // Record what a fix round landed. Fix commits belong to the review round that asked for
 // them, so the audit trail shows which findings each commit answers.
@@ -543,10 +604,18 @@ async function verifyUntilGreen(wo, state, trail) {
     const v = call.value
     state.advisories = (v.series_findings || []).filter((f) => !f.blocking)
 
+    if (v.build === 'absent') log(`${wo.id}: no build command exists at this commit — repo state, not a failure.`)
+    if (v.suite === 'absent') log(`${wo.id}: no test suite exists at this commit — repo state, not a failure.`)
+
     if (verifyOk(v)) return null
 
     const failures = verifyFailureFindings(wo, v)
     log(`${wo.id}: verification failed on ${failures.length} fact(s); dispatching a fix round.`)
+
+    // The trail records every round that asked for work, verify rounds included — an
+    // escalation reading `verify_failed_repeatedly` with an empty trail told a human
+    // nothing about what was tried. absorbFix appends this round's fix commits to it.
+    trail.push({ round: trail.length + 1, kind: 'verify', findings: failures, fix_commits: [] })
 
     const headBefore = state.head_sha
     const fixCall = await dispatch(wo, state, trail, 'the verify fix round for ' + wo.id, failures,
@@ -587,17 +656,22 @@ async function verifyUntilGreen(wo, state, trail) {
 // open until a round rules it `fixed`. The charter asks the reviewer to re-report it too;
 // this is the half that does not depend on the model doing so.
 async function reviewLoop(wo, state, trail) {
-  let priorCriticals = []
+  // The blocking severity is per order: criticals always block, and majors block a CONTRACT
+  // order too — an ambiguity in a contract other orders build against is not a local
+  // blemish, it is a defect in every consumer's spec.
+  const blocks = (f) => f.severity === 'critical' || (wo.contract === true && f.severity === 'major')
+
+  let priorBlockers = []
   let unfixedLastRound = []
-  let openCriticals = []
+  let openBlockers = []
   let round = 0
 
   while (true) {
     round += 1
 
     const call = await dispatch(wo, state, trail, 'reviewer round ' + round + ' for ' + wo.id,
-      openCriticals,
-      () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorCriticals), {
+      openBlockers,
+      () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorBlockers), {
         agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
         phase: 'Review', label: `review:${wo.id}#${round}`, ...judge,
       }))
@@ -606,22 +680,22 @@ async function reviewLoop(wo, state, trail) {
     const review = call.value
     const findings = review.findings || []
     const verdicts = review.fix_verdicts || []
-    const criticals = findings.filter((f) => f.severity === 'critical')
+    const blockers = findings.filter(blocks)
 
-    // A prior critical this round ruled anything but `fixed`, and did not restate under
+    // A prior blocker this round ruled anything but `fixed`, and did not restate under
     // findings. Carried under its ORIGINAL id, so the next round's verdicts line up with it.
-    const stillOpen = priorCriticals.filter((p) =>
+    const stillOpen = priorBlockers.filter((p) =>
       verdicts.some((v) => v.id === p.id && unfixedVerdict(v)) &&
-      !criticals.some((c) => c.id === p.id))
+      !blockers.some((c) => c.id === p.id))
 
-    const open = criticals.concat(stillOpen)
+    const open = blockers.concat(stillOpen)
 
-    openCriticals = open
+    openBlockers = open
     state.fixCommits = []
     // The trail records what the reviewer actually returned, unmerged with anything computed
     // here: it is the audit trail, and a round's raw output is what makes it worth reading.
-    trail.push({ round, findings, fix_commits: [] })
-    log(`${wo.id}: review round ${round} — ${criticals.length} critical, ${findings.length - criticals.length} other, ${stillOpen.length} carried over unfixed.`)
+    trail.push({ round: trail.length + 1, kind: 'review', findings, fix_commits: [] })
+    log(`${wo.id}: review round ${round} — ${blockers.length} blocking, ${findings.length - blockers.length} other, ${stillOpen.length} carried over unfixed.`)
 
     // The only exit that says the work is done, and it is a count of open defects rather
     // than anyone's claim about them.
@@ -665,7 +739,7 @@ async function reviewLoop(wo, state, trail) {
 
     // Everything still open goes to the next reviewer, so it rules on it again; and the ids
     // ruled unfixed this round arm the §7.3(b) marker for the round after.
-    priorCriticals = open
+    priorBlockers = open
     unfixedLastRound = verdicts.filter(unfixedVerdict).map((v) => v.id)
   }
 }
@@ -767,15 +841,59 @@ try {
   } else {
     phase('Survey')
 
-    survey = await workflow('vfa-survey', {
+    // Registered workflows are plugin-namespaced, so the qualified name is tried first and
+    // the bare name second — the reference then survives a runtime that resolves siblings
+    // either way. The two failure classes are deliberately kept apart. A LOOKUP failure on
+    // both names means this plugin's own reference is broken — unconditional on every
+    // machine — and it stops the run loudly BEFORE planning: letting it ride the §5 degrade
+    // path below would skip the evidence phase on every run forever while each run reported
+    // itself merely degraded. An EXECUTION failure (the survey resolved, ran, and threw) is
+    // the environmental case §5 was written for, and it degrades exactly as before.
+    const surveyArgs = {
       question: `What must change, and where, to implement: ${change}`,
       roots,
       notes,
       intelligence,
-    }).catch((e) => {
-      log(`WARNING: the survey failed: ${e && e.message}`)
-      return null
-    })
+    }
+    const notFound = (e) => /not found/i.test((e && e.message) || '')
+    let surveyUnresolved = false
+
+    try {
+      survey = await workflow('vf-agentics:vfa-survey', surveyArgs)
+    } catch (e) {
+      if (!notFound(e)) {
+        log(`WARNING: the survey failed: ${e && e.message}`)
+        survey = null
+      } else {
+        try {
+          survey = await workflow('vfa-survey', surveyArgs)
+        } catch (e2) {
+          if (notFound(e2)) {
+            surveyUnresolved = true
+          } else {
+            log(`WARNING: the survey failed: ${e2 && e2.message}`)
+          }
+          survey = null
+        }
+      }
+    }
+
+    if (surveyUnresolved) {
+      log('vfa-survey resolved under neither name — a defect in this plugin; stopping before planning.')
+      return developResult([], [], [], [], [], null, {
+        complete: false,
+        dropped: [],
+        incomplete: [],
+        failed_channels: ['survey'],
+        unreached: [
+          'the vfa-survey sub-workflow resolved under neither "vf-agentics:vfa-survey" nor ' +
+          '"vfa-survey" — a broken reference in this plugin, not an environmental failure. ' +
+          'Nothing was planned or dispatched: planning without the evidence phase is the ' +
+          'silent degradation this stop exists to prevent.',
+        ],
+        resumable: { runId: RUN_ID, remaining: [] },
+      })
+    }
 
     if (!survey || !survey.coverage) {
       // IRON LAW §5: a failed evidence channel must not discard the run. Planning continues
@@ -789,7 +907,7 @@ try {
         incomplete: [],
         failed_channels: ['survey'],
         unreached: ['vfa-survey returned no coverage block; the evidence phase did not complete'],
-        resumable: { runId: null, remaining: [] },
+        resumable: { runId: RUN_ID, remaining: [] },
       }
     } else {
       surveyCoverage = survey.coverage
@@ -830,12 +948,12 @@ try {
       incomplete: [],
       failed_channels: failedChannels,
       unreached: [`${change}: planning produced no work orders, so nothing was attempted`],
-      resumable: { runId: null, remaining: [] },
+      resumable: { runId: RUN_ID, remaining: [] },
     })
   }
 
   orders = planned.work_orders
-  const byId = new Map(orders.map((wo) => [wo.id, wo]))
+  orderById = new Map(orders.map((wo) => [wo.id, wo]))
 
   // ------------------------------------------------------------ 3. partition
   //
@@ -851,13 +969,13 @@ try {
     if (!Array.isArray(partition.waves)) throw new Error('partition carries no waves array')
 
     const firstWave = partition.waves[0] || []
-    wave1 = firstWave.map((id) => byId.get(id)).filter(Boolean)
+    wave1 = firstWave.map((id) => orderById.get(id)).filter(Boolean)
     deferred = partition.waves.slice(1).flat()
     coupled = (partition.coupled || []).slice()
 
     // An id in the partition that matches no work order cannot be dispatched, and would
     // fail the same way on a later re-invocation. It goes to the session, named.
-    const unknown = firstWave.filter((id) => !byId.has(id))
+    const unknown = firstWave.filter((id) => !orderById.has(id))
     if (unknown.length > 0) {
       log(`WARNING: wave 1 names ${unknown.join(', ')}, which no work order matches; routing them to the session.`)
       coupled = coupled.concat(unknown)
@@ -885,6 +1003,32 @@ try {
 
   log(`${orders.length} work order(s): wave 1 = ${wave1.length}, deferred = ${deferred.length}, coupled = ${coupled.length}`)
 
+  // ------------------------------------------------- 3b. evidence checkpoint
+  //
+  // The planner names, in blocking_gaps, any survey gap the change description itself
+  // leans on. Dispatch is the expensive part of this pipeline, and proceeding into it on
+  // evidence the request explicitly demanded and never got is the caller's decision to
+  // make — not a warning in a log stream read after the tokens are spent. Nothing is
+  // lost: the plan travels back whole in `checkpoint.preplanned`, and a re-invocation
+  // with it skips survey and planning entirely.
+  const blockingGaps = (!preplanned && Array.isArray(planned.blocking_gaps))
+    ? planned.blocking_gaps
+    : []
+
+  if (blockingGaps.length > 0 && wave1.length > 0) {
+    log(`CHECKPOINT: the survey missed evidence the change itself names (${blockingGaps.length} gap(s)); dispatch withheld.`)
+    return developResult(orders, [], [], [], [], surveyCoverage, {
+      complete: false,
+      dropped: [],
+      incomplete: [],
+      failed_channels: failedChannels,
+      unreached: blockingGaps.map((gap) => 'evidence checkpoint: ' + gap)
+        .concat(['dispatch was withheld at the evidence checkpoint; confirm with the ' +
+                 'caller, then re-invoke with `preplanned` set to checkpoint.preplanned']),
+      resumable: { runId: RUN_ID, remaining: orders.map((wo) => wo.id) },
+    }, { blocking_gaps: blockingGaps, preplanned: planned })
+  }
+
   // -------------------------------------------------------- 4. wave 1, per order
 
   if (wave1.length > 0) {
@@ -908,7 +1052,9 @@ try {
       }
 
       const state = chain.state
-      const last = chain.trail[chain.trail.length - 1]
+      // The gate's majors and minors come from the last REVIEW round: the trail also
+      // records verify rounds now, and those carry mechanical facts, not review severities.
+      const lastReview = [...chain.trail].reverse().find((t) => t.kind === 'review')
 
       implemented.push({
         id: wo.id,
@@ -919,7 +1065,7 @@ try {
         commits: state.commits,
         review: {
           rounds: chain.trail.length,
-          open_majors: last ? last.findings.filter((f) => f.severity !== 'critical') : [],
+          open_majors: lastReview ? lastReview.findings.filter((f) => f.severity !== 'critical') : [],
           trail: chain.trail,
         },
         discovered: state.discovered,
@@ -945,7 +1091,7 @@ try {
     failed_channels: failedChannels.concat(['pipeline']),
     unreached: [`the run threw before it finished: ${e && e.message}`],
     resumable: {
-      runId: null,
+      runId: RUN_ID,
       remaining: coupled.concat(deferred).concat(escalations.map((x) => x.id)),
     },
   })
