@@ -66,6 +66,17 @@ than authoring a one-off workflow — a shape that recurs belongs in `workflows/
 3. Map each `ref` to the real task id, then `TaskUpdate` with `addBlockedBy` for the dependencies.
 4. Create nothing else. Do not start the work.
 
+**If the Task tools are not available**, fall back to `TodoWrite` and say that you did. They
+are host-provided and optional — the VS Code extension is the host you will actually hit. You
+cannot detect their absence before the call, so treat a failure there as this branch rather
+than as an error to retry.
+
+`TodoWrite` has no dependency edges, so carry the graph in the list itself: emit the tasks in
+`blocked_by` order, and open any description that has prerequisites with "After <subject>: …".
+Then say plainly that the ordering is advisory rather than enforced. Losing it silently is
+worse than losing it out loud — an unordered list looks exactly like an ordered one, which is
+the failure this whole skill exists to prevent.
+
 **Report mode:** hand back `result.report` as it stands. Do not summarise it into a shorter
 version — the user asked for the report. Offer to save it to a file.
 
