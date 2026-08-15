@@ -7,7 +7,10 @@ this plugin defines.
 
 A Claude Code plugin providing workflow-orchestrated investigation, diagnosis, and development
 over a generic codebase. Its runtime artifacts are declarative — agent markdown, workflow JS,
-`SKILL.md` — and are validated by `tools/lint.mjs` rather than unit tests. See
+`SKILL.md` — and are validated in three layers: `tools/lint.mjs` judges form, the scenario
+harness (`test/harness/workflow-host.mjs`) executes the workflows' orchestration arithmetic
+with scripted agents, and `test/verbatim-blocks.test.mjs` diffs every contract that is
+restated in prose (`<!-- vfa:verbatim <id> -->` markers) so copies cannot drift. See
 `docs/superpowers/specs/2026-08-08-vf-agentics-design.md`.
 
 Run the checks with:

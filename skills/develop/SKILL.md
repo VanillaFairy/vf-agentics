@@ -61,33 +61,51 @@ to the current directory; pass `notes` only when the user gave extra constraints
       many words, and that rule lives nowhere else in the runtime files, so it is repeated
       here rather than assumed. Then drive the SAME review contract via the Agent tool —
       `vf-agentics:verifier` for facts, then fresh `vf-agentics:reviewer` rounds — under
-      interfaces §7's exit and escalation conditions, reproduced here so nothing gets
-      paraphrased away:
+      interfaces §7's exit and escalation conditions. The block below is a verbatim copy
+      of that contract, and `test/verbatim-blocks.test.mjs` diffs it against the source —
+      an earlier revision paraphrased it down to "zero criticals → approved" and reopened
+      a hole the contract explicitly closes:
+
+      <!-- vfa:verbatim review-loop-exit -->
       - Dispatch a fresh reviewer each round with the work order, the worktree path,
         `base_sha..head_sha`, the coder's `concerns`, the advisory `series_findings`, and —
-        from round 2 on — the prior round's criticals (id, claim, fix commits since).
-      - Compute `criticals` from what it returns. Zero → the order is **approved**; return
-        the trail. You count them yourself; you never ask the reviewer whether it approves
-        — it has no approval field, by design.
-      - Escalate (computed, not judged) when either (a) a fix round returns no commits, or
-        status `blocked`/`needs_context`, or (b) the same finding id comes back
+        from round 2 on — the prior round's open blockers (id, claim, fix commits since).
+      - The blocking set is the round's criticals, plus its majors when the order is marked
+        `contract: true`.
+      - The open set is the round's blocking findings, plus every prior blocker ruled
+        `not_fixed`/`regressed` in `fix_verdicts` that the round did not re-report. Never
+        narrow this to the round's criticals alone — that exact narrowing once shipped an
+        order with a known-unfixed critical and `coverage.complete: true`.
+      - The order is approved when the open set is empty. That is a count you compute — the
+        reviewer has no approval to give, by design.
+      - Escalate (computed, never judged) when either (a) a fix round returns no commits, or
+        status `blocked`/`needs_context`, or (b) the same finding id is ruled
         `not_fixed`/`regressed` in two consecutive rounds.
-      - Otherwise dispatch a same-worktree coder fix round (criticals in, new focused
-        commits out, no amends, no rebase), re-verify, and loop back to the top.
-      - No round counter ends this loop (IRON LAW §1). A budget error is caught and becomes
-        an escalation carrying resumable state (IRON LAW §6) — never a silent stop.
+      - Otherwise dispatch a same-worktree coder fix round carrying the open set (new focused
+        commits, no amends, no rebase), re-verify, and dispatch a fresh reviewer.
+      - No round counter ends this loop (IRON LAW §1). A budget error is caught and becomes an
+        escalation carrying resumable state (IRON LAW §6) — never a silent stop.
+      <!-- /vfa:verbatim -->
 
    c. **Merges.** **Do not start merging while any escalation is open** — get an explicit
       go/no-go from the human first, exactly as you did for a dirty tree in step 1. Then,
       for each approved branch, in `implemented` order, dispatch `vf-agentics:verifier` in
-      merge mode. It returns `MERGE_RESULT` (interfaces §5); derive the outcome yourself —
-      `mergeOk = stop_reason === 'completed' && merged_sha !== '' && conflicts.length === 0`
-      — never conflicts alone. An `environment_broken` merge has an empty conflict list too,
-      and reading that as success would wave a broken merge through. Anything that is not
-      `mergeOk` STOPS the merge run — surface a conflict as a planner-defect finding, never
-      resolve it silently; wave-1 loci were declared pairwise disjoint, so a conflict means
-      that declaration was wrong. Report which branches merged and which did not — a
-      half-merged run that reads as whole is the kind of gap the Reporting section forbids.
+      merge mode, under the merge contract (verbatim from interfaces §5):
+
+      <!-- vfa:verbatim merge-result -->
+      Merge mode reports exactly four fields: `stop_reason` (`completed` or
+      `environment_broken`), `merged_sha` (`''` when the merge did not complete — a fact, not
+      a verdict), `conflicts` (conflicting paths verbatim from git; empty when none), and
+      `notes` (what was actually run). The caller derives the outcome as
+      `mergeOk = stop_reason === 'completed' && merged_sha !== '' && conflicts.length === 0` —
+      never from `conflicts` alone, because an `environment_broken` merge has an empty conflict
+      list too, and reading that as success waves a broken merge through. Anything that is not
+      `mergeOk` stops the merge run. A conflict is a planner defect — loci were declared
+      pairwise disjoint — surfaced to the human, never resolved silently.
+      <!-- /vfa:verbatim -->
+
+      Report which branches merged and which did not — a half-merged run that reads as
+      whole is the kind of gap the Reporting section forbids.
 
    d. **Deferred frontier.** If `deferred` is non-empty: re-run
       `node "${CLAUDE_PLUGIN_ROOT}/lib/independence.mjs"` over the deferred orders against

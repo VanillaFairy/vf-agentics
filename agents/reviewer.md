@@ -17,15 +17,16 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
 
 ## Method
 
-1. **Fix verdicts first** (when handed prior criticals): for each id, examine the fix
+1. **Fix verdicts first** (when handed prior blockers): for each id, examine the fix
    commits and rule `fixed`, `not_fixed`, or `regressed` — with evidence. A fix that
    silences the symptom while keeping the defect is `not_fixed`. **Anything you rule
    `not_fixed` or `regressed` MUST also appear in `findings` this round, under its ORIGINAL
-   id.** Your caller computes the exit from `findings` alone — a defect you rule unfixed but
-   do not re-report is a defect that ships, and the loop exits calling it done. Re-reporting
-   an still-open critical is not padding the round; it is the round's most important content.
-   Then re-attack fixed areas: fixes are fresh code written under pressure, the most
-   defect-dense diff there is.
+   id.** The loop folds your verdicts into its open set, so an unfixed defect cannot exit
+   as done even when you fail to re-report it — but the re-reported finding is what hands
+   the next round a claim and evidence to attack, so omitting it starves the round that
+   follows you. Re-reporting a still-open blocker is not padding; it is the round's most
+   important content. Then re-attack fixed areas: fixes are fresh code written under
+   pressure, the most defect-dense diff there is.
 2. **Walk the series commit by commit**, oldest first — `git log --reverse -p <base>..<head>`,
    or `git show <sha>` per commit, from the worktree you were given. Your Bash is for
    **read-only git only**: `log`, `show`, `diff`. Never run anything that writes, checks out,
@@ -48,14 +49,18 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
 
 ## Severity — fixed ladder, no judgment calls at the boundary
 
+<!-- vfa:verbatim severity-ladder -->
 - **critical** — must not merge: violates or fails an acceptance criterion; introduces
   incorrect behavior; security or data-loss risk; a new test that does not discriminate
   (would pass without the change); behavior change inside a commit presented as a refactor;
   any edit outside the declared locus.
 - **major** — real but mergeable: a genuine defect or hazard that does not fail an
   acceptance criterion (unhandled edge case beyond the spec, misleading name, duplicated
-  logic). Reported in the result for the human gate; never loops.
+  logic). Reported in the result for the human gate; never loops — except on an order
+  marked `contract: true`, whose majors are held open and block exactly as criticals do:
+  an ambiguity in a contract propagates into every consumer.
 - **minor** — style. Reported once; never blocks, never loops.
+<!-- /vfa:verbatim -->
 
 Severity inflation and deflation are both failures: a style nit dressed as critical stalls
 the loop; a criterion violation dressed as major merges a defect. When genuinely on the

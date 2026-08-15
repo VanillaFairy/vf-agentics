@@ -161,8 +161,13 @@ direction throws.
  * Line endings: a single trailing \r is stripped from each line before it is
  * interpreted, so CRLF input parses identically to LF. Emptiness is judged after
  * that strip — a line of "\r" is empty and is not a file path.
+ * Text before the first \x01 is not a record and is dropped.
  * @param {string} text
  * @returns {Array<{sha: string, subject: string, files: string[]}>}  oldest first
+ * @throws {TypeError} on a record with no \x02 after the first delimiter — healthy
+ *   output cannot contain one, so the stream is corrupt or truncated, and a shortened
+ *   series must never wear the shape of a clean one (the CLI maps this to
+ *   {"error": ...}, which the verifier reports as environment_broken).
  */
 export function parseLog(text) {}
 
@@ -288,17 +293,23 @@ const MERGE_RESULT = {
 }
 ```
 
-Derived in JS by the caller — the skill (§9.2), since the workflow never merges:
+No `merged` boolean, for the same reason as everywhere else: whether the merge succeeded is
+computed. The block below is canonical, copied verbatim into `skills/develop/SKILL.md`
+(the deriving caller) and `agents/verifier.md` (the reporting agent) — previously the
+schema, the derivation, and the agent instruction each described this contract in their
+own words, and the agent's words named no field at all:
 
-```js
-const mergeOk = m => m.stop_reason === 'completed' && m.merged_sha !== '' && m.conflicts.length === 0
-```
-
-Note what is absent, for the same reason as everywhere else: no `merged` boolean. Whether the
-merge succeeded is computed from the observed sha and conflict list, and a non-empty
-`conflicts` stops the merge run — wave-1 loci were pairwise disjoint, so a conflict means the
-planner's independence declaration was wrong, which is a defect worth seeing rather than
-resolving silently.
+<!-- vfa:verbatim merge-result -->
+Merge mode reports exactly four fields: `stop_reason` (`completed` or
+`environment_broken`), `merged_sha` (`''` when the merge did not complete — a fact, not
+a verdict), `conflicts` (conflicting paths verbatim from git; empty when none), and
+`notes` (what was actually run). The caller derives the outcome as
+`mergeOk = stop_reason === 'completed' && merged_sha !== '' && conflicts.length === 0` —
+never from `conflicts` alone, because an `environment_broken` merge has an empty conflict
+list too, and reading that as success waves a broken merge through. Anything that is not
+`mergeOk` stops the merge run. A conflict is a planner defect — loci were declared
+pairwise disjoint — surfaced to the human, never resolved silently.
+<!-- /vfa:verbatim -->
 
 ---
 
@@ -361,8 +372,10 @@ the order shipped with a known-unfixed critical and `coverage.complete: true`. I
 §7.3(b) unreachable, since the stuck marker needed the id in both places. Do not narrow this
 back to `criticals.length === 0`.
 
-### Severity ladder (authoritative — copied into `agents/reviewer.md` verbatim)
+### Severity ladder (authoritative — copied into `agents/reviewer.md` verbatim, and
+`test/verbatim-blocks.test.mjs` diffs the copies)
 
+<!-- vfa:verbatim severity-ladder -->
 - **critical** — must not merge: violates or fails an acceptance criterion; introduces
   incorrect behavior; security or data-loss risk; a new test that does not discriminate
   (would pass without the change); behavior change inside a commit presented as a refactor;
@@ -370,31 +383,40 @@ back to `criticals.length === 0`.
 - **major** — real but mergeable: a genuine defect or hazard that does not fail an
   acceptance criterion (unhandled edge case beyond the spec, misleading name, duplicated
   logic). Reported in the result for the human gate; never loops — except on an order
-  marked `contract: true`, where majors block exactly as criticals do (§1).
+  marked `contract: true`, whose majors are held open and block exactly as criticals do:
+  an ambiguity in a contract propagates into every consumer.
 - **minor** — style. Reported once; never blocks, never loops.
+<!-- /vfa:verbatim -->
 
 ---
 
 ## 7. Review-loop contract (implemented in T09)
 
-Per work order, after `verifyOk` first holds:
+Per work order, after `verifyOk` first holds. The block below is canonical and is copied
+verbatim into `skills/develop/SKILL.md` for the session-driven loop —
+`test/verbatim-blocks.test.mjs` diffs the copies, so a paraphrase is a test failure, not a
+drift nobody notices:
 
-1. Dispatch a **fresh** `reviewer` with: the work order (title, locus, acceptance), the
-   worktree path, `base_sha..head_sha`, the coder's `concerns`, the advisory
-   `series_findings`, and — from round 2 on — the prior round's open blockers (id + claim +
-   the fix commits since).
-2. Compute the **open set**: this round's blockers, plus any prior blocker the reviewer ruled
-   `not_fixed`/`regressed` that it did not re-report (see §6). Empty → the order is
-   **approved**; return the trail.
-3. **Non-convergence escalation (computed, not judged):** escalate the order when either
-   (a) the fix dispatch returns `commits` empty or status `blocked`/`needs_context`, or
-   (b) any `fix_verdicts` entry reports `not_fixed`/`regressed` for the same finding id in
-   two consecutive rounds. Escalation is a typed object, never a throw.
-4. Otherwise dispatch the **same-worktree** `coder` fix round (the open set as input, fixes
-   as new focused commits, no amends), re-run `verifier`, loop to 1.
-5. A round counter NEVER terminates the loop (IRON LAW §1). Budget exhaustion surfaces as
-   the platform's budget error on `agent()` — caught and converted to an escalation with
-   `resumable` state (IRON LAW §6).
+<!-- vfa:verbatim review-loop-exit -->
+- Dispatch a fresh reviewer each round with the work order, the worktree path,
+  `base_sha..head_sha`, the coder's `concerns`, the advisory `series_findings`, and —
+  from round 2 on — the prior round's open blockers (id, claim, fix commits since).
+- The blocking set is the round's criticals, plus its majors when the order is marked
+  `contract: true`.
+- The open set is the round's blocking findings, plus every prior blocker ruled
+  `not_fixed`/`regressed` in `fix_verdicts` that the round did not re-report. Never
+  narrow this to the round's criticals alone — that exact narrowing once shipped an
+  order with a known-unfixed critical and `coverage.complete: true`.
+- The order is approved when the open set is empty. That is a count you compute — the
+  reviewer has no approval to give, by design.
+- Escalate (computed, never judged) when either (a) a fix round returns no commits, or
+  status `blocked`/`needs_context`, or (b) the same finding id is ruled
+  `not_fixed`/`regressed` in two consecutive rounds.
+- Otherwise dispatch a same-worktree coder fix round carrying the open set (new focused
+  commits, no amends, no rebase), re-verify, and dispatch a fresh reviewer.
+- No round counter ends this loop (IRON LAW §1). A budget error is caught and becomes an
+  escalation carrying resumable state (IRON LAW §6) — never a silent stop.
+<!-- /vfa:verbatim -->
 
 The trail records **every round that asked for work** — failed verify rounds (`kind:
 'verify'`, carrying the mechanical failure facts) as well as review rounds (`kind:
@@ -406,11 +428,16 @@ about what was tried; now the trail is the history the skill's step 3a presents.
 // Escalation object (in the workflow result)
 { id: String,               // work-order id
   reason: 'coder_blocked' | 'no_fix_progress' | 'review_not_converging'
-        | 'verify_failed_repeatedly' | 'budget',
+        | 'verify_failed_repeatedly' | 'budget' | 'incoherent_result',
   unresolved: [FINDING],    // the blockers still open
   trail: [ROUND],           // full audit trail, §8
   branch: String, worktree: String }
 ```
+
+`incoherent_result` (self-audit): an agent returned something schema-whole that cannot be
+true of any work — `done` with no commits, `completed` with no commands named, a commit
+"sha" that is not one. The schema layer cannot state cross-field facts, so `dispatch`
+checks them in JS and refuses to let such a result flow on as evidence.
 
 ---
 
@@ -460,6 +487,13 @@ about what was tried; now the trail is the history the skill's step 3a presents.
     commits: [{ sha: String, subject: String }],
     review: {
       rounds: Number,            // every recorded round: failed verify rounds included
+      measured: [String],        // what the final green verify actually ran, e.g.
+                                 // ['build', 'suite', 'discriminator:2']. EMPTY means
+                                 // verifyOk held vacuously — no build, no suite, no
+                                 // discriminating test — and the order is carried in
+                                 // coverage.unreached with complete: false. A field run
+                                 // shipped a docs-only order as "verified" on exactly
+                                 // this emptiness; it is now a visible fact, not a pass.
       open_majors: [FINDING],    // majors + minors from the LAST REVIEW round
       trail: [{ round: Number, kind: 'verify'|'review'|'halt',
                 findings: [FINDING], fix_commits: [String] }],
