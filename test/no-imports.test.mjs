@@ -55,6 +55,37 @@ test('does NOT flag an indented mention mid-line', () => {
   assert.deepEqual(check('  // we cannot import here', WF), [])
 })
 
+// --- self-audit additions: the shapes the line-anchored scan missed -------------------------
+
+test('flags a multi-line static import', () => {
+  const src = ['import {', '  readFile,', "} from 'node:fs/promises'"].join('\n')
+
+  const found = check(src, WF)
+  assert.ok(found.length >= 1, 'a multi-line import is still a module load')
+  assert.equal(found[0].line, 1)
+})
+
+test('flags a re-export, which loads the module exactly like an import', () => {
+  assert.equal(check("export { partition } from './lib/independence.mjs'", WF).length, 1)
+  assert.equal(check("export * from './lib/independence.mjs'", WF).length, 1)
+})
+
+test('does NOT flag the meta export — no from, no module load', () => {
+  const src = "export const meta = { name: 'vfa-survey', description: 'x', phases: [] }"
+  assert.deepEqual(check(src, WF), [])
+})
+
+test('does NOT flag import talk inside a multi-line template prompt', () => {
+  const src = [
+    'const p = `Walk the file and list',
+    'import statements such as',
+    "import { x } from 'y'",
+    'that the coder added.`',
+  ].join('\n')
+
+  assert.deepEqual(check(src, WF), [])
+})
+
 test('a clean workflow produces no violations', () => {
   const src = [
     "export const meta = { name: 'vfa-survey', description: 'x', phases: [] }",

@@ -57,15 +57,28 @@ export function check(source) {
         `indistinguishable from a crash, and from a complete answer. IRON LAW §4: a ` +
         `partial result must never be indistinguishable from a whole one.`,
     })
-  } else if (!returnsCoverage(code)) {
-    violations.push({
-      line: 0,
-      message:
-        `No returned object carries a "coverage" key. IRON LAW §4: a partial result must ` +
-        `never be indistinguishable from a whole one, and the coverage block is the only ` +
-        `thing that tells them apart. Return coverage: { complete, dropped, incomplete, ` +
-        `failed_channels, unreached, resumable }.`,
-    })
+  } else {
+    const verdict = coverageVerdict(code)
+
+    if (verdict === 'none') {
+      violations.push({
+        line: 0,
+        message:
+          `No returned object carries a "coverage" key. IRON LAW §4: a partial result must ` +
+          `never be indistinguishable from a whole one, and the coverage block is the only ` +
+          `thing that tells them apart. Return coverage: { complete, dropped, incomplete, ` +
+          `failed_channels, unreached, resumable }.`,
+      })
+    } else if (verdict === 'vacuous') {
+      violations.push({
+        line: 0,
+        message:
+          `Every returned "coverage" is an empty object literal or null — a key with ` +
+          `nothing behind it satisfies the letter of the rule while carrying none of ` +
+          `{ complete, dropped, incomplete, failed_channels, unreached, resumable }. ` +
+          `IRON LAW §4: an empty coverage block is a partial result wearing the label.`,
+      })
+    }
   }
 
   // Trimmed, not compared: the repo ships LF (.gitattributes), but a source string may
@@ -102,7 +115,9 @@ export function check(source) {
 const COVERAGE_KEY = /[{,]\s*coverage\s*(?::|(?=[,}]))/
 
 /**
- * True when at least one returned object literal carries a `coverage` key.
+ * 'ok' when at least one returned object literal carries a substantive `coverage` key;
+ * 'vacuous' when every carrier's value is decidably empty; 'none' when no return carries
+ * the key at all.
  *
  * All of this runs on the BLANKED source. The span of each object is brace-matched there, so
  * a stray brace in a prompt cannot close the object early, and the key is looked for in that
@@ -110,10 +125,39 @@ const COVERAGE_KEY = /[{,]\s*coverage\s*(?::|(?=[,}]))/
  * spaces. Measuring the span on one text and reading it out of the other is what once let a
  * sentence of prose inside the returned object pass as the coverage block.
  */
-function returnsCoverage(code) {
+function coverageVerdict(code) {
+  let sawKey = false
+  let sawSubstantive = false
+
   for (const match of code.matchAll(/\breturn\s*\{/g)) {
     const open = match.index + match[0].length - 1
-    if (COVERAGE_KEY.test(code.slice(open, endOfObject(code, open)))) return true
+    const span = code.slice(open, endOfObject(code, open))
+    if (!COVERAGE_KEY.test(span)) continue
+    sawKey = true
+    if (!vacuousCoverageValue(span)) sawSubstantive = true
+  }
+
+  if (sawSubstantive) return 'ok'
+  return sawKey ? 'vacuous' : 'none'
+}
+
+/**
+ * True when the coverage key's value is DECIDABLY empty: a literal `{}` with nothing but
+ * whitespace inside, or a literal `null`. A value that is an identifier or ES shorthand is
+ * not vacuous by this test — whether that object carries the six fields is not decidable
+ * by regex, and judging it belongs to the scenario harness, which executes the workflow
+ * and reads the real block (self-audit: this rule checks for a key, the harness checks
+ * for a block; each does the half it can actually decide).
+ */
+function vacuousCoverageValue(span) {
+  const colon = /[{,]\s*coverage\s*:\s*/.exec(span)
+  if (!colon) return false
+
+  const at = colon.index + colon[0].length
+  if (/^null\b/.test(span.slice(at, at + 5))) return true
+  if (span[at] === '{') {
+    const inner = span.slice(at + 1, endOfObject(span, at) - 1)
+    return inner.trim() === ''
   }
   return false
 }
