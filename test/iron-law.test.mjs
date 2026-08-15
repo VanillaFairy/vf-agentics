@@ -74,6 +74,6 @@ test('the ratified law section matches its pinned hash', () => {
 
   assert.equal(
     createHash('sha256').update(law).digest('hex'),
-    'e2b9405a652f4ce3fc7d9ad59f2b00436cb12bfe9feefd9d550a7652a8ace5be',
+    '04e3ecad55b2fe25179f081db115dbac7c737d1351d13e2b142e2027e488077b',
   )
 })

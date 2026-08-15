@@ -70,7 +70,7 @@ A law with no enforcement is decoration. Its mechanical consequences:
 | §1 no counter-based termination | `tools/rules/no-turn-caps.mjs` (T05) |
 | §2 stop_reason enum, not a boolean | `HITS` schema (T15) + `coverage-block` (T06b) |
 | §3 resume, do not truncate | `scoutUntilComplete` in `vfa-survey` (T15) |
-| §4 partial ≠ whole | `tools/rules/coverage-block.mjs` (T06b) |
+| §4 partial ≠ whole | `tools/rules/coverage-block.mjs` (T06b) + `tools/rules/task-tool-fallback.mjs` |
 | §5 side channels get `.catch` | `vfa-survey` (T15), reviewed at T18 |
 | §6 resumable halt | `coverage.resumable` (T15) |
 | §7 escalate, never abandon | agent prompts (T11–T14) |
