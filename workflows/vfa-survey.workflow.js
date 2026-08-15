@@ -17,6 +17,10 @@ export const meta = {
 // support those constraints: they are stripped before the request or validated
 // client-side, so a violation becomes a retry or a dropped result rather than a cap.
 // Every bound below lives in the prompt as behaviour and is enforced in JS after the call.
+//
+// Field semantics go in `description`, never in a comment like this one. Comments are
+// stripped before the schema reaches the model, so a contract written only in a comment
+// binds nobody — and the coverage fields are load-bearing.
 
 // The coverage contract every evidence-gathering agent answers to. Completeness is DERIVED
 // in JS from stop_reason, and a resume is driven by not_reached, so both have to arrive
@@ -70,17 +74,36 @@ const PLAN = {
   properties: {
     topics: {
       type: 'array',
+      description: 'The independent search topics this question decomposes into.',
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['key', 'find'],
-        properties: { key: { type: 'string' }, find: { type: 'string' } },
+        properties: {
+          key: { type: 'string', description: 'Short kebab-case identifier, unique within the plan.' },
+          find: {
+            type: 'string',
+            description: 'A precise instruction for a read-only search agent: what to find and where to look.',
+          },
+        },
       },
     },
-    docs_needed: { type: 'boolean' },
-    docs_question: { type: 'string' },
-    history_needed: { type: 'boolean' },
-    history_question: { type: 'string' },
+    docs_needed: {
+      type: 'boolean',
+      description: 'True only if answering the question needs vendor or standards documentation that is not in these repositories.',
+    },
+    docs_question: {
+      type: 'string',
+      description: 'The documentation question. Required and non-empty whenever docs_needed is true — a true flag with no question means the track is skipped entirely.',
+    },
+    history_needed: {
+      type: 'boolean',
+      description: 'True only if answering the question needs git history rather than the current tree.',
+    },
+    history_question: {
+      type: 'string',
+      description: 'The history question. Required and non-empty whenever history_needed is true — a true flag with no question means the track is skipped entirely.',
+    },
   },
 }
 
@@ -91,11 +114,16 @@ const HITS = {
   properties: {
     hits: {
       type: 'array',
+      description: 'One entry per location found. Locations only — no analysis, no recommendations.',
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['path', 'line', 'note'],
-        properties: { path: { type: 'string' }, line: { type: 'integer' }, note: { type: 'string' } },
+        properties: {
+          path: { type: 'string', description: 'Path to the file containing the hit.' },
+          line: { type: 'integer', description: 'Line number of the hit.' },
+          note: { type: 'string', description: 'What is at that line, in one line.' },
+        },
       },
     },
     ...coverageFields('Every grep pattern, glob, and path you actually searched.'),
@@ -135,10 +163,18 @@ const VERDICT = {
   additionalProperties: false,
   required: ['topic', 'conclusion', 'evidence', 'risks'],
   properties: {
-    topic: { type: 'string' },
-    conclusion: { type: 'string' },
-    evidence: { type: 'array', items: { type: 'string' } },
-    risks: { type: 'array', items: { type: 'string' } },
+    topic: { type: 'string', description: 'The topic key you were given, copied exactly.' },
+    conclusion: { type: 'string', description: 'The answer to this topic, in one or two sentences, stated first.' },
+    evidence: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'The two to four facts that decide the conclusion, each carrying a path:line, a commit, or a URL.',
+    },
+    risks: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Risks and unknowns, only where they change the decision. Put an inadequate search surface here rather than accepting it silently.',
+    },
   },
 }
 

@@ -12,26 +12,45 @@ export const meta = {
 //
 // No minItems / maxItems / minLength / maxLength. The task ceiling is expressed in the
 // prompt as behaviour and enforced in JS below.
+//
+// Field semantics go in `description`, never in a comment: comments are stripped before the
+// schema reaches the model, so a field documented only here binds nobody.
+//
+// TASKS maps one-to-one onto the Task tools: subject / description / activeForm are
+// TaskCreate's parameters, and blocked_by becomes TaskUpdate's addBlockedBy. ref never
+// leaves the workflow.
 
 const TASKS = {
   type: 'object',
   additionalProperties: false,
   required: ['tasks', 'summary', 'gaps'],
   properties: {
-    summary: { type: 'string' },
-    gaps: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string', description: 'What the investigation concluded, in one or two sentences.' },
+    gaps: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'What the investigation could not establish. Never invent a task to paper over one of these.',
+    },
     tasks: {
       type: 'array',
+      description: 'The ordered work, at most 12 entries — merge rather than exceed.',
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['ref', 'subject', 'description', 'activeForm', 'blocked_by'],
         properties: {
-          ref: { type: 'string' },
-          subject: { type: 'string' },
-          description: { type: 'string' },
-          activeForm: { type: 'string' },
-          blocked_by: { type: 'array', items: { type: 'string' } },
+          ref: { type: 'string', description: 'Local id used only by blocked_by within this result.' },
+          subject: { type: 'string', description: 'Imperative and short, e.g. "Replace the legacy timer poll".' },
+          description: {
+            type: 'string',
+            description: 'Must stand alone: carry the path:line references and enough context to act on without ever seeing this investigation.',
+          },
+          activeForm: { type: 'string', description: 'Present continuous form of the subject, e.g. "Replacing the legacy timer poll".' },
+          blocked_by: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'The refs of tasks that must complete first. Empty for tasks that can start immediately.',
+          },
         },
       },
     },

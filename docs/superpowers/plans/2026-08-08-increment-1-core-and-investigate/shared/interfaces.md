@@ -108,6 +108,11 @@ No `minItems`, `maxItems`, `minLength`, or `maxLength` anywhere — structured o
 support them, so they either get stripped or turn a good result into a dropped one. Every bound
 lives in the prompt as behaviour and is enforced in JS after the call.
 
+Field semantics live in each property's `description`, never in a JS comment beside it.
+Comments are stripped before the schema reaches the model, so a field documented only in a
+comment is a contract that binds nobody — and the coverage fields are load-bearing. The shapes
+below are written without descriptions for readability; the implementation carries them.
+
 ### The coverage contract
 
 Every evidence-gathering agent answers to the same four fields, so that completeness can be
