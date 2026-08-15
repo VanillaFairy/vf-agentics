@@ -183,9 +183,13 @@ coverage: {
                               // and unreached are ALL empty. Never taken from an agent.
   dropped:         [String],  // topic keys that produced no result at all
   incomplete:      [String],  // topic keys searched and resumed but never exhausted
-  failed_channels: [String],  // side channels that THREW. 'history' and/or 'docs' from
-                              // vfa-survey; vfa-investigate also emits 'survey' and
-                              // 'synthesis'.
+  failed_channels: [String],  // channels that were REQUESTED and produced no result at all.
+                              // 'history' and/or 'docs' from vfa-survey; vfa-investigate also
+                              // emits 'survey' and 'synthesis'. Three causes, one meaning: the
+                              // agent threw, the agent returned nothing, or the planner marked
+                              // the track necessary and then produced no question for it. That
+                              // last one used to be neither researched nor failed, so the
+                              // channel silently never ran and coverage still read complete.
                               //
                               // LIMITATION (increment 1): a side channel that returns but is
                               // TRUNCATED is not reflected here, and therefore does not make

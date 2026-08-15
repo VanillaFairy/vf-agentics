@@ -155,7 +155,9 @@ const plan = await agent(
   `a confident wrong answer.\n\n` +
   `Set docs_needed only if answering the question requires vendor or standards ` +
   `documentation that is not in these repositories. Put that question in docs_question.\n\n` +
-  `Leave the question fields as empty strings when the matching flag is false.\n` +
+  `Leave a question field as an empty string when its flag is false. When a flag is true ` +
+  `the matching question must be non-empty — a true flag with no question skips the track ` +
+  `entirely and the answer silently loses that evidence.\n` +
   `Do not search anything yourself. Plan only.`,
   { agentType: 'vf-agentics:analyst', effort: 'medium', schema: PLAN, label: 'plan', ...judge },
 ).catch((e) => {
@@ -182,29 +184,52 @@ log(`Plan: ${plan.topics.length} topic(s)` +
 
 // ------------------------------------------------- 2. history and docs
 //
-// Both run alongside the scouts, and both are caught. IRON LAW §5: a side-channel failure
-// must not discard the scout and analyst work already paid for.
+// Both run alongside the scouts. IRON LAW §5: a side-channel failure must not discard the
+// scout and analyst work already paid for, so nothing here rejects.
+//
+// Every outcome is recorded, including the one that used to vanish: a track the planner
+// marked necessary and then gave no question for. That case reported as neither researched
+// nor failed — the channel silently never ran, and coverage still came back complete.
 
-const historyPromise = plan.history_needed && plan.history_question
-  ? agent(
-      `${plan.history_question}\n\nRepositories: ${roots}\nContext: ${question}`,
-      { agentType: 'vf-agentics:historian', effort: 'low', phase: 'History', label: 'history' },
-    ).catch((e) => {
-      log(`WARNING: git history search failed: ${e && e.message}`)
-      return null
+function sideChannel(name, needed, ask, launch) {
+  if (!needed) {
+    return Promise.resolve({ requested: false, result: null, error: '' })
+  }
+  if (!(ask || '').trim()) {
+    log(`WARNING: ${name} was marked necessary but the planner produced no question for it.`)
+    return Promise.resolve({
+      requested: true,
+      result: null,
+      error: 'the planner marked it necessary and then produced no question, so nothing was searched',
     })
-  : Promise.resolve('')
+  }
+  return launch(ask).then(
+    (result) => result
+      ? { requested: true, result, error: '' }
+      : { requested: true, result: null, error: 'the agent returned no result' },
+    (e) => {
+      log(`WARNING: ${name} failed: ${e && e.message}`)
+      return { requested: true, result: null, error: (e && e.message) || 'unknown error' }
+    },
+  )
+}
 
-const docsPromise = plan.docs_needed && plan.docs_question
-  ? agent(
-      `Research this against primary sources and report the facts with URLs.\n\n` +
-      `${plan.docs_question}\n\nContext: ${question}`,
-      { agentType: 'vf-agentics:doc-researcher', effort: 'low', phase: 'Docs', label: 'docs' },
-    ).catch((e) => {
-      log(`WARNING: documentation research failed: ${e && e.message}`)
-      return null
-    })
-  : Promise.resolve('')
+const historyChannel = sideChannel(
+  'git history search', plan.history_needed, plan.history_question,
+  (ask) => agent(
+    `${ask}\n\nRepositories: ${roots}\nContext: ${question}`,
+    { agentType: 'vf-agentics:historian', effort: 'low', phase: 'History', label: 'history' },
+  ),
+)
+
+const docsChannel = sideChannel(
+  'documentation research', plan.docs_needed, plan.docs_question,
+  (ask) => agent(
+    `Research this against primary sources and report the facts with URLs.\n\n` +
+    `${ask}\n\nContext: ${question}`,
+    { agentType: 'vf-agentics:doc-researcher', effort: 'low', phase: 'Docs', label: 'docs' },
+  ),
+)
 
 // -------------------------------------------------- 3. scout -> 4. analyze
 
@@ -317,12 +342,15 @@ const dropped = plan.topics.map((t) => t.key).filter((k) => !covered.has(k)).con
 if (dropped.length > 0) log(`WARNING: no result for topic(s): ${dropped.join(', ')}`)
 if (partial.length > 0) log(`WARNING: could not search to exhaustion: ${partial.join(', ')}`)
 
-const history = await historyPromise
-const docs = await docsPromise
+const history = await historyChannel
+const docs = await docsChannel
 
+// A requested channel that produced nothing — it threw, it returned nothing, or the planner
+// asked for it and then gave it no question. All three mean the same thing downstream: the
+// evidence is not there, and any claim resting on it is unsupported.
 const failedChannels = []
-if (plan.history_needed && history === null) failedChannels.push('history')
-if (plan.docs_needed && docs === null) failedChannels.push('docs')
+if (history.requested && !history.result) failedChannels.push('history')
+if (docs.requested && !docs.result) failedChannels.push('docs')
 
 // Overflow topics are already counted in `dropped` above — they were planned and produced
 // no result. They are deliberately NOT also listed in `unreached`: double-reporting would
@@ -339,7 +367,7 @@ return surveyResult(
   // ones that survived the cap.
   plan.topics.map((t) => t.key).concat(overflow),
   verdicts,
-  history || null,
-  docs || null,
+  history.result || null,
+  docs.result || null,
   coverageOf(dropped, incomplete, failedChannels, unreached),
 )

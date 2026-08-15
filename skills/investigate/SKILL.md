@@ -81,8 +81,10 @@ after it, and never as a footnote:
 
 - `dropped` — topics that produced no result at all
 - `incomplete` — searched and resumed, still not exhausted
-- `failed_channels` — a channel failed; any claim resting on it is unsupported. `history`,
-  `docs`, `survey` or `synthesis`
+- `failed_channels` — a requested channel produced nothing at all, so any claim resting on it
+  is unsupported. `history`, `docs`, `survey` or `synthesis`. It covers three causes that mean
+  the same thing downstream: the agent threw, it returned nothing, or the planner marked the
+  track necessary and never wrote its question
 - `unreached` — surface nobody covered
 
 In task mode, also read `result.tasks.gaps` and state it. That is where the synthesis records
