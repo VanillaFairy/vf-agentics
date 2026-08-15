@@ -475,3 +475,138 @@ test('leading whitespace is significant — a padded locus entry misses a shared
 
   assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
 })
+
+// --- deps: file-disjoint is not build-independent (§2 dependency extension) -----------------
+//
+// The original partition tested only locus disjointness, and a real run scheduled eleven
+// orders concurrently with the order that supplies their build system — every verifier then
+// found no toolchain and escalated. `deps` is the ordering the file test cannot see.
+
+/** A work order with declared dependencies. */
+const dwo = (id, deps, ...locus) => ({ id, locus, deps })
+
+test('a dep forces a later wave even when the loci are disjoint', () => {
+  // Without the dep these two share wave 1 — that is required case 1 above. The dep alone
+  // splits them: W2 builds on what W1 lands, whatever files each touches.
+  const out = partition([wo('W1', 'package.json'), dwo('W2', ['W1'], 'src/a.js')], [])
+
+  assert.deepEqual(out, { waves: [['W1'], ['W2']], coupled: [] })
+})
+
+test('dep chains stack: each order lands the wave after its slowest dependency', () => {
+  const out = partition(
+    [wo('W1', 'package.json'), dwo('W2', ['W1'], 'src/a.js'), dwo('W3', ['W2'], 'src/b.js')],
+    [],
+  )
+
+  assert.deepEqual(out, { waves: [['W1'], ['W2'], ['W3']], coupled: [] })
+})
+
+test('an integration order depending on several others lands after the slowest of them', () => {
+  // W4 wires W2 and W3 together. W2 is in wave 1; W3 collides with W2 on src/a.js and lands
+  // in wave 2 — so W4's floor is wave 3, even though its own locus collides with nothing.
+  const out = partition(
+    [wo('W1', 'src/x.js'), wo('W2', 'src/a.js'), wo('W3', 'src/a.js', 'src/b.js'),
+     dwo('W4', ['W2', 'W3'], 'src/scene.js')],
+    [],
+  )
+
+  assert.deepEqual(out, { waves: [['W1', 'W2'], ['W3'], ['W4']], coupled: [] })
+})
+
+test('an order without deps still backfills an early wave beside a provider', () => {
+  // W3 owes nothing to W1, so it shares wave 1 with it; only the consumer W2 waits.
+  const out = partition(
+    [wo('W1', 'package.json'), dwo('W2', ['W1'], 'src/a.js'), wo('W3', 'docs/notes.md')],
+    [],
+  )
+
+  assert.deepEqual(out, { waves: [['W1', 'W3'], ['W2']], coupled: [] })
+})
+
+test('a forward dep — an order listed before the order it depends on — is legal', () => {
+  const out = partition([dwo('W1', ['W2'], 'src/a.js'), wo('W2', 'package.json')], [])
+
+  assert.deepEqual(out, { waves: [['W2'], ['W1']], coupled: [] })
+})
+
+test('within a wave, ids appear in input order even when deps resolve out of input order', () => {
+  // W1 (input first) waits on W4, so it is PLACED after W3 — yet both land in wave 2:
+  // W3 collides with W2 on src/x.js, and W1's floor is the wave after W4. Output order
+  // within that wave follows the input (W1 before W3), not placement.
+  const out = partition(
+    [dwo('W1', ['W4'], 'src/a.js'), wo('W2', 'src/x.js'),
+     wo('W3', 'src/x.js', 'src/b.js'), wo('W4', 'src/d.js')],
+    [],
+  )
+
+  assert.deepEqual(out, { waves: [['W2', 'W4'], ['W1', 'W3']], coupled: [] })
+})
+
+test('deps: [] is equivalent to no deps at all', () => {
+  const out = partition([dwo('W1', [], 'src/a.js'), wo('W2', 'src/b.js')], [])
+
+  assert.deepEqual(out, { waves: [['W1', 'W2']], coupled: [] })
+})
+
+test('a coupled order may itself declare deps — the session owns its ordering', () => {
+  // W1 is coupled by the shared file; its dep on W2 is not the refused direction (nothing
+  // in a wave waits on W1), so the partition carries no opinion about it.
+  const out = partition(
+    [dwo('W1', ['W2'], 'src/config.js', 'src/a.js'), wo('W2', 'src/b.js')],
+    ['src/config.js'],
+  )
+
+  assert.deepEqual(out, { waves: [['W2']], coupled: ['W1'] })
+})
+
+test('a dep naming no work order throws a TypeError', () => {
+  assert.throws(() => partition([dwo('W1', ['W9'], 'src/a.js')], []), TypeError)
+})
+
+test('a dep on itself throws a TypeError', () => {
+  assert.throws(() => partition([dwo('W1', ['W1'], 'src/a.js')], []), TypeError)
+})
+
+test('a dependency cycle throws a TypeError naming the ids involved', () => {
+  assert.throws(
+    () => partition(
+      [dwo('W1', ['W2'], 'src/a.js'), dwo('W2', ['W1'], 'src/b.js'), wo('W3', 'src/c.js')],
+      [],
+    ),
+    (err) => {
+      assert.ok(err instanceof TypeError)
+      assert.match(err.message, /W1/)
+      assert.match(err.message, /W2/)
+      return true
+    },
+  )
+})
+
+test('a dep on a coupled order throws — a provider cannot be routed outside the pipeline', () => {
+  // This is the F5 failure made loud: the toolchain scaffold was classified coupled while
+  // eleven consumers dispatched against a base with no toolchain. The partition now refuses
+  // to produce that schedule at all, before anything is dispatched.
+  assert.throws(
+    () => partition(
+      [wo('W1', 'package.json', 'src/config.js'), dwo('W2', ['W1'], 'src/a.js')],
+      ['src/config.js'],
+    ),
+    (err) => {
+      assert.ok(err instanceof TypeError)
+      assert.match(err.message, /coupled/)
+      return true
+    },
+  )
+})
+
+test('deps do not mutate the input and stay deterministic', () => {
+  const orders = [dwo('W2', ['W1'], 'src/a.js'), wo('W1', 'package.json')]
+  const before = structuredClone(orders)
+  const first = partition(orders, [])
+
+  partition([wo('W9', 'src/z.js')], [])
+
+  assert.deepEqual(partition(orders, []), first)
+  assert.deepEqual(orders, before)
+})
