@@ -68,7 +68,8 @@ export function check(source) {
     })
   }
 
-  // Trimmed, not compared: files on disk are CRLF here, so the line ends with \r.
+  // Trimmed, not compared: the repo ships LF (.gitattributes), but a source string may
+  // still arrive CRLF from an unnormalized tree, and the trim keeps both spellings equal.
   code.split('\n').forEach((text, index) => {
     if (!/^return\s*;?$/.test(text.trim())) return
     violations.push({
