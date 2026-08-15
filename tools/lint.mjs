@@ -108,7 +108,13 @@ export function formatFindings(findings) {
     .join('\n')
 }
 
-if (import.meta.main) {
+// `import.meta.main` is undefined before Node 24.2, and an undefined guard makes this
+// CLI print nothing and exit 0 — the gate itself passing silently on an unlinted tree.
+// The argv comparison is the fallback that keeps the gate a gate on every runtime.
+const isMain = import.meta.main ??
+  (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)
+
+if (isMain) {
   const findings = await lintPlugin(process.cwd())
   console.log(formatFindings(findings))
   process.exit(findings.length > 0 ? 1 : 0)

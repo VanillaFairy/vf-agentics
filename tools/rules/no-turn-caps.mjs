@@ -11,7 +11,10 @@
 
 export const id = 'no-turn-caps'
 
-export const applies = /(\.workflow\.js|SKILL\.md)$/
+// Agent charters are in scope too (self-audit): CLAUDE.md's clause table assigns §1
+// enforcement to this rule alone, and a turn cap written into an agent's own charter is
+// the most damaging place one can appear — every dispatch of that agent inherits it.
+export const applies = /(\.workflow\.js|SKILL\.md|agents\/[^/]+\.md)$/
 
 /** Option-shaped caps. `rounds` is absent on purpose — see the header. */
 const CAP_IDENTIFIER = /\bmax_?(turns|tool_?calls)\b/gi

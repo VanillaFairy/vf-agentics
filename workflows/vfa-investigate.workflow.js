@@ -50,6 +50,12 @@ const judge = intelligence === 'max' ? { model: 'fable' } : {}
 
 const MAX_TASKS = 12
 
+// The runtime does not expose a workflow's own run id to its script, so it cannot be
+// written into `resumable` — and a null there is indistinguishable from a field nobody
+// filled in. The Workflow launch result carries the real id; the skill records it at
+// launch and pairs it with `remaining`.
+const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Workflow launch result'
+
 // The parameter is named `coverageBlock` so the key can be written out as `coverage:` without
 // reading as a redundant `coverage: coverage`. Style only, matching `vfa-survey` — the
 // `coverage-block` rule understands ES shorthand, so `{ …, coverage }` would lint clean too.
@@ -64,7 +70,7 @@ if (!question) {
     incomplete: [],
     failed_channels: [],
     unreached: ['no question was supplied, so nothing was investigated'],
-    resumable: { runId: null, remaining: [] },
+    resumable: { runId: RUN_ID, remaining: [] },
   })
 }
 
@@ -72,15 +78,48 @@ if (!question) {
 
 phase('Survey')
 
-const survey = await workflow('vfa-survey', {
-  question,
-  roots,
-  notes,
-  intelligence,
-})
+// Registered workflows are plugin-namespaced, so the qualified name is tried first and the
+// bare name second. A lookup failure on both is a broken reference in this plugin —
+// unconditional on every machine — and it is reported as exactly that rather than as an
+// environmental survey failure: the two must stay distinguishable, or the defect hides in
+// a degrade path forever.
+const surveyArgs = { question, roots, notes, intelligence }
+const notFound = (e) => /not found/i.test((e && e.message) || '')
+let survey = null
+let surveyUnresolved = false
 
-// The survey never throws and always returns its documented shape, so a missing coverage
-// block means something changed underneath us. Say so rather than inventing one.
+try {
+  survey = await workflow('vf-agentics:vfa-survey', surveyArgs)
+} catch (e) {
+  if (!notFound(e)) {
+    log(`WARNING: the survey threw: ${e && e.message}`)
+  } else {
+    try {
+      survey = await workflow('vfa-survey', surveyArgs)
+    } catch (e2) {
+      if (notFound(e2)) surveyUnresolved = true
+      else log(`WARNING: the survey threw: ${e2 && e2.message}`)
+    }
+  }
+}
+
+if (surveyUnresolved) {
+  return investigateResult('report', null, null, {
+    complete: false,
+    dropped: [],
+    incomplete: [],
+    failed_channels: ['survey'],
+    unreached: [
+      'the vfa-survey sub-workflow resolved under neither "vf-agentics:vfa-survey" nor ' +
+      '"vfa-survey" — a broken reference in this plugin, not an environmental failure; ' +
+      'nothing was searched',
+    ],
+    resumable: { runId: RUN_ID, remaining: [] },
+  })
+}
+
+// The survey itself never throws and always returns its documented shape, so a missing
+// coverage block means something changed underneath us. Say so rather than inventing one.
 if (!survey || !survey.coverage) {
   return investigateResult('report', null, null, {
     complete: false,
@@ -88,7 +127,7 @@ if (!survey || !survey.coverage) {
     incomplete: [],
     failed_channels: ['survey'],
     unreached: ['vfa-survey returned no coverage block; the evidence phase did not complete'],
-    resumable: { runId: null, remaining: [] },
+    resumable: { runId: RUN_ID, remaining: [] },
   })
 }
 

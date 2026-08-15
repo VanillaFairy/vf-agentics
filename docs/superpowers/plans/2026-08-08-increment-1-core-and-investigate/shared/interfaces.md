@@ -198,8 +198,11 @@ coverage: {
 }
 ```
 
-`runId` is `null` in increment 1 — a workflow script cannot read its own run id. `remaining` is
-`dropped.concat(incomplete)`. Both fields exist now so consumers do not change shape later.
+`runId` is a **reason string** — a workflow script cannot read its own run id, and the value
+says exactly that, pointing at the Workflow launch result (which the invoking skill records
+at launch). It was `null` originally; a reason string replaced it so "not knowable here"
+stays distinguishable from "forgotten to fill in". `remaining` is
+`dropped.concat(incomplete)`. Both fields exist so consumers do not change shape later.
 
 ---
 

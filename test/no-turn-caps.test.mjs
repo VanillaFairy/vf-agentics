@@ -18,10 +18,15 @@ test('the rule id matches its filename stem', () => {
   assert.equal(id, 'no-turn-caps')
 })
 
-test('it applies to workflow scripts and SKILL.md, not to agents or tools', () => {
+test('it applies to workflow scripts, SKILL.md, and agent charters — not to tools', () => {
+  // Agent charters were originally out of scope; the self-audit widened the rule, since
+  // CLAUDE.md's clause table assigns IRON LAW §1 to this rule alone and a cap written
+  // into a charter reaches every dispatch of that agent.
   assert.ok(applies.test(WF))
   assert.ok(applies.test(SKILL))
+  assert.ok(applies.test('agents/scout.md'))
   assert.ok(!applies.test('tools/lint.mjs'))
+  assert.ok(!applies.test('docs/superpowers/plans/x/tasks/T05-agents.md'))
 })
 
 test('flags maxTurns and reports its line', () => {

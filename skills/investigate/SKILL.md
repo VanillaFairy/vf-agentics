@@ -44,8 +44,12 @@ different work. Otherwise state your assumption and continue.
 ## Step 2 — Run it
 
 ```
-Workflow({ name: 'vfa-investigate', args: { question, roots, notes, as_tasks, intelligence } })
+Workflow({ name: 'vf-agentics:vfa-investigate', args: { question, roots, notes, as_tasks, intelligence } })
 ```
+
+The name is plugin-namespaced; the bare `vfa-investigate` does not resolve. Record the
+`runId` from the launch result — the script cannot read its own id, and `runId` is what
+pairs with `coverage.resumable.remaining` if the run needs resuming.
 
 Let it run in the background. Tell the user they can watch with `/workflows`. Do not poll, and
 do not guess at results before the notification arrives.

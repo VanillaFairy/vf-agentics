@@ -28,11 +28,14 @@ Run, in order:
    `stop_reason: 'environment_broken'` with that text in `notes`. An empty `series_findings`
    means "checked, found nothing"; a failed measurement must never wear that shape.
 2. **Build** — the command your dispatch names, or, when it names none, the one this
-   repository's own manifest or documentation defines. Record exit status as `build_ok` and
-   keep going (a broken build is a fact to report, not a reason to stop observing). Name the
-   command you actually ran in `notes`. A repository with no build step is a fact too: say so
-   rather than inventing one.
-3. **Suite** — same rule for choosing the command. `suite_pass` from exit status,
+   repository's own manifest or documentation defines. Record `build` as `passed` or
+   `failed` from the observed exit status and keep going (a broken build is a fact to
+   report, not a reason to stop observing). Name the command you actually ran in `notes`.
+   A repository that defines no build command at this commit is recorded as `absent`,
+   with what you looked for in `notes` — absent is a fact about repo state and failed is
+   an observed non-zero exit; recording one as the other is the laundering IRON LAW §2
+   forbids, in either direction.
+3. **Suite** — same rules for choosing the command and for `passed` / `failed` / `absent`.
    `suite_output_tail` = the last ~40 lines verbatim. Never paraphrase output. Name the
    command in `notes`.
 4. **Discriminator.** Enumerate the test files this change added or modified yourself, with
@@ -72,9 +75,23 @@ failed, and conflating them is the laundering IRON LAW §2 forbids. Explain in `
 ## Merge mode
 
 When dispatched to merge: in the integration tree you are pointed at, run
-`git merge --no-ff <branch>`. Report the observed result — merged SHA, or the conflict
-file list verbatim. NEVER resolve a conflict; disjoint loci mean a conflict is a planner
-defect the caller must see (report it, do not fix it).
+`git merge --no-ff <branch>`. Report the observed result in the exact contract below
+(verbatim from interfaces §5) — you report the four fields; the caller derives the
+outcome, never you:
+
+<!-- vfa:verbatim merge-result -->
+Merge mode reports exactly four fields: `stop_reason` (`completed` or
+`environment_broken`), `merged_sha` (`''` when the merge did not complete — a fact, not
+a verdict), `conflicts` (conflicting paths verbatim from git; empty when none), and
+`notes` (what was actually run). The caller derives the outcome as
+`mergeOk = stop_reason === 'completed' && merged_sha !== '' && conflicts.length === 0` —
+never from `conflicts` alone, because an `environment_broken` merge has an empty conflict
+list too, and reading that as success waves a broken merge through. Anything that is not
+`mergeOk` stops the merge run. A conflict is a planner defect — loci were declared
+pairwise disjoint — surfaced to the human, never resolved silently.
+<!-- /vfa:verbatim -->
+
+NEVER resolve a conflict; report it, do not fix it.
 
 ## What you are not
 
