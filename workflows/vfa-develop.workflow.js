@@ -133,6 +133,62 @@ const verifyOk = v => v.stop_reason === 'completed'
   && v.discriminator.every(d => d.failed_on_base && d.passes_now)
   && !v.series_findings.some(f => f.blocking)
 
+// ------------------------------------------------------------- result coherence
+//
+// The runtime validates every agent result against its schema, but a schema cannot state
+// cross-field facts — "done means commits landed", "completed means the commands are
+// named". A result that is schema-whole and semantically impossible must not flow on as
+// evidence: in the first field run the same repo state came back coded three different
+// ways by verifiers holding the same charter. A violation here says the RESULT cannot be
+// true of any work, which is a different statement from the work having failed.
+
+const SHA_RE = /^[0-9a-f]{7,40}$/i
+
+function coherentCoder(res) {
+  const finished = res.status === 'done' || res.status === 'done_with_concerns'
+  const commits = res.commits || []
+
+  if (finished && commits.length === 0) return 'status ' + res.status + ' with no commits'
+  if (commits.some((c) => !SHA_RE.test(c.sha || ''))) return 'a commit sha is not a git sha'
+  if (commits.length > 0 && !res.head_sha) return 'commits landed but head_sha is empty'
+  if (commits.length > 0 && res.head_sha === res.base_sha) {
+    return 'commits landed but head_sha still equals base_sha'
+  }
+  return null
+}
+
+// The initial coder also anchors the worktree and branch every later stage is dispatched
+// into; a fix round inherits them from state, so only the first series needs this. A
+// blocked coder that landed nothing may legitimately have no worktree to name — that is
+// the coder_blocked path, not an incoherence.
+function coherentNewSeries(res) {
+  const finished = res.status === 'done' || res.status === 'done_with_concerns'
+  if ((finished || (res.commits || []).length > 0) && (!res.worktree || !res.branch)) {
+    return 'worktree or branch missing from a result that claims landed work'
+  }
+  return coherentCoder(res)
+}
+
+function coherentVerify(v) {
+  if (v.stop_reason === 'completed' && !(v.notes || '').trim()) {
+    return 'completed with empty notes — the commands run must be named'
+  }
+  if ((v.discriminator || []).some((d) => !(d.test_id || '').trim())) {
+    return 'a discriminator entry has no test_id'
+  }
+  return null
+}
+
+// What the verifier actually measured. Empty means the order was implemented and reviewed
+// but nothing mechanical ran — verifyOk holds vacuously on []/absent/absent, and in the
+// field a docs-only order shipped as verified on exactly that emptiness. Emptiness is a
+// fact the caller must see, so it travels in the result and keeps coverage.complete false.
+const measuredOf = (v) => [
+  v.build !== 'absent' ? 'build' : null,
+  v.suite !== 'absent' ? 'suite' : null,
+  (v.discriminator || []).length > 0 ? 'discriminator:' + v.discriminator.length : null,
+].filter(Boolean)
+
 // ---------------------------------------------------------------- inputs
 
 const input = typeof args === 'string' ? { change: args } : (args || {})
@@ -233,9 +289,10 @@ function developResult(workOrders, implemented, escalations, coupledIds, deferre
 // escalated, coupled out to the session, or deferred to a later wave is an order that did
 // not land, and a run carrying any of them is not complete however well the rest went.
 // `complete` is derived here and never taken from an agent.
-function coverageOf(escalations, coupled, deferred, surveyCoverage, failedChannels) {
+function coverageOf(escalations, coupled, deferred, surveyCoverage, failedChannels, extraUnreached) {
   return {
     complete: escalations.length === 0 && coupled.length === 0 && deferred.length === 0
+      && (extraUnreached || []).length === 0
       && (surveyCoverage ? surveyCoverage.complete === true : true),
     // This workflow has no topic-shaped work: an order that produced nothing produced an
     // escalation instead, and those are carried above. The two keys stay for shape
@@ -243,9 +300,13 @@ function coverageOf(escalations, coupled, deferred, surveyCoverage, failedChanne
     dropped: [],
     incomplete: [],
     failed_channels: failedChannels,
+    // extraUnreached carries surface a caller must see that fits no bucket above: a
+    // partition failure's label, and orders whose verification was vacuous (implemented
+    // and reviewed with nothing mechanically measurable). Both keep `complete` false.
     unreached: coupled.map(coupledNote)
       .concat(deferred.map(deferredNote))
-      .concat(escalations.map(escalationNote)),
+      .concat(escalations.map(escalationNote))
+      .concat(extraUnreached || []),
     resumable: {
       runId: RUN_ID,
       remaining: coupled.concat(deferred).concat(escalations.map((e) => e.id)),
@@ -296,7 +357,7 @@ function runtimeFinding(id, claim, evidence) {
 // is concerned: the order stops where it is, and what it had so far becomes an escalation
 // with the reason written into the trail as well as into `unresolved`. IRON LAW §6 — a
 // budget is a loud, resumable halt, never an answer.
-async function dispatch(wo, state, trail, what, open, run) {
+async function dispatch(wo, state, trail, what, open, run, coherent) {
   let value = null
 
   try {
@@ -309,14 +370,20 @@ async function dispatch(wo, state, trail, what, open, run) {
     return { escalation: haltedEsc(wo, state, trail, open, what + ' returned no result') }
   }
 
+  const violation = coherent ? coherent(value) : null
+  if (violation) {
+    return { escalation: haltedEsc(wo, state, trail, open,
+      what + ' returned an incoherent result: ' + violation, 'incoherent_result') }
+  }
+
   return { value }
 }
 
-function haltedEsc(wo, state, trail, open, note) {
+function haltedEsc(wo, state, trail, open, note, reason) {
   log(`ESCALATION ${wo.id}: ${note}`)
   const finding = runtimeFinding(wo.id + '-halt', note, 'recorded by vfa-develop at dispatch')
   trail.push({ round: trail.length + 1, kind: 'halt', findings: [finding], fix_commits: [] })
-  return esc(wo, 'budget', open.concat([finding]), trail, state)
+  return esc(wo, reason || 'budget', open.concat([finding]), trail, state)
 }
 
 // ---------------------------------------------------------------- prompts
@@ -520,6 +587,7 @@ function newState(wo) {
   return {
     id: wo.id, worktree: '', branch: '', base_sha: '', head_sha: '',
     commits: [], fixCommits: [], concerns: [], discovered: [], advisories: [],
+    measured: [],
   }
 }
 
@@ -598,7 +666,7 @@ async function verifyUntilGreen(wo, state, trail) {
       () => agent(verifierPrompt(wo, state), {
         agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
         phase: 'Verify', label: `verify:${wo.id}`,
-      }))
+      }), coherentVerify)
     if (call.escalation) return call.escalation
 
     const v = call.value
@@ -607,7 +675,13 @@ async function verifyUntilGreen(wo, state, trail) {
     if (v.build === 'absent') log(`${wo.id}: no build command exists at this commit — repo state, not a failure.`)
     if (v.suite === 'absent') log(`${wo.id}: no test suite exists at this commit — repo state, not a failure.`)
 
-    if (verifyOk(v)) return null
+    if (verifyOk(v)) {
+      state.measured = measuredOf(v)
+      if (state.measured.length === 0) {
+        log(`${wo.id}: verification passed VACUOUSLY — no build, no suite, no discriminating test. Carried into coverage.`)
+      }
+      return null
+    }
 
     const failures = verifyFailureFindings(wo, v)
     log(`${wo.id}: verification failed on ${failures.length} fact(s); dispatching a fix round.`)
@@ -622,7 +696,7 @@ async function verifyUntilGreen(wo, state, trail) {
       () => agent(coderFixPrompt(wo, state, verifyFixInstruction(failures)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
         phase: 'Verify', label: `fix:${wo.id}`, ...coderTier,
-      }))
+      }), coherentCoder)
     if (fixCall.escalation) return fixCall.escalation
 
     const fix = fixCall.value
@@ -715,7 +789,7 @@ async function reviewLoop(wo, state, trail) {
       () => agent(coderFixPrompt(wo, state, reviewFixInstruction(open)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
         phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderTier,
-      }))
+      }), coherentCoder)
     if (fixCall.escalation) return fixCall.escalation
 
     const fix = fixCall.value
@@ -753,7 +827,7 @@ async function implement(wo) {
       () => agent(coderPrompt(wo), {
         agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
         phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderTier,
-      }))
+      }), coherentNewSeries)
     if (call.escalation) return { wo, state, trail, escalation: call.escalation }
 
     const res = call.value
@@ -826,6 +900,7 @@ let orders = []
 let coupled = []
 let deferred = []
 let surveyCoverage = null
+let partitionNote = ''
 const implemented = []
 const escalations = []
 const failedChannels = []
@@ -857,12 +932,14 @@ try {
     }
     const notFound = (e) => /not found/i.test((e && e.message) || '')
     let surveyUnresolved = false
+    let surveyFailure = ''
 
     try {
       survey = await workflow('vf-agentics:vfa-survey', surveyArgs)
     } catch (e) {
       if (!notFound(e)) {
-        log(`WARNING: the survey failed: ${e && e.message}`)
+        surveyFailure = String((e && e.message) || e)
+        log(`WARNING: the survey failed: ${surveyFailure}`)
         survey = null
       } else {
         try {
@@ -871,7 +948,8 @@ try {
           if (notFound(e2)) {
             surveyUnresolved = true
           } else {
-            log(`WARNING: the survey failed: ${e2 && e2.message}`)
+            surveyFailure = String((e2 && e2.message) || e2)
+            log(`WARNING: the survey failed: ${surveyFailure}`)
           }
           survey = null
         }
@@ -897,8 +975,14 @@ try {
 
     if (!survey || !survey.coverage) {
       // IRON LAW §5: a failed evidence channel must not discard the run. Planning continues
-      // with the gap declared, and the gap keeps `complete` false all the way out.
-      log('WARNING: the survey returned no coverage block; planning on thin evidence.')
+      // with the gap declared, and the gap keeps `complete` false all the way out. The two
+      // ways of arriving here are different answers (§7: "I couldn't" is not "there is
+      // nothing there") and are labeled apart: a survey that THREW is not a survey that
+      // returned without a coverage block.
+      const surveyGap = surveyFailure
+        ? 'the survey threw before returning: ' + surveyFailure
+        : 'vfa-survey returned no coverage block; the evidence phase did not complete'
+      log(`WARNING: ${surveyGap}; planning on thin evidence.`)
       failedChannels.push('survey')
       survey = null
       surveyCoverage = {
@@ -906,7 +990,7 @@ try {
         dropped: [],
         incomplete: [],
         failed_channels: ['survey'],
-        unreached: ['vfa-survey returned no coverage block; the evidence phase did not complete'],
+        unreached: [surveyGap],
         resumable: { runId: RUN_ID, remaining: [] },
       }
     } else {
@@ -963,11 +1047,34 @@ try {
 
   let wave1 = []
 
-  try {
-    const partition = JSON.parse(planned.partition_raw)
-    if (partition.error) throw new Error(partition.error)
-    if (!Array.isArray(partition.waves)) throw new Error('partition carries no waves array')
+  // Three distinct failures, three distinct labels — a plan the partition REFUSED is a
+  // planning defect, and reporting it as "did not parse" sends the reader after the wrong
+  // bug (§7: "I couldn't" and "there is nothing there" are different answers). All three
+  // routes behave identically — every order goes to the session — and the label travels
+  // in coverage.unreached, not only in this log stream.
+  let partition = null
 
+  try {
+    partition = JSON.parse(planned.partition_raw)
+  } catch (e) {
+    partitionNote = 'partition_raw is not JSON — the planner paraphrased the CLI output ' +
+      'instead of pasting it (' + (e && e.message) + ')'
+  }
+
+  if (!partitionNote && partition && partition.error) {
+    partitionNote = 'the partition refused the plan: ' + partition.error + ' — a planning ' +
+      'defect (a dependency cycle, a dep naming no order, or a provider routed to the ' +
+      'session), not a parse failure'
+  }
+  if (!partitionNote && (!partition || !Array.isArray(partition.waves))) {
+    partitionNote = 'partition output carries no waves array'
+  }
+
+  if (partitionNote) {
+    log(`WARNING: ${partitionNote}; every order goes to the session.`)
+    failedChannels.push('partition')
+    coupled = orders.map((wo) => wo.id)
+  } else {
     const firstWave = partition.waves[0] || []
     wave1 = firstWave.map((id) => orderById.get(id)).filter(Boolean)
     deferred = partition.waves.slice(1).flat()
@@ -981,12 +1088,6 @@ try {
       coupled = coupled.concat(unknown)
       failedChannels.push('partition')
     }
-  } catch (e) {
-    log(`WARNING: partition_raw did not parse (${e && e.message}); every order goes to the session.`)
-    failedChannels.push('partition')
-    wave1 = []
-    deferred = []
-    coupled = orders.map((wo) => wo.id)
   }
 
   // A planned order that the partition names nowhere would otherwise be dropped without a
@@ -1065,6 +1166,7 @@ try {
         commits: state.commits,
         review: {
           rounds: chain.trail.length,
+          measured: state.measured,
           open_majors: lastReview ? lastReview.findings.filter((f) => f.severity !== 'critical') : [],
           trail: chain.trail,
         },
@@ -1080,8 +1182,16 @@ try {
   if (deferred.length > 0) log(`DEFERRED to a later wave: ${deferred.join(', ')}`)
   log(`IMPLEMENTED: ${implemented.length} of ${orders.length} order(s). This workflow does not merge.`)
 
+  // An order whose verification was vacuous is implemented and review-approved, but the
+  // mechanical half of the assurance never ran. That fact keeps `complete` false.
+  const unmeasuredNotes = implemented
+    .filter((entry) => entry.review.measured.length === 0)
+    .map((entry) => entry.id + ': implemented and review-approved, but nothing was ' +
+      'mechanically measurable — no build, no suite, no discriminating test')
+  const extraUnreached = (partitionNote ? [partitionNote] : []).concat(unmeasuredNotes)
+
   return developResult(orders, implemented, escalations, coupled, deferred, surveyCoverage,
-    coverageOf(escalations, coupled, deferred, surveyCoverage, failedChannels))
+    coverageOf(escalations, coupled, deferred, surveyCoverage, failedChannels, extraUnreached))
 } catch (e) {
   log(`WARNING: the run threw: ${e && e.message}`)
   return developResult(orders, implemented, escalations, coupled, deferred, surveyCoverage, {
