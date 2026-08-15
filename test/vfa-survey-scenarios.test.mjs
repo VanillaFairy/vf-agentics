@@ -21,7 +21,7 @@ const PLAN = (over = {}) => ({
 
 const HITS = (over = {}) => ({
   hits: [{ path: 'src/x.js', line: 1, note: 'the thing' }],
-  searched: ['grep thing'], stop_reason: 'exhausted', uncovered: '',
+  searched: ['grep thing'], stop_reason: 'exhausted', no_match: '', not_reached: '',
   ...over,
 })
 
@@ -92,5 +92,55 @@ test('a topic whose analysis fails is dropped exactly once and fails coverage', 
   assert.equal(result.verdicts.length, 1)
   assert.deepEqual(result.coverage.dropped, ['a'])
   assert.deepEqual(result.coverage.incomplete, [], 'a dropped topic must not also count as incomplete')
+  assert.equal(result.coverage.complete, false)
+})
+
+// ---------------------------------------------------------------- the resume loop
+
+test('the resume round is handed what was never reached, not what was proven absent', async () => {
+  const { result, prompts } = await run({
+    plan: PLAN(),
+    'scout:a#2': HITS({ searched: ['grep legacy'] }),
+    'scout:a': HITS({
+      stop_reason: 'budget',
+      no_match: 'nothing under tests/',
+      not_reached: 'src/legacy/ was never opened',
+    }),
+    'analyze:': VERDICT('a'),
+  })
+
+  const resume = prompts.find((p) => p.opts.label === 'scout:a#2')
+  assert.ok(resume, 'a non-exhausted scout must be resumed rather than reported')
+  assert.match(resume.prompt, /STILL NOT REACHED[\s\S]*src\/legacy\/ was never opened/)
+  assert.doesNotMatch(resume.prompt, /nothing under tests\//,
+    're-sending proven-absent ground buys a second search of a place already known to be empty')
+
+  // Round 2 exhausted, so the topic really is complete.
+  assert.equal(result.coverage.complete, true)
+})
+
+test('what a scout proved absent reaches the analyst as evidence of absence', async () => {
+  const { prompts } = await run({
+    plan: PLAN(),
+    'scout:a': HITS({ no_match: 'nothing under tests/' }),
+    'analyze:': VERDICT('a'),
+  })
+
+  const analyze = prompts.find((p) => p.opts.label === 'analyze:a')
+  assert.match(analyze.prompt, /SEARCHED AND NOT FOUND \(this is evidence of absence\)/)
+  assert.match(analyze.prompt, /nothing under tests\//)
+})
+
+test('a scout that stops without naming what it missed is a dead end, not a resume', async () => {
+  const { result, prompts } = await run({
+    plan: PLAN(),
+    'scout:a': HITS({ stop_reason: 'stuck', not_reached: '   ' }),
+    'analyze:': VERDICT('a'),
+  })
+
+  // Another round would be handed an empty task and would return "exhausted" having done
+  // nothing — paying for a round that launders truncation into completeness.
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:')).length, 1)
+  assert.deepEqual(result.coverage.incomplete, ['a'])
   assert.equal(result.coverage.complete, false)
 })

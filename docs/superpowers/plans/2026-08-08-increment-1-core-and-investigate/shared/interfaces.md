@@ -108,6 +108,26 @@ No `minItems`, `maxItems`, `minLength`, or `maxLength` anywhere — structured o
 support them, so they either get stripped or turn a good result into a dropped one. Every bound
 lives in the prompt as behaviour and is enforced in JS after the call.
 
+### The coverage contract
+
+Every evidence-gathering agent answers to the same four fields, so that completeness can be
+derived in JS rather than asserted in prose:
+
+```js
+{
+  searched:    { type: 'array', items: { type: 'string' } },  // the evidence trail behind stop_reason
+  stop_reason: { type: 'string', enum: ['exhausted', 'budget', 'stuck'] },
+  no_match:    { type: 'string' },     // searched for and genuinely absent — a FINDING
+  not_reached: { type: 'string' },     // never searched — a HOLE. Non-empty unless exhausted.
+}
+```
+
+`no_match` and `not_reached` are separate fields and must never be merged. "I looked and it is
+not there" often decides the question; "I never looked" is the thing the whole plugin exists to
+surface. Merging them lets a truncated search read as a clean result, and it poisons the resume
+loop, which would re-search ground already proven empty. They were one `uncovered` string in
+version 1.0.
+
 ```js
 const PLAN = {
   type: 'object', additionalProperties: false,
@@ -126,15 +146,13 @@ const PLAN = {
 
 const HITS = {
   type: 'object', additionalProperties: false,
-  required: ['hits', 'searched', 'stop_reason', 'uncovered'],
+  required: ['hits', 'searched', 'stop_reason', 'no_match', 'not_reached'],
   properties: {
     hits: { type: 'array', items: {
       type: 'object', additionalProperties: false,
       required: ['path', 'line', 'note'],
       properties: { path: { type: 'string' }, line: { type: 'integer' }, note: { type: 'string' } } } },
-    searched: { type: 'array', items: { type: 'string' } },
-    stop_reason: { type: 'string', enum: ['exhausted', 'budget', 'stuck'] },
-    uncovered: { type: 'string' },
+    ...coverageFields,   // searched, stop_reason, no_match, not_reached
   },
 }
 

@@ -18,6 +18,51 @@ export const meta = {
 // client-side, so a violation becomes a retry or a dropped result rather than a cap.
 // Every bound below lives in the prompt as behaviour and is enforced in JS after the call.
 
+// The coverage contract every evidence-gathering agent answers to. Completeness is DERIVED
+// in JS from stop_reason, and a resume is driven by not_reached, so both have to arrive
+// filled in.
+//
+// no_match and not_reached stay separate on purpose. "I looked and it is not there" is a
+// FINDING — often the one that decides the question. "I never looked" is a HOLE. Merging them
+// is exactly how a truncated search gets read as a clean result, and it also poisons the
+// resume loop: the next round is handed things already established as absent and pays to
+// re-search them.
+const coverageFields = (searchedDescription) => ({
+  searched: {
+    type: 'array',
+    items: { type: 'string' },
+    description: searchedDescription +
+      ' This is the evidence trail behind stop_reason. Without it your completeness claim is ' +
+      'an unverifiable self-report, and nobody can resume where you stopped.',
+  },
+  stop_reason: {
+    type: 'string',
+    enum: ['exhausted', 'budget', 'stuck'],
+    description:
+      '"exhausted" — every candidate your searches turned up has been triaged and you can ' +
+      'name the surface that covers the request. "budget" — the work was larger than one ' +
+      'pass and you stopped partway. "stuck" — you could not find a way forward. Only ' +
+      '"exhausted" counts as a complete result, so claim it only when it is true. The other ' +
+      'two are not failures: the caller will resume you.',
+  },
+  no_match: {
+    type: 'string',
+    description:
+      'What you searched for and genuinely did not find. This is a finding, not a gap — it ' +
+      'tells the caller the thing is absent. Empty only if everything you looked for was there.',
+  },
+  not_reached: {
+    type: 'string',
+    description:
+      'What you never searched at all, named specifically enough for someone else to pick it ' +
+      'up without redoing your work. Must be non-empty whenever stop_reason is not ' +
+      '"exhausted": a search you do not describe cannot be resumed and will be recorded as a ' +
+      'dead end instead. Never merge this with no_match.',
+  },
+})
+
+const COVERAGE_FIELDS = ['searched', 'stop_reason', 'no_match', 'not_reached']
+
 const PLAN = {
   type: 'object',
   additionalProperties: false,
@@ -42,7 +87,7 @@ const PLAN = {
 const HITS = {
   type: 'object',
   additionalProperties: false,
-  required: ['hits', 'searched', 'stop_reason', 'uncovered'],
+  required: ['hits'].concat(COVERAGE_FIELDS),
   properties: {
     hits: {
       type: 'array',
@@ -53,14 +98,7 @@ const HITS = {
         properties: { path: { type: 'string' }, line: { type: 'integer' }, note: { type: 'string' } },
       },
     },
-    // Every pattern, glob and path actually searched. The evidence behind stop_reason —
-    // without it, completeness is an unverifiable self-report.
-    searched: { type: 'array', items: { type: 'string' } },
-    // exhausted = the search surface is covered. Anything else is not complete.
-    stop_reason: { type: 'string', enum: ['exhausted', 'budget', 'stuck'] },
-    // Searched with no match, plus anything never reached. Must be non-empty whenever
-    // stop_reason is not "exhausted".
-    uncovered: { type: 'string' },
+    ...coverageFields('Every grep pattern, glob, and path you actually searched.'),
   },
 }
 
@@ -236,27 +274,33 @@ const docsChannel = sideChannel(
 const partial = []
 
 // Search to exhaustion. IRON LAW §3: an incomplete scout is RESUMED, never reported as a
-// result. Every exit path returns an object, so a failed round costs its own hits and
-// nothing else.
+// result. Every exit path returns an object, and every incomplete exit records the topic —
+// an interrupted search has to be as visible downstream as one that simply ran out of rounds.
 async function scoutUntilComplete(topic) {
   const hits = []
   const searched = []
+  const noMatch = []
   let round = 0
   let found = null
+
+  function incomplete(notReached) {
+    partial.push(topic.key)
+    return { hits, searched, complete: false, noMatch: noMatch.join('\n'), notReached }
+  }
 
   while (round < maxRounds) {
     round++
     const prompt = round === 1
       ? `${topic.find}\n\nRepositories: ${roots}\n\n` +
-        `Report every location you find. If there are more than about 40, report the most ` +
-        `relevant, set stop_reason to "budget", and name the rest in uncovered.`
+        `Report every location you find. If there are far more than about 40, report the ` +
+        `most relevant, set stop_reason to "budget", and name the rest in not_reached.`
       : `Continue an unfinished search — do not start over.\n\n` +
         `ORIGINAL REQUEST: ${topic.find}\n` +
         `Repositories: ${roots}\n\n` +
         `ALREADY SEARCHED (do not repeat these):\n${searched.join('\n')}\n\n` +
         `ALREADY FOUND (do not report these again):\n` +
         hits.map((h) => `${h.path}:${h.line}`).join('\n') +
-        `\n\nSTILL UNCOVERED — this is your job now:\n${found.uncovered}`
+        `\n\nSTILL NOT REACHED — this is your job now:\n${found.not_reached}`
 
     try {
       found = await agent(prompt, {
@@ -265,40 +309,35 @@ async function scoutUntilComplete(topic) {
       })
     } catch (e) {
       log(`${topic.key}: round ${round} threw (${e && e.message}); keeping what was found.`)
-      partial.push(topic.key)
-      return { hits, searched, complete: false,
-               uncovered: `round ${round} failed before completion: ${e && e.message}` }
+      return incomplete(`round ${round} failed before completion: ${e && e.message}`)
     }
 
     if (!found) {
       log(`${topic.key}: round ${round} returned nothing; keeping what was found.`)
-      partial.push(topic.key)
-      return { hits, searched, complete: false, uncovered: `round ${round} produced no result` }
+      return incomplete(`round ${round} produced no result`)
     }
 
     hits.push(...(found.hits || []))
     searched.push(...(found.searched || []))
+    if ((found.no_match || '').trim()) noMatch.push(found.no_match.trim())
 
     if (found.stop_reason === 'exhausted') {
-      return { hits, searched, complete: true, uncovered: found.uncovered || '' }
+      return { hits, searched, complete: true, noMatch: noMatch.join('\n'), notReached: '' }
     }
 
-    // Not exhausted but nothing named as uncovered: another round would be handed an empty
+    // Not exhausted but nothing named as unreached: another round would be handed an empty
     // task and would return "exhausted" having done nothing. Treat it as the dead end it is
     // rather than paying for a round that launders it into completeness.
-    if (!(found.uncovered || '').trim()) {
-      log(`${topic.key}: stop_reason "${found.stop_reason}" with no uncovered detail — treating as a dead end.`)
-      partial.push(topic.key)
-      return { hits, searched, complete: false,
-               uncovered: `search stopped as "${found.stop_reason}" without naming what was missed` }
+    if (!(found.not_reached || '').trim()) {
+      log(`${topic.key}: stop_reason "${found.stop_reason}" with nothing named as unreached — treating as a dead end.`)
+      return incomplete(`search stopped as "${found.stop_reason}" without naming what was missed`)
     }
 
     log(`${topic.key}: incomplete after round ${round} (${found.stop_reason}), resuming.`)
   }
 
-  partial.push(topic.key)
   log(`ESCALATION: ${topic.key} still incomplete after ${maxRounds} rounds.`)
-  return { hits, searched, complete: false, uncovered: found.uncovered || '' }
+  return incomplete(found.not_reached || '')
 }
 
 const findings = await pipeline(
@@ -313,7 +352,8 @@ const findings = await pipeline(
     `LOCATIONS FOUND (read only what you need, in line ranges):\n` +
     JSON.stringify(found.hits, null, 1) +
     `\n\nSEARCH SURFACE ACTUALLY COVERED:\n${found.searched.join('\n')}` +
-    (found.uncovered ? `\n\nNOT COVERED: ${found.uncovered}` : '') +
+    (found.noMatch ? `\n\nSEARCHED AND NOT FOUND (this is evidence of absence):\n${found.noMatch}` : '') +
+    (found.notReached ? `\n\nNEVER SEARCHED: ${found.notReached}` : '') +
     (found.complete
       ? `\n\nThe search was exhausted. Judge the search surface above for yourself: if it ` +
         `does not actually cover the topic, say so in risks rather than accepting it.`
