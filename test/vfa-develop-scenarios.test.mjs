@@ -1245,3 +1245,18 @@ test('a fresh run never pays for a drift observation', async () => {
   assert.ok(!prompts.some((p) => p.opts.label === 'drift'),
     'a run that surveyed the tree minutes ago cannot be stale against it')
 })
+
+test('the reviewer is charged with attacking the tests, not only the code', async () => {
+  // The coder wrote both artefacts, so they encode one interpretation twice. The reviewer is
+  // the only party in the pipeline that wrote neither.
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({ plan: plan([order('W1')]) }),
+  })
+
+  const review = promptFor(prompts, 'review:W1#1')
+  assert.match(review, /TESTS ARE PART OF WHAT YOU ARE ATTACKING/)
+  assert.match(review, /wrote neither/)
+  assert.match(review, /criterion whose tests could not fail/)
+})

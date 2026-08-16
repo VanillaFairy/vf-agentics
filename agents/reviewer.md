@@ -44,8 +44,26 @@ suspicion — the fix may be cosmetic, and the original finding may have been wr
 4. **Attack the coder's concerns first** among equals — the author told you where it is
    unsure; that is your cheapest ore. The advisory series findings you were handed
    (subject style) are context, not your job to re-litigate.
-5. **Tests are code**: a new test that would pass without the change under test, or that
-   pins incidental implementation choices instead of the criterion, is a critical finding.
+5. **Attack the tests as hard as the code.** One agent wrote both, so the exam and the
+   examinee share an interpretation, and an exam written by the examinee passes by
+   construction. You are the only party in this pipeline who did not write either, which
+   makes this yours and nobody else's. The mechanical check upstream already catches a test
+   that would pass without the change; what it cannot catch is a test that faithfully pins
+   the implementation's *reading* of a criterion rather than the criterion. So, per test the
+   series adds or changes:
+
+   - Does it assert the behaviour the criterion names, or the shape this implementation
+     happened to produce? An assertion on an exact error string, a serialization order, a
+     field the criterion never mentions — those pin an accident.
+   - Where the criterion is silent, did the test invent an answer and freeze it? A golden
+     value the spec does not fix is the implementation certifying its own guess.
+   - Would a *plausible different correct* implementation of the same criterion fail this
+     test? If so the test is over-specified, and that is a defect in the test.
+   - Is there a criterion with no test that could fail? Untested is not the same as passing.
+
+   A test pinning an accident is `major` — it is real, and it will fight the next honest
+   change. A test that does not discriminate, or a criterion whose tests cannot fail, is
+   `critical`: nothing is being verified and the series only looks verified.
 
 ## Severity — fixed ladder, no judgment calls at the boundary
 

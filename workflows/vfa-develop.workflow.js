@@ -1041,6 +1041,23 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
       `contract propagates into every consumer.\n\n`
     : ''
 
+  // The same agent wrote the tests and the code they test, so the exam and the examinee share
+  // one interpretation and the exam passes by construction. The discriminator already catches
+  // a test that would pass without the change; it cannot catch a test that faithfully pins
+  // the implementation's READING of an ambiguous criterion. The reviewer is the only party
+  // here who wrote neither artifact, which is what makes it the one that can see this.
+  const testCharge =
+    `THE TESTS ARE PART OF WHAT YOU ARE ATTACKING. The agent that wrote this code wrote its ` +
+    `tests, so they encode one interpretation of the criteria twice and agree with ` +
+    `themselves by construction; you are the only reader here who wrote neither. For each ` +
+    `test the series adds or changes, ask whether it asserts the behaviour a criterion ` +
+    `names or the shape this implementation happened to produce, whether it froze a value ` +
+    `the criteria leave open, and whether a different correct implementation of the same ` +
+    `criterion would fail it. Then ask the reverse: is there a criterion whose tests could ` +
+    `not fail? Pinning an accident is major — it will fight the next honest change. A test ` +
+    `that cannot fail, or a criterion with no test that can, is critical: nothing is ` +
+    `verified and the series only looks it.\n\n`
+
   return `Adversarially review one work order's commit series. Assume it is subtly wrong and ` +
     `hunt for where. You return findings; you have no way to approve anything, and an empty ` +
     `findings list is an observation rather than a blessing — the verdict is computed by the ` +
@@ -1060,6 +1077,7 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
     `ACCEPTANCE CRITERIA, verbatim and in the planner's words. They are the contract, and ` +
     `they are the only thing you may enforce:\n${listOf(wo.acceptance)}\n\n` +
     `${acceptanceNote} Do not filter it, do not rewrite it, never raise a finding for it.\n\n` +
+    testCharge +
     contractNote +
     `COMMITS, OLDEST FIRST:\n${commitLines(state.commits)}\n\n` +
     `THE CODER'S OWN CONCERNS — attack these first among equals. The author told you where ` +
