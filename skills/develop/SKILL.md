@@ -182,6 +182,32 @@ is how the user finds them again.
       If `result.plan_path` is empty the run was never persisted and there is nothing to
       resume from; say so, and treat a re-run as a fresh plan.
 
+   f. **Stale orders** (`checkpoint.reason === 'stale'`). A run starting from a plan on disk
+      compares the user's branch against the commit the plan was written for. Nothing was
+      dispatched and no worktree was created.
+
+      `checkpoint.stale` is `[{id, files}]`: pending orders that declare a file which changed
+      on that branch since. Present each one — the order, its title, and the files — and ask
+      the human to rule per order. They have three answers, and all three are legitimate:
+      still valid, needs re-planning, or already done by whatever moved those files.
+
+      Re-invoke with `confirmed_stale: [<ids ruled still valid>]`. Orders left out stay
+      undispatched and come back named in `coverage.unreached`; their consumers block behind
+      them, naming them as the root. If the ruling is that the plan no longer describes this
+      repository, do not clear orders one at a time to force it through — plan afresh.
+
+      **This check sees one thing: files a pending order declared it owns.** It does not see
+      that a type an order builds against moved, or that an interface its context describes
+      changed shape, because those files are not in its locus. So an empty `stale` list means
+      "no declared file moved", not "the plan is still correct". Say that plainly when the
+      run is old — `/vf-agentics:runs` shows plan age for exactly this reason — and treat a
+      large drift with an empty `stale` list as a reason to re-read the plan, not a
+      clearance.
+
+      An unreachable anchor (deleted branch, rewritten history) holds the whole run instead
+      of listing orders. That one is not negotiable per order: a plan whose anchor is gone is
+      a plan to re-ratify.
+
 ## Reporting — binding
 
 - You may not report success while `coverage.complete === false`. The gaps lead: name every

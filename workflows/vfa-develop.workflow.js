@@ -132,6 +132,24 @@ const RECORDED = {
   },
 }
 
+// What the world did while a plan sat on disk. Its own shape rather than fields bolted onto
+// INTEGRATION_SETUP, because it runs at a different point for a different purpose: setup
+// happens after the dispatch gate and creates a worktree, and hanging drift observation on it
+// would mean every stale checkpoint left a branch and a directory behind an exit whose entire
+// contract is that nothing was dispatched.
+const DRIFT = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'user_head', 'moved_files', 'notes'],
+  properties: {
+    // `anchor_unreachable` is its own answer: a deleted branch or rewritten history means
+    // the question cannot be asked, which is not the same as answering "nothing moved".
+    stop_reason: { type: 'string', enum: ['completed', 'anchor_unreachable', 'environment_broken'] },
+    user_head: { type: 'string' },   // observed, via git rev-parse
+    moved_files: { type: 'array', items: { type: 'string' } },  // raw git diff --name-only
+    notes: { type: 'string' },
+  },
+}
+
 const INTEGRATION_SETUP = {
   type: 'object', additionalProperties: false,
   required: ['stop_reason', 'worktree', 'branch', 'head_sha', 'notes'],
@@ -437,6 +455,17 @@ const pauseBetweenWaves = input.pause_between_waves === true
 // Until now the only route to a persisted-but-undispatched plan was the evidence checkpoint,
 // which fires on the planner finding gaps — an accident of evidence, never a caller's choice.
 const planOnly = input.plan_only === true
+
+// Which stale orders the human has ruled on. Per order rather than one bit, because the
+// realistic ruling is per order — "W2 is unaffected, W5 needs re-planning" — and a boolean
+// cannot say it. Absent (not an array) means the human has not looked yet, which is a
+// different state from having looked and cleared nothing.
+const confirmedStale = Array.isArray(input.confirmed_stale) ? input.confirmed_stale : null
+
+// Recorded at plan time, adopted from the envelope on resume. The drift anchor of last
+// resort: for a plan that was parked and never ran, there is no integration base to measure
+// against and this is the only record of the world it was written for.
+let envelopeBase = { branch: '', sha: '' }
 
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
@@ -811,6 +840,28 @@ function loaderPrompt() {
     `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
     `with what you found in notes. Never invent a plan and never return a partial one as ` +
     `loaded — a plan missing two orders looks exactly like a plan that had five.`
+}
+
+function driftPrompt(anchor, branch) {
+  return `DRIFT OBSERVATION MODE. Report two git facts about this repository and stop. You ` +
+    `create nothing, check out nothing, and judge nothing.\n\n` +
+    `REPOSITORY: ${roots}\n` +
+    `BRANCH THIS PLAN WAS WRITTEN AGAINST: ${branch}\n` +
+    `ANCHOR COMMIT: ${anchor}\n\n` +
+    `1. git rev-parse ${branch}   — report it as user_head, exactly as printed.\n` +
+    `2. git diff --name-only ${anchor}..${branch}   — report every line as moved_files, ` +
+    `raw, repo-relative, in git's own order. Do not deduplicate, do not sort, do not filter ` +
+    `out files that look irrelevant: your caller intersects this list with what each ` +
+    `un-implemented work order declared it owns, and a path you dropped is a collision it ` +
+    `cannot see.\n\n` +
+    `If ${anchor} or ${branch} does not resolve — the branch was deleted, history was ` +
+    `rewritten, this clone does not have the object — return stop_reason ` +
+    `anchor_unreachable with what git actually said in notes. That is a real answer and it ` +
+    `is acted on. What must never happen is an empty moved_files standing in for it: ` +
+    `"nothing moved" and "I could not tell whether anything moved" are different facts, and ` +
+    `the first one lets a plan be implemented against a world that no longer exists.\n\n` +
+    `A repository whose branch is exactly at the anchor reports that head with an empty ` +
+    `moved_files, and that IS the good case — say so in notes.`
 }
 
 function setupPrompt(runstamp) {
@@ -1507,6 +1558,8 @@ try {
     if (envelope.caller_notes && !input.notes) notes = envelope.caller_notes
     if (envelope.intelligence && !input.intelligence) applyIntelligence(envelope.intelligence)
 
+    envelopeBase = { branch: envelope.base_branch || '', sha: envelope.base_sha || '' }
+
     planned = loaded.plan
     planPath = loaded.plan.plan_path || resumePath
     resumeState = loaded.state || []
@@ -1751,9 +1804,65 @@ try {
   // an empty gap list would ask a question about nothing. Gaps take precedence when both
   // hold, because the caller asked to park and the planner found a reason the plan may not
   // be worth resuming as written; both facts travel, and the alarming one leads.
+  // -------------------------------------------------- 3a-bis. has the world moved?
+  //
+  // Only a run starting from a plan already on disk can be stale — a fresh run surveyed the
+  // tree minutes ago. Within a run staleness is impossible by construction: the workflow
+  // owns every tree it touches. Between invocations that guarantee lapses, and the multi-
+  // feature story is exactly the lapse: plan A, then implement and land B, then resume A
+  // against a repository A's plan has never seen.
+  //
+  // The anchor is named precisely, because a run holds two and they diverge. `integration_base`
+  // in the run state is what the merged work is actually built on and wins whenever a wave has
+  // run; `base_sha` from the plan envelope is all a parked plan has. Picking the wrong one
+  // measures a different question and answers this one confidently.
+  const anchor = integration.base_sha || envelopeBase.sha
+  const anchorBranch = envelopeBase.branch
+  let staleSuspects = []
+  let anchorLost = ''
+
+  if (resumePath && anchor && anchorBranch) {
+    const drift = await agent(driftPrompt(anchor, anchorBranch), {
+      agentType: 'vf-agentics:verifier', effort: 'low', schema: DRIFT,
+      phase: 'Plan', label: 'drift',
+    }).catch((e) => {
+      log(`WARNING: the drift observation failed: ${e && e.message}`)
+      return null
+    })
+
+    if (!drift || drift.stop_reason !== 'completed') {
+      anchorLost = drift && drift.notes ? drift.notes : 'the drift observation returned no result'
+      log(`The world this plan was written against cannot be located: ${anchorLost}`)
+    } else if (drift.user_head && drift.user_head !== anchor) {
+      // Exact string equality after the same normalization lib/independence.mjs uses. No
+      // globbing, no prefix matching — a locus entry names a file, and so does git.
+      const moved = new Set((drift.moved_files || []).map((p) => p.split('\\').join('/')))
+
+      for (const id of waves.flat()) {
+        if (landed.has(id)) continue
+        const wo = orderById.get(id)
+        const hits = (wo.locus || []).map((p) => p.split('\\').join('/')).filter((p) => moved.has(p))
+        if (hits.length > 0) staleSuspects.push({ id, files: hits })
+      }
+
+      log(`Drift: ${moved.size} file(s) changed on ${anchorBranch} since ${anchor}; ` +
+        `${staleSuspects.length} pending order(s) declare one of them.`)
+    }
+  } else if (resumePath) {
+    log('No drift anchor was recorded with this plan, so the tree could not be compared.')
+  }
+
   const blockingGaps = Array.isArray(planned.blocking_gaps) ? planned.blocking_gaps : []
   const gapsWithhold = blockingGaps.length > 0 && !confirmedGaps && wavedCount > 0
-  const checkpointReason = gapsWithhold ? 'blocking_gaps' : (planOnly ? 'plan_only' : '')
+
+  // A human who has not looked yet gets the whole run held. Once they have looked —
+  // `confirmed_stale` supplied at all — the named orders proceed and the rest are withheld
+  // individually, which is the ruling the boolean predecessor could not express.
+  const staleWithhold = anchorLost !== '' || (staleSuspects.length > 0 && confirmedStale === null)
+
+  const checkpointReason = gapsWithhold ? 'blocking_gaps'
+    : staleWithhold ? 'stale'
+      : planOnly ? 'plan_only' : ''
 
   if (checkpointReason) {
     const resumeHint = planPath
@@ -1762,17 +1871,34 @@ try {
       : 'the plan was NOT persisted (plan_path is empty), so a re-invocation must re-plan ' +
         'from scratch — read the work_orders in this result before deciding'
 
+    const staleNotes = anchorLost
+      ? ['the commit this plan was written against can no longer be found on ' +
+         (anchorBranch || 'the recorded branch') + ' (' + anchorLost + '). Nothing was ' +
+         'dispatched: a plan whose anchor is gone is a plan to re-ratify, not to patch. ' +
+         'Read plan.md and decide whether it still describes this repository.']
+      : staleSuspects.map((s) =>
+        'stale: ' + s.id + ' declares ' + s.files.join(', ') + ', which changed on ' +
+        anchorBranch + ' since this plan was written')
+        .concat(['the tree moved under this plan. Rule on each order above, then re-invoke ' +
+                 'with confirmed_stale set to the ids that are still valid — anything you ' +
+                 'leave out stays undispatched and is reported. Re-planning is always the ' +
+                 'other option, and for a plan this old it may be the cheaper one.'])
+
     const withheld = gapsWithhold
       ? blockingGaps.map((gap) => 'evidence checkpoint: ' + gap)
         .concat(['dispatch was withheld at the evidence checkpoint; confirm with the ' +
                  'caller, then ' + resumeHint])
-      : ['dispatch was withheld because plan_only was requested: the plan is complete and ' +
-         'nothing was implemented. This run is not the change; it is the plan for it. To ' +
-         'implement, ' + resumeHint]
+      : staleWithhold
+        ? staleNotes
+        : ['dispatch was withheld because plan_only was requested: the plan is complete and ' +
+           'nothing was implemented. This run is not the change; it is the plan for it. To ' +
+           'implement, ' + resumeHint]
 
     log(gapsWithhold
       ? `CHECKPOINT: the survey missed evidence the change itself names (${blockingGaps.length} gap(s)); dispatch withheld.`
-      : `CHECKPOINT: plan_only — ${orders.length} order(s) planned across ${waves.length} wave(s), nothing dispatched.`)
+      : staleWithhold
+        ? `CHECKPOINT: stale — ${anchorLost ? 'the plan\'s anchor is unreachable' : staleSuspects.length + ' pending order(s) sit on files that moved'}; dispatch withheld.`
+        : `CHECKPOINT: plan_only — ${orders.length} order(s) planned across ${waves.length} wave(s), nothing dispatched.`)
 
     return developResult({
       workOrders: orders,
@@ -1781,7 +1907,7 @@ try {
       checkpoint: {
         reason: checkpointReason,
         blocking_gaps: blockingGaps,
-        stale: [],
+        stale: staleSuspects,
         resume_path: planPath,
       },
       coverage: {
@@ -1793,6 +1919,23 @@ try {
         resumable: { runId: RUN_ID, remaining: orders.map((wo) => wo.id) },
       },
     })
+  }
+
+  // The human has looked and ruled. Orders they did not clear stay out of this run — not as
+  // a failure, as a decision — and they are named in coverage so the run does not read as
+  // having covered them. Consumers of a withheld order fall out for free: the wave loop's
+  // dep gate sees a provider that never landed and blocks them, naming it.
+  const staleWithheldIds = confirmedStale === null ? []
+    : staleSuspects.filter((s) => !confirmedStale.includes(s.id)).map((s) => s.id)
+
+  if (staleWithheldIds.length > 0) {
+    log(`Withheld as stale by the caller's ruling: ${staleWithheldIds.join(', ')}.`)
+    for (const id of staleWithheldIds) {
+      const suspect = staleSuspects.find((s) => s.id === id)
+      extraUnreached.push(id + ': withheld as stale — it declares ' + suspect.files.join(', ') +
+        ', which changed since this plan was written, and the caller did not clear it')
+      extraRemaining.push(id)
+    }
   }
 
   // --------------------------------------------- 3c. the integration worktree
@@ -1878,7 +2021,7 @@ try {
   for (let w = 0; w < waves.length; w++) {
     const waveNumber = w + 1
     const waveIds = waves[w]
-    const pending = waveIds.filter((id) => !landed.has(id))
+    const pending = waveIds.filter((id) => !landed.has(id) && !staleWithheldIds.includes(id))
 
     if (pending.length === 0) {
       // Either a resumed run whose state records this wave as merged, or — rarer — a wave

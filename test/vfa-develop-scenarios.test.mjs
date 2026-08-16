@@ -103,6 +103,9 @@ const integrationCast = (over = {}) => ({
 
 const happyAgents = (over = {}) => scriptedAgents({
   plan: plan([order('W1')]),
+  // The default resumed world is the world the plan was written against: the branch sits
+  // exactly on the anchor and nothing moved. Only a resume dispatches this at all.
+  drift: { stop_reason: 'completed', user_head: A40, moved_files: [], notes: 'unchanged' },
   ...integrationCast(),
   'code:': coded(),
   'verify:': verified(),
@@ -1102,4 +1105,143 @@ test('a wave records what it learned, and a resume inherits it', async () => {
 
   assert.match(promptFor(reading, 'code:W2'), /POSTGRES_URL/,
     'the wave after an interruption must not be the one wave that knows nothing')
+})
+
+// ---------------------------------------------------------------- the drift gate
+//
+// Within a run the tree cannot move under the plan — the workflow owns every tree it
+// touches. Between invocations that lapses, and the multi-feature story is the lapse: plan
+// A, implement and land B, resume A against a repository A's plan has never seen.
+
+const drifted = (over = {}) => ({
+  stop_reason: 'completed', user_head: N40, moved_files: [], notes: 'compared', ...over,
+})
+
+test('a resume whose tree held still costs one observation and proceeds', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      drift: drifted({ user_head: A40 }),   // exactly the anchor
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(result.checkpoint, null)
+  assert.deepEqual(result.integration.merged, ['W2'])
+  assert.equal(prompts.filter((p) => p.opts.label === 'drift').length, 1)
+})
+
+test('drift that misses every pending locus proceeds without a gate', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'], locus: ['src/W2.js'] })]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      drift: drifted({ moved_files: ['docs/README.md', 'src/unrelated.js'] }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(result.checkpoint, null, 'someone else editing other files is not staleness')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a pending order whose declared file moved holds the run at a gate', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'], locus: ['src/W2.js'] })]
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      drift: drifted({ moved_files: ['src/W2.js'] }),
+    }),
+  })
+
+  assert.equal(result.checkpoint.reason, 'stale')
+  assert.deepEqual(result.checkpoint.stale, [{ id: 'W2', files: ['src/W2.js'] }])
+  assert.ok(!prompts.some((p) => p.opts.label === 'integration-setup'),
+    'a stale exit says nothing was dispatched, so it must not leave a worktree behind')
+  assert.equal(result.coverage.complete, false)
+})
+
+test('an order already merged is not re-examined for staleness', async () => {
+  // W1 merged in an earlier invocation. Its files moving is somebody else building on it.
+  const orders = [order('W1', { locus: ['src/W1.js'] }), order('W2', { deps: ['W1'] })]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      drift: drifted({ moved_files: ['src/W1.js'] }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(result.checkpoint, null)
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('the caller clears some orders and the rest stay withheld, named', async () => {
+  const orders = [
+    order('W1'),
+    order('W2', { deps: ['W1'], locus: ['src/W2.js'] }),
+    order('W5', { deps: ['W1'], locus: ['src/W5.js'] }),
+  ]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR, confirmed_stale: ['W2'] },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1'], ['W2', 'W5']]),
+      'resume-load': loaded(orders, {
+        plan: { ...loadedPlan(orders),
+                partition_raw: JSON.stringify({ waves: [['W1'], ['W2', 'W5']], coupled: [] }) },
+      }),
+      drift: drifted({ moved_files: ['src/W2.js', 'src/W5.js'] }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(result.checkpoint, null, 'the human has ruled; the run proceeds')
+  assert.deepEqual(result.implemented.map((e) => e.id), ['W2'])
+  assert.match(result.coverage.unreached.join(' '), /W5: withheld as stale/)
+  assert.ok(result.coverage.resumable.remaining.includes('W5'),
+    'a withheld order is work left to do, so it must be resumable')
+  assert.equal(result.coverage.complete, false)
+})
+
+test('an anchor git cannot resolve halts the whole resume', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      drift: drifted({ stop_reason: 'anchor_unreachable', user_head: '', moved_files: [],
+                       notes: "fatal: ambiguous argument 'master': unknown revision" }),
+    }),
+  })
+
+  assert.equal(result.checkpoint.reason, 'stale')
+  assert.ok(!prompts.some((p) => p.opts.label === 'integration-setup'))
+  assert.match(result.coverage.unreached.join(' '), /can no longer be found/)
+  assert.match(result.coverage.unreached.join(' '), /unknown revision/)
+})
+
+test('a fresh run never pays for a drift observation', async () => {
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({ plan: plan([order('W1')]) }),
+  })
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'drift'),
+    'a run that surveyed the tree minutes ago cannot be stale against it')
 })
