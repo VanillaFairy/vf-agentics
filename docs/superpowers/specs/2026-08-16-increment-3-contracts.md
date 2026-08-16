@@ -411,6 +411,70 @@ holding it would have to invent a mapping and would rule badly in both direction
 - **note** — advisory. Recorded in the design document, never blocks, never loops.
 <!-- /vfa:verbatim -->
 
+### `vfa-find-existing-solutions` — the build-or-adopt sweep
+
+**Produced by:** `workflows/vfa-find-existing-solutions.workflow.js` · **Consumed by:**
+`skills/find-existing-solutions/SKILL.md` and `skills/design/SKILL.md` step 1b
+
+The one question nothing else in the plugin asks: **should this be built at all?** `vfa-survey`
+searches the code you already have and is repo-scoped by construction — its topics "must be
+answerable by searching the current code", and its docs channel fires only for "vendor or
+standards documentation", meaning docs for a vendor already chosen. Neither can tell you the
+thing you are about to design is on a registry. By the time `develop` runs the change is
+ratified, so design is the only stage where the question is still cheap.
+
+Three phases: **Frame** (an analyst restates the capability implementation-neutrally, names
+the hard constraints, writes falsifiable disqualifiers, and splits the search into independent
+ecosystem angles) → **Search** (one `doc-researcher` per angle with the same resume-until-
+exhausted loop `vfa-survey` uses, plus one `scout` over the repository asking only *do we
+already depend on something that does this*) → **Assess** (one analyst over all candidates —
+a justified barrier, since deduping the same package found by two angles and ruling against a
+shared disqualifier list both need every result at once).
+
+```js
+// RETURN
+{
+  capability, constraints,
+  frame:           { capability_line, hard_constraints, disqualifiers },
+  already_present: [{ path, line, note }],   // what the repo already carries — presented FIRST
+  candidates:      [{ name, source_url, what_it_is, latest_version, license,
+                      maintenance, covers, does_not_cover, disqualifiers_hit }],
+  viable:          [String],                 // DERIVED: disqualifiers_hit is empty
+  ruled_out:       [{ name, why }],          // DERIVED: the disqualifiers it violated
+  coverage:        Coverage,
+}
+```
+
+`viable` and `ruled_out` are computed in JS from `disqualifiers_hit`, which the assessor is
+asked to copy **verbatim** from the list it was given. A schema field named `suitable` would
+have moved the decision into a model's taste, which is the thing this plugin refuses
+everywhere else and has no reason to permit here.
+
+**The coverage block carries more weight here than anywhere in the plugin, and it is worth
+saying why.** Everywhere else an incomplete search means a weaker conclusion. Here, "we found
+nothing" is the input to a decision to spend weeks writing code — and an ecosystem nobody
+searched produces the identical `candidates: []` as an ecosystem that genuinely has nothing.
+So `no_match` ("crates.io searched and found nothing" — evidence **for** building) and
+`not_reached` ("crates.io never reached" — evidence of nothing) are phrased apart in
+`unreached`, and the skill is bound not to report "nothing exists, build it" while
+`complete` is false. A scenario test asserts the invariant directly.
+
+`latest_version` is read off the registry at search time and never recalled, because a
+remembered version is stale by construction — and a stale version is exactly the fact that
+makes a caller dismiss a candidate that has since grown the feature they needed.
+
+Degraded channels, each named rather than silent: `frame` (no angles produced — nothing was
+searched and the result says so), `repo` (nobody checked what you already depend on), `assess`
+(candidates found but never measured; returned raw with `disqualifiers_hit` empty **because
+nobody checked**, not because nothing was hit). A candidate a researcher reported and the
+assessor silently dropped is named in `unreached` — the same unaccounted-order check
+`vfa-develop` makes, for the same reason.
+
+The `doc-researcher` and `analyst` charters each gained a mode section: the researcher's
+output shape becomes a candidate list rather than prose, and the analyst's "conclusion first,
+2–4 facts" shape does not apply to a probe or an assessment. Both were real conflicts — a
+charter is inherited law, and a prompt cannot quietly overrule one.
+
 ### Enforcement
 
 `tools/rules/design-gate.mjs` checks the three clauses that make the phase a phase: the

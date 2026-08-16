@@ -46,6 +46,34 @@ channel visible at design time is a decision the human can make now, and the sam
 discovered at the `develop` evidence checkpoint costs a whole survey and a whole planning
 pass to discover again.
 
+## Step 1b — Does this already exist?
+
+`vfa-survey` searches the code you have. It cannot tell you that the thing you are about to
+design is on a package registry, so run the outward sweep too:
+
+```
+Workflow({ name: 'vf-agentics:vfa-find-existing-solutions', args: { capability, roots, constraints, notes, intelligence } })
+```
+
+Run it whenever the design would **build a capability** — a parser, a scheduler, a cache, a
+protocol client, a rate limiter, a diffing algorithm. Skip it when the design is about wiring
+things this system already has, or reshaping code that exists: there is nothing off the shelf
+for "how our checkout flow should be structured".
+
+Read `already_present` first. A dependency this repository already carries beats every
+external candidate and is the cheapest fact in the whole phase.
+
+**Nothing here decides anything.** The sweep returns candidates, not a verdict, and adoption
+turns on things it cannot see — licence policy, appetite for another dependency, whether the
+team wants to own this code. Those are interview questions for step 2, and they are exactly
+the kind only the human can answer.
+
+Carry the result into the design document either way. A chosen candidate is a decision with
+evidence behind it; the `no_match` lines that justify building are evidence too, and they are
+what stops somebody asking in three weeks why this was not just a library. An **unfinished**
+sweep is a `blocking` open question when the design leans on building from scratch — you
+cannot ratify "we must write this" on a search that never reached the registry.
+
 ## Step 2 — The interview
 
 **One question at a time**, walking the decision tree in dependency order — whatever
@@ -96,7 +124,12 @@ its specs, its architecture notes. A project that mandates its own design review
 by this probe rather than double-probed, and a project whose vocabulary this skill has never
 heard of gets probed in that vocabulary anyway. On top of whatever the repo asks for, the
 probe always covers: extensibility along growth axes the design itself names, contract
-ambiguity, YAGNI, and invariants the design relies on without stating.
+ambiguity, YAGNI, invariants the design relies on without stating, and **reinvention** — is
+anything here rebuilding something step 1b found, or something step 1b would have found if it
+had been run? That last axis is a `gap`: resolved, or accepted out loud with the cost stated.
+
+Reinvention is a separate axis from YAGNI on purpose. YAGNI catches building what nobody
+asked for; it will not catch building what everybody asked for and somebody already shipped.
 
 The probe rules on the **design severity ladder** below — its own ladder, not the code one.
 The code ladder speaks entirely in acceptance criteria, commit series and declared loci, and
