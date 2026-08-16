@@ -232,16 +232,71 @@ the gate and nowhere else.
 
 ---
 
-## 9. What was deliberately not built
+## 9. `role` — the red-green-refactor cycle
 
-- **RED/GREEN work-order split (H2).** The separation itself would be free — a RED order's
-  locus is the test files and `lib/commit-series.mjs` already blocks any commit outside a
-  locus, which is what `check-separation.sh` buys elsewhere. It is deferred because it
-  *relocates* the shared interpretation (planner → RED) rather than removing it, while its
-  verification semantics — a red order's tests must fail, and a wave's merged head is
-  knowingly red — modify `verifyOk` and `waveVerifyOk`, which every verdict flows through.
-  `agents/reviewer.md`'s test-side charge (H1) delivers most of the value as a prompt change:
-  the reviewer is the only party that wrote neither artefact.
+Work orders carry `role: 'none' | 'red' | 'green' | 'refactor'`, required rather than
+optional: a field that may be absent is a field whose absence nobody notices, and here that
+silently restores the ordinary verdict to an order whose whole point is that the ordinary
+verdict is wrong.
+
+| role | locus | deps | lands |
+|---|---|---|---|
+| `red` | test files ONLY | — | tests that fail for want of an implementation |
+| `green` | implementation files ONLY | the red order | the code that makes them pass |
+| `refactor` | implementation files | the green order | restructuring, tests untouched |
+
+**The separation is the declared loci and nothing else.** `lib/commit-series.mjs` already
+blocks any commit reaching outside a locus, so a green order whose locus excludes the tests
+*cannot* edit them — by enforcement, not by choice. `deps` sequences the cycle through the
+existing partition. No new scheduler, no separation script, no supervisor step.
+
+**The verdicts invert per role** (`verifyOk` dispatches; each predicate has a matching
+findings function beside it, so no conjunct can be false without producing a fix instruction):
+
+- `red` — must add a test; every new test must fail *now* and *at base*; the suite must not be
+  green; every suite failure must sit inside the order's own locus. Four distinct ways an
+  order can be hollow rather than red.
+- `refactor` — the suite must actually **run and pass**. `suite === 'absent'` fails here and
+  nowhere else in this pipeline: everywhere else a missing suite is a fact about the
+  repository, but for a refactor it means the safety net the entire order rests on was never
+  observed. A new discriminating test means new behaviour, which makes it a green order
+  wearing a refactor label.
+- `green` and `none` — the ordinary verdict, unchanged.
+
+**`VERIFY.failing_tests`** reports `{file, id}`. The file is the load-bearing half: an order
+owns *files*, suite output names *tests*, and a confinement check on ids alone has no join
+key. Empty whenever the suite passed or is absent; a suite that failed while naming nothing is
+confined to nothing, which is why `failuresConfinedTo` requires a non-empty list.
+
+**`waveVerifyOk` carve-out.** A merged head failing only on tests belonging to a landed `red`
+order whose `green` has not landed is the designed state, not a regression the merge
+introduced. Without it the first wave of any red/green plan stops the line on the tests it
+exists to land. The excused set is derived from `deps` and expires by itself: once the green
+lands, a red test still failing is the pair having failed, which is what it should surface as.
+
+**The digest.** `role` joins `digestOrder` **only when it is not `'none'`**, in both
+`lib/plan-digest.mjs` and the workflow's copy. A role altered in transit must halt a resume,
+since it decides how the order is verified — but manifests written before roles existed carry
+no such field, and digesting an explicit `'none'` differently from an absent one would halt
+every plan parked before this version. A false halt is indistinguishable from a real
+corruption.
+
+**The reviewer's charge is role-aware.** For an ordinary order the premise is that one agent
+wrote both artefacts. For a `green` order that premise is false — a separate agent authored
+the tests without seeing the code — and asserting it sends the round hunting a collusion that
+never happened while the real risk, an implementation contorted around an over-specified
+locked test, goes unexamined. A `refactor` order's reviewer attacks the no-behaviour-change
+claim instead, in the untested margin a green suite says nothing about.
+
+**When to split, per `agents/planner.md`:** only where a criterion pins real behaviour.
+Scaffolding, wiring, config and docs have nothing to assert, so a red order for one produces a
+test that cannot fail — failing verification and spending two orders to say so. `none` is the
+default; the ordinary path already runs the discriminator.
+
+---
+
+## 10. What was deliberately not built
+
 - **Between-wave stale detection.** Structurally impossible under tree ownership — within a
   run the tree cannot move except through the pipeline's own verified merges.
 - **A merge-resolver.** A conflict inside a wave means the independence declaration was wrong.
