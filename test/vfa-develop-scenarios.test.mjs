@@ -994,3 +994,112 @@ test('an ordinary run carries no checkpoint at all', async () => {
   assert.equal(result.checkpoint, null)
   assert.deepEqual(result.integration.merged, ['W1'])
 })
+// ---------------------------------------------------------------- knowledge feed-forward
+//
+// Coders report `discovered` — reusable commands, setup gotchas. It used to reach only the
+// final result, so the one consumer who could act on it (the next coder, in this repository,
+// minutes later) was the one who never saw it.
+//
+// `code:` is a PREFIX key and scriptedAgents takes the first match, so a per-order answer has
+// to come from a function on that key rather than a more specific key added after it.
+
+const promptFor = (prompts, label) =>
+  (prompts.find((p) => p.opts.label === label) || { prompt: '' }).prompt
+
+const coderSaying = (discoveries) => (prompt, opts) =>
+  coded(discoveries[opts.label] ? { discovered: discoveries[opts.label] } : {})
+
+test("a later wave's coder is told what earlier waves learned", async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1'], ['W2']]),
+      'code:': coderSaying({ 'code:W1': ['run `npm run gen` after touching schema/'] }),
+      'merge:': mergeSequence([M40, N40]),
+    }),
+  })
+
+  const w2 = promptFor(prompts, 'code:W2')
+  assert.match(w2, /run `npm run gen` after touching schema\//)
+  assert.match(w2, /DISCOVERED EARLIER IN THIS RUN/)
+
+  assert.ok(!promptFor(prompts, 'code:W1').includes('DISCOVERED EARLIER IN THIS RUN'),
+    'the first wave has nothing to inherit, and an empty section is noise')
+})
+
+test('the verifier is never handed discovered commands', async () => {
+  // The asymmetry is deliberate: a coder may act on hearsay and be caught by verification,
+  // while verification is what every verdict is computed from. A wave-1 guess reaching a
+  // wave-3 verifier would launder a report into a measurement.
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1'], ['W2']]),
+      'code:': coderSaying({ 'code:W1': ['build with `make -j8`'] }),
+      'merge:': mergeSequence([M40, N40]),
+    }),
+  })
+
+  assert.match(promptFor(prompts, 'code:W2'), /make -j8/, 'the coder half must actually fire')
+
+  for (const p of prompts.filter((x) => /^(verify|wave-verify):/.test(x.opts.label || ''))) {
+    assert.ok(!p.prompt.includes('build with `make -j8`'),
+      `${p.opts.label} was handed a coder's discovered command`)
+  }
+})
+
+test('an escalated order teaches the next wave nothing', async () => {
+  const orders = [order('W1'), order('W2')]
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1'], ['W2']]),
+      'code:': (prompt, opts) => (opts.label === 'code:W1'
+        ? coded({ status: 'blocked', commits: [], discovered: ['use the vendored gcc'] })
+        : coded()),
+      'merge:': mergeSequence([M40, N40]),
+    }),
+  })
+
+  assert.ok(!promptFor(prompts, 'code:W2').includes('use the vendored gcc'),
+    "an escalated order's discoveries are unreviewed claims about a repo that rejected it")
+})
+
+test('a wave records what it learned, and a resume inherits it', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+
+  // Recorded on the way out...
+  const { prompts: writing } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1'], ['W2']]),
+      'code:': coderSaying({ 'code:W1': ['the suite needs POSTGRES_URL set'] }),
+      'merge:': mergeSequence([M40, N40]),
+    }),
+  })
+  assert.match(promptFor(writing, 'record:1'), /POSTGRES_URL/)
+
+  // ...and read back on the way in.
+  const { prompts: reading } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, {
+        state: [{ wave: 1, merged: ['W1'], approved_unmerged: [], escalated: [],
+                  integration_base: A40, integration_head: M40,
+                  discovered: ['the suite needs POSTGRES_URL set'] }],
+      }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.match(promptFor(reading, 'code:W2'), /POSTGRES_URL/,
+    'the wave after an interruption must not be the one wave that knows nothing')
+})
