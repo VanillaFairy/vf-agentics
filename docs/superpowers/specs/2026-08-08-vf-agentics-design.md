@@ -656,12 +656,23 @@ args, 100% cache hit — so iterating on a later phase does not re-pay for earli
 - **Parallel implementation for coupled work.** The independence test routes it to the main
   session, deliberately.
 - **Cross-plugin dependency declaration.** The platform has none; the preflight is the mitigation.
-- **In-workflow merging.** The workflow implements and approves; the session merges.
-  Merging from inside the workflow would mutate the tree the user is sitting on.
-- **Multi-wave execution in one invocation.** Orders in partition waves 2+ overlap files
-  wave 1 is changing, so implementing them against the pre-merge base would manufacture
-  conflicts. One invocation implements wave 1; later waves return as `deferred` and the
-  skill re-invokes with `preplanned` after merging. The frontier is driven, not batched.
+- ~~**In-workflow merging.**~~ **AMENDED 2026-08-16** — see
+  `specs/2026-08-16-increment-3-contracts.md` §5. The rationale below was about tree
+  OWNERSHIP, not about merging: merging from inside the workflow would mutate *the tree the
+  user is sitting on*. A worktree the workflow creates and owns does not do that. So the
+  invariant is restated more precisely rather than dropped: **the workflow never mutates the
+  user's branch or working tree.** It now merges each wave into its own integration worktree
+  under `.claude/worktrees/`; advancing the user's branch remains the session's act, after
+  the human gate, as one merge of one branch.
+- ~~**Multi-wave execution in one invocation.**~~ **AMENDED 2026-08-16** — same reference,
+  §6. The objection below is real and is answered rather than ignored: orders in later waves
+  do overlap files earlier waves changed, so each wave-k coder's first action is
+  `git checkout -B <order branch> <integration head>`, branching from a tree that already
+  contains every earlier wave. Merges do not have to be manufactured away because they are no
+  longer manufactured. The economics forced it: a dependency-honest plan has 4–8 waves, and
+  one re-invocation per wave re-paid survey and planning each time — roughly 2M tokens of
+  re-planning before any implementation. `deferred` survives, with a narrower meaning: waves
+  that did not run because the line stopped or the caller paused.
 
 ---
 

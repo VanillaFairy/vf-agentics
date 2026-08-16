@@ -1,5 +1,12 @@
 # Shared Interfaces — Increment 2
 
+**Version:** 1.2 — whole-change orchestration. `WORK_ORDERS` gains `plan_path` (§1),
+`vfa-develop` runs every wave in one invocation and owns an integration worktree, `preplanned`
+is replaced by `resume_path`, and the result gains `blocked`, `integration` and `plan_path`
+(§8). The new shapes are defined in
+`specs/2026-08-16-increment-3-contracts.md`; every amendment to a shape defined *here* is
+written here, inline, marked **(1.2)**.
+
 **Version:** 1.1 — dependency-aware partition (`deps`, provider rule), tri-state
 `build`/`suite` verifier facts, contract orders, the evidence checkpoint, full-bodied
 `coupled`, trail `kind`, and a reason-string `resumable.runId`. All from the first field
@@ -32,7 +39,7 @@ escalate rather than guess.
 ```js
 const WORK_ORDERS = {
   type: 'object', additionalProperties: false,
-  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'notes'],
+  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'plan_path', 'notes'],
   properties: {
     work_orders: { type: 'array', items: {
       type: 'object', additionalProperties: false,
@@ -49,6 +56,7 @@ const WORK_ORDERS = {
     shared_files: { type: 'array', items: { type: 'string' } },  // designated shared files for the independence test
     partition_raw: { type: 'string' }, // VERBATIM stdout of `node lib/independence.mjs <input>` — never retyped
     blocking_gaps: { type: 'array', items: { type: 'string' } },  // survey gaps the change itself leans on; non-empty withholds dispatch
+    plan_path: { type: 'string' },  // (1.2) absolute path of the run directory the planner wrote
     notes: { type: 'string' },
   },
 }
@@ -56,6 +64,22 @@ const WORK_ORDERS = {
 
 The script parses `partition_raw` with `JSON.parse` in JS. A planner that "summarizes" the
 CLI output instead of pasting it breaks the run loudly at that parse — which is intended.
+
+### `plan_path` — the resume point (1.2)
+
+The absolute path of `.claude/vfa/runs/<runstamp>/`, which the planner writes: `plan.json`
+(the whole plan plus a per-order content manifest), `plan.md` (the same plan for a person),
+and later `state.jsonl` (one line per wave). Layout and digest:
+`specs/2026-08-16-increment-3-contracts.md` §1–§2. The planner's charter gained `Write` for
+exactly those artifacts and for the partition input, and gained nothing else — it still
+modifies no line of the repository under change.
+
+**Required, not optional.** The script cannot learn the path any other way — this schema is
+`additionalProperties: false` with a closed `required` — and a field that may be absent is a
+field whose absence nobody notices. `''` is the legal value for "the plan was not persisted",
+and the workflow reports it as a degraded `run-state` channel rather than passing over it: a
+run with no resume point costs a whole survey and a whole planning pass if it is interrupted,
+which is a real cost stated out loud.
 
 ### `deps` — file-disjoint is not build-independent
 
@@ -78,9 +102,14 @@ consumer's spec.
 
 The planner compares the survey's coverage gaps against what the change itself names. A gap
 the change explicitly leans on goes in `blocking_gaps`; when it is non-empty the workflow
-returns before dispatching anything, carrying the full plan in `checkpoint.preplanned` (§8)
-so a confirmed re-invocation skips survey and planning. Gaps that touch nothing the change
-asked for belong in `notes`, not here.
+returns before dispatching anything. Gaps that touch nothing the change asked for belong in
+`notes`, not here.
+
+**(1.2)** The plan travels back as a **path**, not a payload: `checkpoint.resume_path` (§8),
+which is `plan_path` above. A confirmed re-invocation passes `resume_path` plus
+`confirmed_gaps: true` and skips survey and planning. The predecessor of this was
+`checkpoint.preplanned`, the planner's whole output — ~55KB the caller had to echo back
+byte-exact, so a one-bit "go" cost a 15k-token transcription or a from-scratch re-plan (F13).
 
 ### `HUMAN:` criteria — the one category the reviewer may not rule on
 
@@ -294,10 +323,15 @@ const MERGE_RESULT = {
 ```
 
 No `merged` boolean, for the same reason as everywhere else: whether the merge succeeded is
-computed. The block below is canonical, copied verbatim into `skills/develop/SKILL.md`
-(the deriving caller) and `agents/verifier.md` (the reporting agent) — previously the
-schema, the derivation, and the agent instruction each described this contract in their
-own words, and the agent's words named no field at all:
+computed. The block below is canonical, copied verbatim into `agents/verifier.md` (the
+reporting agent) — previously the schema, the derivation, and the agent instruction each
+described this contract in their own words, and the agent's words named no field at all.
+
+**(1.2)** The **deriving caller is now `workflows/vfa-develop.workflow.js`**, which merges
+each wave into its own integration worktree and computes `mergeOk` in JS. `skills/develop`
+no longer merges branch by branch — it performs one merge of one integration branch onto the
+user's branch, by hand, after the human gate — so it no longer carries this block. The two
+remaining copies still pin each other.
 
 <!-- vfa:verbatim merge-result -->
 Merge mode reports exactly four fields: `stop_reason` (`completed` or
@@ -457,12 +491,17 @@ checks them in JS and refuses to let such a result flow on as evidence.
   //            lib/ while their own cwd is the target repo. See "<plugin-root>" above. The
   //            skill passes ${CLAUDE_PLUGIN_ROOT}; without it those agents halt rather than
   //            measure the wrong tree.
-  preplanned:   null | { work_orders, shared_files, partition_raw, blocking_gaps, notes },
-  //            default null. When set (a re-invocation for deferred orders whose loci are
-  //            now valid against the freshly merged base, or a confirmed re-invocation
-  //            after the evidence checkpoint, passing checkpoint.preplanned back), survey
-  //            and planning are SKIPPED and the workflow goes straight to implementation.
-  //            The evidence checkpoint does not fire on a preplanned run.
+  // (1.2) `preplanned` is REMOVED. It carried the planner's whole output back inline; the
+  //        plan now lives on disk and is resumed by reference.
+  resume_path:  String,          // default ''. Absolute path of a run directory
+  //            (.claude/vfa/runs/<runstamp>/). Survey and planning are SKIPPED; the plan and
+  //            the wave-by-wave run state are loaded by a run-state agent, checked against a
+  //            per-order content digest, already-merged orders are skipped, and the
+  //            integration worktree is re-attached.
+  confirmed_gaps: Boolean,       // default false. Supplying it IS the confirmation of the
+  //            evidence checkpoint's gaps — it can mean nothing else. Read at the gate only.
+  pause_between_waves: Boolean,  // default false, and never defaulted on. Return after each
+  //            wave with resumable state, for a caller who wants a human gate per wave.
 }
 
 // RETURN
@@ -475,13 +514,29 @@ checks them in JS and refuses to let such a result flow on as evidence.
                                  // rather than as ids to join back up by hand. An id the
                                  // partition emitted that matches no order still travels,
                                  // as a stub carrying only its id.
-  deferred:   [String],          // ids in partition waves 2+ — they overlap files wave 1
-                                 // is changing, or depend on wave-1 orders (deps), so they
-                                 // must be implemented against the post-merge tree: the
-                                 // skill re-invokes vfa-develop with `preplanned` after
-                                 // merging. Only WAVE 1 runs per call.
+  deferred:   [String],          // (1.2) ids in waves that did NOT run, because the line
+                                 // stopped (a merge that did not complete, a merged head
+                                 // that failed verification) or the caller asked to pause.
+                                 // A run that completes defers nothing: every wave runs in
+                                 // one invocation. The skill re-invokes with `resume_path`.
+  blocked:    [{ id: String, blocked_by: String }],
+                                 // (1.2) never dispatched, because an order they depend on
+                                 // did not land. `blocked_by` names the ESCALATED ROOT, not
+                                 // the nearest link. Its own bucket on purpose: `deferred`
+                                 // means "re-invoke and implement me", and pointing a
+                                 // re-invocation at an order whose provider never landed
+                                 // rebuilds the F5 failure the gate exists to prevent.
+  integration: { branch, worktree, base_sha, head_sha, merged, approved_unmerged,
+                 merge_stopped_at, wave_verify, review },
+                                 // (1.2) the workflow-owned integration worktree. Present on
+                                 // EVERY exit path, the top-level catch included — an
+                                 // exception is exactly when a caller most needs to know
+                                 // which branch already holds finished work.
+                                 // specs/2026-08-16-increment-3-contracts.md §6.
+  plan_path:  String,            // (1.2) the run directory, '' when nothing was persisted
   implemented: [{
     id: String,
+    wave: Number,                // (1.2) which wave this order ran in
     branch: String, worktree: String,
     base_sha: String, head_sha: String,
     commits: [{ sha: String, subject: String }],
@@ -503,16 +558,29 @@ checks them in JS and refuses to let such a result flow on as evidence.
   escalations: [ /* §7 escalation objects */ ],
   checkpoint: null | {           // non-null ONLY on the evidence-checkpoint exit: the
     blocking_gaps: [String],     // survey missed evidence the change itself names, and
-    preplanned: WORK_ORDERS,     // NOTHING was dispatched. `preplanned` is the planner's
-  },                             // full output, ready to pass back as args.preplanned.
+    resume_path: String,         // NOTHING was dispatched. (1.2) A PATH, not a payload —
+  },                             // '' when the plan could not be persisted, in which case a
+                                 // confirmed re-invocation must re-plan, and the skill says
+                                 // so rather than leaving a field mysteriously empty.
   survey_coverage: Coverage,     // from the nested vfa-survey, passed through unmodified
   coverage: Coverage,            // increment-1 §5 shape, for THIS workflow:
-  //   complete: DERIVED — true iff escalations, coupled, AND deferred are ALL empty
-  //             AND survey_coverage.complete is true
+  //   complete: DERIVED — true iff escalations, coupled, deferred AND the extra-unreached
+  //             set are ALL empty AND survey_coverage.complete is true.
+  //             (1.2) The wave loop adds NO new conjunct. Blocked orders, approved-but-
+  //             unmerged orders, a stopped merge, a failed wave verification and an open
+  //             integration critical all route through the extra-unreached hook that is
+  //             already one — and into `remaining`. A new conjunct would make `complete`
+  //             false while `remaining` stayed empty, which is IRON LAW §6's loud stop
+  //             without its resumable half.
   //   unreached: coupled ids ('W3: coupled — session must implement'), deferred ids
-  //              ('W4: deferred — re-invoke after merge'), and escalated ids
-  //              ('W5: review_not_converging'), human-readable
-  //   resumable: { runId: String, remaining: [coupled + deferred + escalated ids] }
+  //              ('W4: deferred — re-invoke with resume_path'), escalated ids
+  //              ('W5: review_not_converging'), and (1.2) blocked ids
+  //              ('W6: blocked — W1 did not land'), human-readable
+  //   resumable: { runId: String, remaining: [coupled + deferred + escalated + (1.2)
+  //              blocked + approved-unmerged + vacuously-verified ids, plus the literal
+  //              'integration' when the merged head itself is what needs attention] }
+  //     INVARIANT (1.2): complete === false implies remaining is non-empty. The scenario
+  //     suite asserts it directly — a halt that names nothing to resume is not resumable.
   //     runId is a REASON STRING, never null: the runtime does not expose a run's own id
   //     to its script, so the value says exactly that and points at the Workflow launch
   //     result, which the skill records at launch. "Not knowable here" must stay
@@ -532,33 +600,48 @@ naming what was never attempted.
 
 ---
 
-## 9. Division of labor with the `develop` skill (T10)
+## 9. Division of labor with the `develop` skill (T10, amended at 1.2)
 
-The workflow **never merges** and never touches the tree the user is sitting on. The skill:
+**The invariant, stated precisely:** the workflow never mutates the **user's branch or working
+tree**. At 1.1 that was written as "the workflow never merges", because the only tree in
+question was the user's. At 1.2 the workflow owns an integration worktree of its own and
+merges each wave into it — which touches nothing the user is sitting in. Advancing the user's
+branch is still the session's act, after the human gate, and it is now **one** merge of **one**
+branch instead of a per-branch merge run.
+
+The skill:
 
 0. Records the `runId` from the Workflow launch result — the script cannot read its own id
    (`resumable.runId` is a reason string saying so), and the recorded id is what pairs
-   with `resumable.remaining` when escalated work needs resuming. On return it checks
-   `checkpoint` first: non-null means nothing was dispatched — it presents
-   `checkpoint.blocking_gaps` to the human and, on a go, re-invokes with
-   `preplanned: checkpoint.preplanned`.
+   with `resumable.remaining` when escalated work needs resuming. Ensures `.claude/vfa/` and
+   `.claude/worktrees/` are gitignored, once — an agent adding the ignore rule would itself
+   be a tree mutation. On return it checks `checkpoint` first: non-null means nothing was
+   dispatched — it presents `checkpoint.blocking_gaps` to the human and, on a go, re-invokes
+   with `resume_path: checkpoint.resume_path` and `confirmed_gaps: true`.
 1. Implements `coupled` orders in the main session — same commit discipline, and the same
    review loop driven via the Agent tool (`vf-agentics:verifier`, `vf-agentics:reviewer`,
    fresh reviewer per round, identical exit/escalation conditions, executed by the
    session). Each `coupled` entry carries its full order body; `deps` are honored
    (providers before consumers) and majors block orders marked `contract: true`.
-2. Merges approved branches serially (dispatching `verifier` in merge mode per branch), in
-   `implemented` order. A conflict stops the merge run and is surfaced to the human — wave-1
-   loci were pairwise disjoint, so a conflict means the independence declaration was wrong,
-   which is a planner defect worth seeing, not silently resolving.
-3. When `deferred` is non-empty: after merging, re-invokes `vf-agentics:vfa-develop` with
-   `preplanned` carrying the deferred orders (and the original `shared_files`;
-   `partition_raw` re-run by the skill via `node lib/independence.mjs` over the remainder,
-   `{id, locus, deps}` per order). Repeats until the frontier is empty or escalated.
-4. Dispatches one final `reviewer` over the full merged diff (integration focus). Criticals
-   here are surfaced at the gate with the trail — the skill does not open a new loop for
-   them without the human.
-5. Reports: MUST NOT claim success while `coverage.complete === false`; gaps and
+2. Refuses to re-invoke a **blocked** order while the escalation naming it is still open. Its
+   provider does not exist in the tree, so a fresh coder would build against thin air and
+   every verifier would find a repository missing the thing it was told to use.
+3. Merges **once**, on the user's branch, after an explicit go and never while an escalation
+   is open: `git merge --no-ff <integration.branch>`. The per-wave merges already happened
+   inside the workflow, and `integration.merge_stopped_at` / `approved_unmerged` /
+   `wave_verify` say exactly how far they got. A conflict at this last merge means the user's
+   tree moved underneath the run.
+4. When `deferred` is non-empty — the line stopped, or the caller asked to pause — re-invokes
+   `vf-agentics:vfa-develop` with the full argument set plus `resume_path: result.plan_path`.
+   The resumed run reads the plan and the run state off disk, skips merged orders, re-attaches
+   the integration branch and carries on, paying for no survey and no planning. Repeats until
+   the frontier is empty or escalated. The skill no longer re-runs `lib/independence.mjs`
+   itself: the partition is in `plan.json` and the wave loop consumes it whole.
+5. Presents `integration.review` — the integration review now runs **inside** the workflow,
+   over `base..integration head`. Criticals are surfaced at the gate with the trail; the skill
+   does not open a new loop for them without the human.
+6. Reports: MUST NOT claim success while `coverage.complete === false`; gaps and
    escalations lead the report (IRON LAW §4). Writes `discovered` entries to the project
-   KB via the knowledge-base skill. Cleans up worktrees/branches only after the human
-   accepts the merge.
+   KB via the knowledge-base skill. Cleans up worktrees/branches — the order worktrees and
+   the integration worktree alike — only after the human accepts the merge. Escalated and
+   blocked orders keep theirs: they are the resumable state, and so is the run directory.
