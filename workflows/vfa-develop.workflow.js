@@ -1,20 +1,21 @@
 export const meta = {
   name: 'vfa-develop',
-  description: 'Implement a change as work orders: survey, plan, partition, then per-order coder -> verifier -> adversarial review loop. Wave 1 only; never merges.',
+  description: 'Implement a change as work orders: survey, plan, partition, then wave by wave — coder -> verifier -> adversarial review per order, merged into a workflow-owned integration worktree. Never touches the user\'s branch or working tree.',
   phases: [
     { title: 'Survey', detail: 'nested vfa-survey, scoped to the change' },
-    { title: 'Plan', detail: 'planner: work orders + declared loci + partition' },
+    { title: 'Plan', detail: 'planner: work orders + declared loci + partition, persisted to disk' },
     { title: 'Implement', detail: 'coder per order, worktree-isolated, focused commits' },
     { title: 'Verify', detail: 'discriminator + build + suite + series checks' },
     { title: 'Review', detail: 'fresh adversarial reviewer per round until zero criticals' },
+    { title: 'Integrate', detail: 'merge each wave into the integration worktree, verify the merged head, review the whole change' },
   ],
 }
 
 // ---------------------------------------------------------------- schemas
 //
-// Copied verbatim from shared/interfaces.md §1, §4, §5 and §6. Scripts cannot import, so
-// these literals are the contract's only representation here — they are diffed against the
-// interfaces doc, never re-derived from memory.
+// Copied verbatim from shared/interfaces.md §1, §4, §5 and §6, and from increment 3's
+// §1–§3. Scripts cannot import, so these literals are the contract's only representation
+// here — they are diffed against the interfaces docs, never re-derived from memory.
 //
 // No minItems / maxItems / minLength / maxLength anywhere: structured outputs do not support
 // them, so a bound written here would silently do nothing or turn a good result into a
@@ -27,7 +28,7 @@ export const meta = {
 
 const WORK_ORDERS = {
   type: 'object', additionalProperties: false,
-  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'notes'],
+  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'plan_path', 'notes'],
   properties: {
     work_orders: { type: 'array', items: {
       type: 'object', additionalProperties: false,
@@ -44,6 +45,74 @@ const WORK_ORDERS = {
     shared_files: { type: 'array', items: { type: 'string' } },  // designated shared files for the independence test
     partition_raw: { type: 'string' }, // VERBATIM stdout of `node lib/independence.mjs <input>` — never retyped
     blocking_gaps: { type: 'array', items: { type: 'string' } },  // survey gaps the change itself leans on; non-empty withholds dispatch
+    // Absolute path of the run directory the planner wrote (.claude/vfa/runs/<runstamp>/),
+    // holding plan.json, its manifest, and plan.md. '' means no resume point exists — a
+    // stated cost, never a guessed path. Required rather than optional on purpose: a field
+    // that may be absent is a field whose absence nobody notices.
+    plan_path: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
+// The loader's return. `plan` is WORK_ORDERS' own shape, reused rather than retyped: two
+// hand-copied transcriptions of the same schema drift, and this one has to match exactly or
+// a resumed run implements against a different contract than a fresh one.
+const RESUME_STATE = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'plan', 'manifest', 'state', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['loaded', 'unreadable'] },
+    plan: {
+      type: 'object', additionalProperties: false,
+      required: WORK_ORDERS.required,
+      properties: WORK_ORDERS.properties,
+    },
+    manifest: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['id', 'locus_n', 'acceptance_n', 'digest'],
+      properties: {
+        id: { type: 'string' },
+        locus_n: { type: 'integer' },
+        acceptance_n: { type: 'integer' },
+        digest: { type: 'string' },   // FNV-1a over the canonical order, from lib/plan-digest.mjs
+      } } },
+    state: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['wave', 'merged', 'approved_unmerged', 'escalated',
+                 'integration_base', 'integration_head'],
+      properties: {
+        wave: { type: 'integer' },
+        merged: { type: 'array', items: { type: 'string' } },
+        approved_unmerged: { type: 'array', items: { type: 'string' } },
+        escalated: { type: 'array', items: { type: 'string' } },
+        // Where this change started. Without it a resumed run has no way to know what the
+        // whole change's diff is, and its integration review would silently cover only the
+        // waves that ran after the interruption.
+        integration_base: { type: 'string' },
+        integration_head: { type: 'string' },
+      } } },
+    notes: { type: 'string' },
+  },
+}
+
+const RECORDED = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'path', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['recorded', 'unwritable'] },
+    path: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
+const INTEGRATION_SETUP = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'worktree', 'branch', 'head_sha', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
+    worktree: { type: 'string' },   // absolute path, observed
+    branch: { type: 'string' },
+    head_sha: { type: 'string' },   // what HEAD actually is in that worktree — read, not assumed
     notes: { type: 'string' },
   },
 }
@@ -98,6 +167,17 @@ const VERIFY = {
   },
 }
 
+const MERGE_RESULT = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'merged_sha', 'conflicts', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
+    merged_sha: { type: 'string' },  // '' when the merge did not complete — a fact, not a verdict
+    conflicts: { type: 'array', items: { type: 'string' } },  // conflicting paths, verbatim from git
+    notes: { type: 'string' },
+  },
+}
+
 const FINDINGS = {
   type: 'object', additionalProperties: false,
   required: ['findings', 'fix_verdicts'],
@@ -125,7 +205,7 @@ const FINDINGS = {
 
 // ------------------------------------------------------------- derived verdicts
 //
-// interfaces §5, verbatim. The verifier reports facts; this line is the only place they
+// interfaces §5, verbatim. The verifier reports facts; these lines are the only place they
 // become a pass or a failure.
 
 const verifyOk = v => v.stop_reason === 'completed'
@@ -133,7 +213,96 @@ const verifyOk = v => v.stop_reason === 'completed'
   && v.discriminator.every(d => d.failed_on_base && d.passes_now)
   && !v.series_findings.some(f => f.blocking)
 
-// ------------------------------------------------------------- result coherence
+const mergeOk = m => m.stop_reason === 'completed'
+  && m.merged_sha !== '' && m.conflicts.length === 0
+
+// The merged head has no single declared locus and no one change under test, so the
+// discriminator and the series check are not asked for there and their emptiness carries no
+// information. Reusing verifyOk would read that designed emptiness as two silent passes.
+const waveVerifyOk = v => v.stop_reason === 'completed'
+  && v.build !== 'failed' && v.suite !== 'failed'
+
+// ------------------------------------------------------------- the plan digest
+//
+// A byte-for-byte behavioural copy of lib/plan-digest.mjs, which the planner runs as a CLI
+// when it writes the plan. The plan travels back through a loader agent on resume, so the
+// digest has to be computable on both sides of that trip — and a workflow script has no
+// imports and no node:crypto. FNV-1a over a key-sorted canonical serialization is thirty
+// characters of integer arithmetic and is identical wherever it is written.
+//
+// If these ever diverge from lib/plan-digest.mjs, every resume halts on a false mismatch.
+// test/vfa-develop-scenarios.test.mjs pins them together by feeding this workflow a manifest
+// the library computed and asserting the run proceeds.
+
+function canonical(value) {
+  if (value === undefined) return 'null'
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']'
+
+  return '{' + Object.keys(value).sort()
+    .map((key) => JSON.stringify(key) + ':' + canonical(value[key]))
+    .join(',') + '}'
+}
+
+function fnv1a(text) {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+const ORDER_FIELDS = ['id', 'title', 'locus', 'acceptance', 'context', 'deps', 'contract']
+
+function digestOrder(order) {
+  const picked = {}
+  for (const field of ORDER_FIELDS) picked[field] = order[field]
+  return fnv1a(canonical(picked))
+}
+
+// The tripwire. A count-and-ids check would pass a paraphrased `context` and a rewritten
+// `locus` — and a wrong locus does not surface as "the plan was corrupted", it surfaces two
+// stages later as a blocking locus breach charged to an honest coder. Every note here names
+// the order, because "the plan is corrupt" is not an actionable halt.
+function planIntegrity(orders, manifest) {
+  const notes = []
+  const covered = new Map((manifest || []).map((entry) => [entry.id, entry]))
+
+  for (const wo of orders) {
+    const entry = covered.get(wo.id)
+    if (!entry) {
+      notes.push(wo.id + ': the loaded plan carries an order the manifest never covered')
+      continue
+    }
+
+    const locusN = (wo.locus || []).length
+    const acceptanceN = (wo.acceptance || []).length
+
+    if (locusN !== entry.locus_n) {
+      notes.push(wo.id + ': locus has ' + locusN + ' entries, the manifest recorded ' + entry.locus_n)
+    } else if (acceptanceN !== entry.acceptance_n) {
+      notes.push(wo.id + ': acceptance has ' + acceptanceN + ' criteria, the manifest recorded ' +
+        entry.acceptance_n)
+    } else if (digestOrder(wo) !== entry.digest) {
+      notes.push(wo.id + ': content digest ' + digestOrder(wo) + ' does not match the recorded ' +
+        entry.digest + ' — a field was reworded in transit, at the same shape')
+    }
+  }
+
+  const loaded = new Set(orders.map((wo) => wo.id))
+  for (const entry of manifest || []) {
+    if (!loaded.has(entry.id)) {
+      notes.push(entry.id + ': the manifest covers an order the loaded plan does not carry')
+    }
+  }
+
+  return notes
+}
+
+// ---------------------------------------------------------------- result coherence
 //
 // The runtime validates every agent result against its schema, but a schema cannot state
 // cross-field facts — "done means commits landed", "completed means the commands are
@@ -179,6 +348,26 @@ function coherentVerify(v) {
   return null
 }
 
+// A merge that completed produced a commit, and a commit has a sha. `merged_sha: ''` with
+// `stop_reason: 'completed'` and no conflicts would read as mergeOk-adjacent to a careless
+// reader and, worse, would advance the integration head to an empty string.
+function coherentMerge(m) {
+  if (m.stop_reason === 'completed' && m.conflicts.length === 0 && !SHA_RE.test(m.merged_sha || '')) {
+    return 'a completed conflict-free merge reported no commit sha'
+  }
+  return null
+}
+
+function coherentSetup(s) {
+  if (s.stop_reason === 'completed' && (!s.worktree || !s.branch)) {
+    return 'the integration worktree completed setup without naming a path and a branch'
+  }
+  if (s.stop_reason === 'completed' && !SHA_RE.test(s.head_sha || '')) {
+    return 'the integration worktree reported no observed HEAD sha'
+  }
+  return null
+}
+
 // What the verifier actually measured. Empty means the order was implemented and reviewed
 // but nothing mechanical ran — verifyOk holds vacuously on []/absent/absent, and in the
 // field a docs-only order shipped as verified on exactly that emptiness. Emptiness is a
@@ -195,7 +384,21 @@ const input = typeof args === 'string' ? { change: args } : (args || {})
 const change = typeof input.change === 'string' ? input.change : ''
 const roots = input.roots || '.'
 const notes = input.notes || ''
-const preplanned = input.preplanned || null
+
+// Resume by reference, not by echo. The predecessor of this field was `preplanned`: the
+// planner's whole output, ~55KB, which a caller had to transcribe back byte-exact to say
+// "go". A one-bit confirmation cost a 15k-token retype or a from-scratch re-plan. Now the
+// planner writes the plan to disk and this is the path to it.
+const resumePath = typeof input.resume_path === 'string' ? input.resume_path.trim() : ''
+
+// Supplying this IS the confirmation of the evidence checkpoint's gaps — there is nothing
+// else it could mean. Read only at the gate.
+const confirmedGaps = input.confirmed_gaps === true
+
+// Opt-in, and never defaulted on: a caller who wants to look at each wave before the next
+// one starts gets a return with resumable state after every wave. Default off, because the
+// whole point of the wave loop is that one invocation carries a whole change.
+const pauseBetweenWaves = input.pause_between_waves === true
 
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
@@ -266,66 +469,101 @@ let orderById = new Map()
 const coupledOrder = (id) => orderById.get(id) ||
   { id, title: '', locus: [], acceptance: [], context: '', deps: [], contract: false }
 
+// The integration handle. Every field is observed rather than assumed: `head_sha` is what a
+// verifier read after each merge, and `wave_verify` records what the build and suite actually
+// did at that head. Without those facts, wave k+1 inherits a breakage introduced by the merge
+// itself and reports it as its own orders' defects — seven-orders-escalate-for-someone-else's
+// -bug, one level up.
+//
+// This object is threaded through EVERY exit path, the top-level catch included: the branch
+// name and the merged set are the actual resumable state IRON LAW §6 demands, and an
+// exception is exactly when a caller most needs to know which branch holds the work.
+let integration = {
+  branch: '', worktree: '', base_sha: '', head_sha: '',
+  merged: [], approved_unmerged: [], merge_stopped_at: null,
+  wave_verify: [], review: null,
+}
+
 // interfaces §8. Every exit path goes through this function, so a caller never receives
 // undefined and never receives a bare error string — it always receives something whose
 // coverage block says what did and did not happen. `checkpoint` is null except on the
-// evidence-checkpoint exit, where it carries the planner's full output ready to pass back
-// as `preplanned`.
-function developResult(workOrders, implemented, escalations, coupledIds, deferred, surveyCoverage, coverageBlock, checkpoint) {
+// evidence-checkpoint exit, where it carries the path to the persisted plan.
+function developResult(parts) {
   return {
     change,
-    work_orders: workOrders,
-    coupled: coupledIds.map(coupledOrder),
-    deferred,
-    implemented,
-    escalations,
-    checkpoint: checkpoint || null,
-    survey_coverage: surveyCoverage,
-    coverage: coverageBlock,
+    work_orders: parts.workOrders || [],
+    coupled: (parts.coupled || []).map(coupledOrder),
+    deferred: parts.deferred || [],
+    blocked: parts.blocked || [],
+    implemented: parts.implemented || [],
+    escalations: parts.escalations || [],
+    integration,
+    plan_path: parts.planPath || '',
+    checkpoint: parts.checkpoint || null,
+    survey_coverage: parts.surveyCoverage || null,
+    coverage: parts.coverage,
   }
 }
 
 // IRON LAW §4 as a data structure, with the §8 derivation of `complete`: an order that was
-// escalated, coupled out to the session, or deferred to a later wave is an order that did
-// not land, and a run carrying any of them is not complete however well the rest went.
+// escalated, coupled out to the session, or deferred to a later invocation is an order that
+// did not land, and a run carrying any of them is not complete however well the rest went.
 // `complete` is derived here and never taken from an agent.
-function coverageOf(escalations, coupled, deferred, surveyCoverage, failedChannels, extraUnreached) {
+//
+// The wave loop adds no conjunct. Blocked orders, approved-but-unmerged orders, a stopped
+// merge, a failed wave verification and an open integration critical all route through
+// `extraUnreached` — which is already a conjunct — and through `extraRemaining`. A new
+// conjunct would have been the easy change and the wrong one: it makes `complete` false
+// without putting anything in `remaining`, and a halt that names nothing to resume is the
+// loud-stop half of IRON LAW §6 without the resumable half.
+function coverageOf(parts) {
+  const escalations = parts.escalations || []
+  const coupled = parts.coupled || []
+  const deferred = parts.deferred || []
+  const extraUnreached = parts.extraUnreached || []
+  const extraRemaining = parts.extraRemaining || []
+  const surveyCoverage = parts.surveyCoverage
+
   return {
     complete: escalations.length === 0 && coupled.length === 0 && deferred.length === 0
-      && (extraUnreached || []).length === 0
+      && extraUnreached.length === 0
       && (surveyCoverage ? surveyCoverage.complete === true : true),
     // This workflow has no topic-shaped work: an order that produced nothing produced an
     // escalation instead, and those are carried above. The two keys stay for shape
     // compatibility with the increment-1 coverage block every skill in this plugin reads.
     dropped: [],
     incomplete: [],
-    failed_channels: failedChannels,
-    // extraUnreached carries surface a caller must see that fits no bucket above: a
-    // partition failure's label, and orders whose verification was vacuous (implemented
-    // and reviewed with nothing mechanically measurable). Both keep `complete` false.
+    failed_channels: parts.failedChannels || [],
     unreached: coupled.map(coupledNote)
       .concat(deferred.map(deferredNote))
       .concat(escalations.map(escalationNote))
-      .concat(extraUnreached || []),
+      .concat(extraUnreached),
     resumable: {
       runId: RUN_ID,
-      remaining: coupled.concat(deferred).concat(escalations.map((e) => e.id)),
+      // Deduped: a failed wave verification and an open integration critical both point at
+      // the same thing to resume, and a list that names it twice reads as two problems.
+      remaining: [...new Set(coupled.concat(deferred)
+        .concat(escalations.map((e) => e.id))
+        .concat(extraRemaining))],
     },
   }
 }
 
 const coupledNote = (id) => id + ': coupled — session must implement'
-const deferredNote = (id) => id + ': deferred — re-invoke after merge'
+const deferredNote = (id) => id + ': deferred — re-invoke with resume_path'
 const escalationNote = (e) => e.id + ': ' + e.reason
+const blockedNote = (b) => b.id + ': blocked — ' + b.blocked_by + ' did not land'
 
 if (!change.trim()) {
-  return developResult([], [], [], [], [], null, {
-    complete: false,
-    dropped: [],
-    incomplete: [],
-    failed_channels: [],
-    unreached: ['no change was supplied, so nothing was planned or implemented'],
-    resumable: { runId: RUN_ID, remaining: [] },
+  return developResult({
+    coverage: {
+      complete: false,
+      dropped: [],
+      incomplete: [],
+      failed_channels: [],
+      unreached: ['no change was supplied, so nothing was planned or implemented'],
+      resumable: { runId: RUN_ID, remaining: [] },
+    },
   })
 }
 
@@ -407,6 +645,9 @@ const criticalsText = (criticals) => (criticals || [])
 const escalationLabels = (list) =>
   list.map((e) => e.id + ' (' + e.reason + ')').join(', ')
 
+const orderLines = (orders) =>
+  (orders || []).map((wo) => wo.id + ': ' + wo.title).join('\n')
+
 const acceptanceNote =
   `A criterion prefixed exactly "HUMAN:" is one only a person can judge. It reaches the ` +
   `human at the gate untouched: never rewritten, never turned into a synthetic test, and ` +
@@ -433,6 +674,12 @@ function plannerPrompt(surveyEvidence) {
     `provider is coupled rather than schedule work against a toolchain that never lands. ` +
     `An integration order that wires other orders together depends on every order it ` +
     `wires. deps is [] only when an order truly builds on nothing here.\n\n` +
+    `Your deps are load-bearing twice over now: ALL waves run in this one invocation, and ` +
+    `after each wave the approved orders are merged into an integration branch that the ` +
+    `next wave builds on. An order whose provider escalated is not dispatched at all — it ` +
+    `is reported as blocked, naming the provider. A dep you omitted therefore does not ` +
+    `merely mis-schedule work; it sends a coder to build against something that never ` +
+    `landed.\n\n` +
     `Set contract true on an order whose output other orders build against — a vocabulary ` +
     `note, shared type definitions, an interface. An ambiguity in a contract propagates ` +
     `into every consumer, so majors block a contract order downstream the way criticals ` +
@@ -452,14 +699,76 @@ function plannerPrompt(surveyEvidence) {
     `run right there, which is intended. If it prints {"error": ...}, the defect is in ` +
     `your plan (a dependency cycle, a dep naming no order, a provider routed to the ` +
     `session): fix the decomposition and re-run it, and paste an error verbatim only when ` +
-    `you cannot resolve it. Put the survey coverage limits you inherited, and any locus ` +
-    `you are less than certain about, in notes.`
+    `you cannot resolve it.\n\n` +
+    `Finally, PERSIST THE PLAN, exactly as your charter's step 9 describes. Mint a runstamp, ` +
+    `write .claude/vfa/runs/<runstamp>/plan.json inside the target repository with the whole ` +
+    `plan and every work order in full, add the manifest printed by\n\n` +
+    `   node "${pluginRoot}/lib/plan-digest.mjs" .claude/vfa/runs/<runstamp>/plan.json\n` +
+    rootWarning +
+    `\nwrite plan.md beside it for a human, and return the run directory's ABSOLUTE path in ` +
+    `plan_path. That path is how an interrupted run resumes without buying this plan a ` +
+    `second time. If you genuinely could not write it, return plan_path as an empty string ` +
+    `and say why in notes — never a path you did not create.\n\n` +
+    `Put the survey coverage limits you inherited, and any locus you are less than certain ` +
+    `about, in notes.`
 }
 
-function coderPrompt(wo) {
+function loaderPrompt() {
+  return `Load a vf-agentics run's durable state. LOAD MODE.\n\n` +
+    `RUN DIRECTORY (absolute):\n${resumePath}\n\n` +
+    `Read plan.json and state.jsonl from that directory and return them.\n\n` +
+    `Return every work order WHOLE and CHARACTER FOR CHARACTER — id, title, every locus ` +
+    `path, every acceptance criterion, the full context string, deps, contract. Return the ` +
+    `stored manifest array as it is written. Return the state.jsonl entries parsed, in file ` +
+    `order, oldest first; a missing or empty state.jsonl means no wave completed, which is a ` +
+    `fact — return an empty list and say so in notes.\n\n` +
+    `Set plan_path to ${resumePath} — the directory you actually read.\n\n` +
+    `Your caller recomputes a content digest over every order and compares it to the stored ` +
+    `manifest. One reworded sentence stops the run. So do not tidy a path, do not shorten a ` +
+    `long context, do not drop a criterion that looks redundant, and do not repair a field ` +
+    `that looks wrong. You are a courier.\n\n` +
+    `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
+    `with what you found in notes. Never invent a plan and never return a partial one as ` +
+    `loaded — a plan missing two orders looks exactly like a plan that had five.`
+}
+
+function setupPrompt(runstamp) {
+  const stamp = runstamp || '<mint one>'
+
+  return `INTEGRATION SETUP MODE. Create the worktree this whole run merges into.\n\n` +
+    `REPOSITORY: ${roots}\n` +
+    `RUNSTAMP: ${stamp}\n` +
+    (runstamp ? '' :
+      `The runstamp above is empty because no plan directory was written. Mint one with\n` +
+      `   node -e "console.log(new Date().toISOString().replace(/[-:]/g,'').replace(/\\..+/,'').replace('T','-'))"\n` +
+      `and use it below, then report the branch and path you actually used.\n`) +
+    `\nBRANCH: vfa/<runstamp>-integration\n` +
+    `WORKTREE: .claude/worktrees/vfa-<runstamp>-integration (report it as an ABSOLUTE path)\n` +
+    `BASE: the repository's current HEAD.\n\n` +
+    `Create it, cd into it, and report the branch, the absolute path, and the HEAD you ` +
+    `OBSERVE there with git rev-parse HEAD — not the SHA you expected. If the branch or the ` +
+    `path already exists this is a resumed run: do not delete anything, do not force, attach ` +
+    `or enter what is there and report the HEAD you find, which may already be ahead of the ` +
+    `repository's HEAD because earlier waves merged into it.\n\n` +
+    `This worktree is the workflow's own. Everything merges here and the tree the user is ` +
+    `sitting in is never touched — not by you, not by anything downstream.`
+}
+
+function coderPrompt(wo, branch) {
+  const anchor = integration.head_sha
+    ? `RE-ANCHOR FIRST — before you read anything and before your first commit:\n\n` +
+      `   git checkout -B ${branch} ${integration.head_sha}\n\n` +
+      `That commit is the integration head: every earlier wave of this change has already ` +
+      `merged into it, and your work builds on them. Starting from the worktree's own HEAD ` +
+      `would implement against a tree that no longer exists and manufacture a merge conflict ` +
+      `out of nothing. Record base_sha AFTER this, so the discriminator's baseline names the ` +
+      `commit your first change actually sits on.\n\n`
+    : ''
+
   return `Implement exactly this work order, and nothing else.\n\n` +
     `WORK ORDER ${wo.id}: ${wo.title}\n` +
     `REPOSITORY: ${roots}\n\n` +
+    anchor +
     `CONTEXT (self-contained — there is no conversation behind it to go looking for):\n` +
     `${wo.context}\n\n` +
     `DECLARED LOCUS — the only files you may create or modify:\n${listOf(wo.locus)}\n\n` +
@@ -467,9 +776,10 @@ function coderPrompt(wo) {
     `${acceptanceNote} Implement toward it; do not invent a test that pretends to check it.\n\n` +
     callerNotes +
     `You are working in a worktree created for this order alone. The tree the user is sitting ` +
-    `in is never touched, and you never merge. Record git rev-parse HEAD as base_sha before ` +
-    `your first commit, then commit each single-concern unit as it goes green. Work that ` +
-    `genuinely needs a file outside the locus is blocked — return that, saying what you ` +
+    `in is never touched, and you never merge — the workflow merges your branch into its own ` +
+    `integration tree after this order is approved. Record git rev-parse HEAD as base_sha ` +
+    `before your first commit, then commit each single-concern unit as it goes green. Work ` +
+    `that genuinely needs a file outside the locus is blocked — return that, saying what you ` +
     `needed and why, rather than widening the fence.\n\n` +
     `Report the typed result with the ABSOLUTE worktree path and the branch name: the ` +
     `verifier and the reviewer are dispatched against them, and a wrong path sends them to ` +
@@ -478,7 +788,7 @@ function coderPrompt(wo) {
 
 function coderFixPrompt(wo, state, instruction) {
   return `Fix round on your own earlier series. Work in the SAME worktree — do not create ` +
-    `another, do not amend, do not rebase, do not merge.\n\n` +
+    `another, do not amend, do not rebase, do not merge, do not re-anchor.\n\n` +
     `WORKTREE: ${state.worktree}\n` +
     `BRANCH: ${state.branch}\n` +
     `BASE SHA: ${state.base_sha}\n` +
@@ -527,6 +837,58 @@ function verifierPrompt(wo, state) {
     `Report facts only. stop_reason environment_broken is for the environment itself failing ` +
     `— unmeasurable is a different answer from failed, and conflating them is the laundering ` +
     `the IRON LAW forbids.`
+}
+
+function mergePrompt(entry) {
+  return `MERGE MODE. Merge one approved branch into the run's integration worktree.\n\n` +
+    `INTEGRATION WORKTREE — cd here, and nowhere else:\n${integration.worktree}\n` +
+    `INTEGRATION BRANCH: ${integration.branch}\n` +
+    `CURRENT INTEGRATION HEAD: ${integration.head_sha}\n\n` +
+    `BRANCH TO MERGE: ${entry.branch}   (work order ${entry.id})\n` +
+    `ITS HEAD: ${entry.head_sha}\n\n` +
+    `Run git merge --no-ff ${entry.branch} and report the four fields your charter names. ` +
+    `Report merged_sha as the sha the merge actually produced, read back with git rev-parse ` +
+    `HEAD — the caller advances the integration head to it, and every later wave is built on ` +
+    `whatever you put there.\n\n` +
+    `NEVER resolve a conflict. The loci in a wave were declared pairwise disjoint, so a ` +
+    `conflict means the plan's independence declaration was wrong — that is a planner defect ` +
+    `a human needs to see, not a merge for you to negotiate. Report the conflicting paths ` +
+    `verbatim and stop.`
+}
+
+function waveVerifyPrompt(waveNumber) {
+  return `Verify the MERGED HEAD of this run's integration worktree, after wave ` +
+    `${waveNumber}. This is wave verification, not order verification.\n\n` +
+    `INTEGRATION WORKTREE — cd here first:\n${integration.worktree}\n` +
+    `INTEGRATION BRANCH: ${integration.branch}\n` +
+    `HEAD: ${integration.head_sha}\n\n` +
+    `Run TWO things only: the build, then the test suite. Take both commands from the caller ` +
+    `notes when they name them, otherwise from the repository's own documentation or ` +
+    `manifest, and name in notes exactly what you ran and that this was the integration ` +
+    `head. Record each as passed or failed from the observed exit status, or absent when the ` +
+    `repository defines no such command at this commit.\n\n` +
+    `Do NOT run the commit-series check and do NOT run the discriminator. There is no single ` +
+    `declared locus here and no one change under test, so both would measure nothing. Return ` +
+    `series_findings and discriminator as empty arrays — that emptiness means "not asked for", ` +
+    `your caller knows it did not ask, and filling them with something plausible would be a ` +
+    `fabricated measurement.\n\n` +
+    callerNotes +
+    `Every order in this wave passed its own verification in its own worktree. What you are ` +
+    `measuring is whether merging them together broke something none of them broke alone — ` +
+    `and if nobody measures that, the next wave inherits the breakage and reports it as its ` +
+    `own orders' defects.`
+}
+
+function recorderPrompt(runDir, entry) {
+  return `RECORD MODE. Append one wave outcome to this run's state log.\n\n` +
+    `RUN DIRECTORY (absolute):\n${runDir}\n\n` +
+    `Append EXACTLY this object to state.jsonl as a single line of JSON followed by a ` +
+    `newline, preserving every line already in the file:\n\n` +
+    `${JSON.stringify(entry)}\n\n` +
+    `Read the file first and write it back with your line added; it is an append-only log ` +
+    `and every earlier line is this run's history. Create the file if it does not exist yet. ` +
+    `Record what you were handed and nothing else — you do not know which orders "should" ` +
+    `have merged, and a wave that merged nothing is recorded as a wave that merged nothing.`
 }
 
 function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
@@ -578,10 +940,37 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
     `IS your report — do not pad the round.`
 }
 
+function integrationReviewPrompt(merged) {
+  return `Adversarially review the WHOLE change, as it now stands merged. This is the ` +
+    `integration review: every order below passed its own review in its own worktree, so ` +
+    `what you are hunting is the class of defect that only exists once they are together.\n\n` +
+    `INTEGRATION WORKTREE — cd into it; everything below is read from there:\n` +
+    `${integration.worktree}\n` +
+    `BRANCH: ${integration.branch}\n` +
+    `DIFF UNDER REVIEW: ${integration.base_sha}..${integration.head_sha}\n` +
+    `Read it with git log --reverse -p ${integration.base_sha}..${integration.head_sha} and ` +
+    `git diff ${integration.base_sha}..${integration.head_sha}. Your Bash is READ-ONLY git ` +
+    `only: log, show, diff. Never check out, stage, or otherwise touch this tree.\n\n` +
+    `THE CHANGE: ${change}\n\n` +
+    `ORDERS MERGED, IN MERGE ORDER:\n${orderLines(merged)}\n\n` +
+    callerNotes +
+    `Look for what per-order review structurally cannot see: a contract one order defined ` +
+    `and another implemented differently; a function two orders each half-wired; duplicated ` +
+    `logic that arrived from two directions; an interface whose two sides disagree; ` +
+    `something the whole change was supposed to accomplish that no single order owned and ` +
+    `nobody therefore did. A defect entirely inside one order's diff was already reviewed ` +
+    `once — raise it only if you can show the earlier round was wrong.\n\n` +
+    `Every finding is falsifiable: claim states the defect so it could be proven wrong, and ` +
+    `evidence cites the code that makes it real. Criticals here go straight to the human ` +
+    `with this trail — no fix loop opens without them — so a padded finding costs a person's ` +
+    `attention, and a missed one ships. Finding nothing after an honest attack IS your ` +
+    `report.`
+}
+
 // ---------------------------------------------------------------- the chain
 //
-// Per order: coder -> verifier -> review loop, with no barrier between orders. Wave-1 loci
-// are pairwise disjoint, so one order's fix round has nothing to wait for.
+// Per order: coder -> verifier -> review loop, with no barrier between orders within a wave.
+// A wave's loci are pairwise disjoint, so one order's fix round has nothing to wait for.
 
 function newState(wo) {
   return {
@@ -818,13 +1207,18 @@ async function reviewLoop(wo, state, trail) {
   }
 }
 
+// The branch each order's coder re-anchors onto and commits to. Derived from the integration
+// branch with a dash rather than a slash: git stores refs as paths, so `<b>/W3` cannot exist
+// while the ref `<b>` does, and the checkout would fail on the second order of the run.
+const orderBranch = (wo) => integration.branch + '-' + wo.id
+
 async function implement(wo) {
   const state = newState(wo)
   const trail = []
 
   try {
     const call = await dispatch(wo, state, trail, 'the coder for ' + wo.id, [],
-      () => agent(coderPrompt(wo), {
+      () => agent(coderPrompt(wo, orderBranch(wo)), {
         agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
         phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderTier,
       }), coherentNewSeries)
@@ -899,20 +1293,98 @@ function lostChain(wo) {
 let orders = []
 let coupled = []
 let deferred = []
+let blocked = []
 let surveyCoverage = null
 let partitionNote = ''
+let planPath = ''
 const implemented = []
 const escalations = []
 const failedChannels = []
+const extraUnreached = []
+const extraRemaining = []
+
+// Ids merged into the integration branch. This, not a wave index, is what gates the next
+// wave: an order whose provider is not in here has nothing to build against, whether the
+// provider escalated, was blocked itself, or was merged in a previous invocation.
+const landed = new Set()
 
 try {
   // -------------------------------------------------------------- 1. survey
 
   let survey = null
-  let planned = preplanned
+  let planned = null
+  let resumeState = []
 
-  if (preplanned) {
-    log('Preplanned orders supplied: survey and planning are skipped.')
+  if (resumePath) {
+    // ------------------------------------------------------- 1a. resume by reference
+    //
+    // A plan alone restores what was DECIDED. An interrupted run also needs what was DONE —
+    // which orders merged, and what the integration head was when it stopped. Both come out
+    // of the run directory, and the digest below is what makes trusting them defensible.
+    phase('Plan')
+    log(`Resuming from ${resumePath}: survey and planning are skipped.`)
+
+    const loaded = await agent(loaderPrompt(), {
+      agentType: 'vf-agentics:run-state', effort: 'low', schema: RESUME_STATE,
+      phase: 'Plan', label: 'resume-load',
+    }).catch((e) => {
+      log(`WARNING: the run-state loader failed: ${e && e.message}`)
+      return null
+    })
+
+    if (!loaded || loaded.stop_reason !== 'loaded' || !loaded.plan) {
+      const why = loaded && loaded.notes ? loaded.notes : 'the loader returned no readable plan'
+      log(`The run directory could not be read: ${why}`)
+      return developResult({
+        planPath: resumePath,
+        coverage: {
+          complete: false,
+          dropped: [],
+          incomplete: [],
+          failed_channels: ['run-state'],
+          unreached: [
+            'resume_path ' + resumePath + ' did not yield a readable plan: ' + why +
+            ' — nothing was dispatched. Re-invoke without resume_path to plan afresh, ' +
+            'rather than implementing against a plan nobody could read.',
+          ],
+          resumable: { runId: RUN_ID, remaining: [] },
+        },
+      })
+    }
+
+    // The tripwire. A count-and-ids manifest would wave through the corruption that actually
+    // matters here — a paraphrased context, a rewritten locus — and that damage surfaces two
+    // stages downstream wearing an honest coder's name.
+    const corrupt = planIntegrity(loaded.plan.work_orders || [], loaded.manifest)
+
+    if (corrupt.length > 0) {
+      log(`HALT: the loaded plan does not match its manifest (${corrupt.length} order(s)).`)
+      return developResult({
+        planPath: resumePath,
+        coverage: {
+          complete: false,
+          dropped: [],
+          incomplete: [],
+          failed_channels: ['run-state'],
+          unreached: corrupt.map((note) => 'plan integrity: ' + note)
+            .concat(['the plan read back from ' + resumePath + ' is not the plan that was ' +
+                     'written; nothing was dispatched. Read plan.json yourself, or re-plan.']),
+          resumable: { runId: RUN_ID, remaining: [] },
+        },
+      })
+    }
+
+    planned = loaded.plan
+    planPath = loaded.plan.plan_path || resumePath
+    resumeState = loaded.state || []
+
+    for (const entry of resumeState) {
+      for (const id of entry.merged || []) landed.add(id)
+      if (entry.integration_base) integration.base_sha = entry.integration_base
+      if (entry.integration_head) integration.head_sha = entry.integration_head
+    }
+
+    log(`Resumed: ${landed.size} order(s) already merged; integration head ${integration.head_sha || '(none recorded)'}.`)
   } else {
     phase('Survey')
 
@@ -958,18 +1430,20 @@ try {
 
     if (surveyUnresolved) {
       log('vfa-survey resolved under neither name — a defect in this plugin; stopping before planning.')
-      return developResult([], [], [], [], [], null, {
-        complete: false,
-        dropped: [],
-        incomplete: [],
-        failed_channels: ['survey'],
-        unreached: [
-          'the vfa-survey sub-workflow resolved under neither "vf-agentics:vfa-survey" nor ' +
-          '"vfa-survey" — a broken reference in this plugin, not an environmental failure. ' +
-          'Nothing was planned or dispatched: planning without the evidence phase is the ' +
-          'silent degradation this stop exists to prevent.',
-        ],
-        resumable: { runId: RUN_ID, remaining: [] },
+      return developResult({
+        coverage: {
+          complete: false,
+          dropped: [],
+          incomplete: [],
+          failed_channels: ['survey'],
+          unreached: [
+            'the vfa-survey sub-workflow resolved under neither "vf-agentics:vfa-survey" nor ' +
+            '"vfa-survey" — a broken reference in this plugin, not an environmental failure. ' +
+            'Nothing was planned or dispatched: planning without the evidence phase is the ' +
+            'silent degradation this stop exists to prevent.',
+          ],
+          resumable: { runId: RUN_ID, remaining: [] },
+        },
       })
     }
 
@@ -996,11 +1470,9 @@ try {
     } else {
       surveyCoverage = survey.coverage
     }
-  }
 
-  // ---------------------------------------------------------------- 2. plan
+    // ---------------------------------------------------------------- 2. plan
 
-  if (!preplanned) {
     phase('Plan')
 
     const gaps = (surveyCoverage.unreached || []).concat(surveyCoverage.dropped || [])
@@ -1021,18 +1493,35 @@ try {
       log(`WARNING: planning failed: ${e && e.message}`)
       return null
     })
+
+    planPath = (planned && typeof planned.plan_path === 'string') ? planned.plan_path.trim() : ''
+
+    if (planned && !planPath) {
+      // Not fatal — the run proceeds and does the work — but it proceeds with no resume
+      // point, and an interruption then costs the whole survey and plan again. That is a
+      // real cost, so it is a named degraded channel rather than a line in a log stream.
+      log('WARNING: the planner wrote no plan file, so this run has no resume point on disk.')
+      failedChannels.push('run-state')
+      extraUnreached.push('the planner returned no plan_path: nothing was persisted under ' +
+        '.claude/vfa/runs/, so an interruption cannot be resumed by reference and would ' +
+        'have to be re-planned from scratch')
+    }
   }
 
   if (!planned || !planned.work_orders || planned.work_orders.length === 0) {
     log('No work orders were produced, so nothing was implemented.')
-    if (!preplanned) failedChannels.push('planner')
-    return developResult([], [], [], [], [], surveyCoverage, {
-      complete: false,
-      dropped: [],
-      incomplete: [],
-      failed_channels: failedChannels,
-      unreached: [`${change}: planning produced no work orders, so nothing was attempted`],
-      resumable: { runId: RUN_ID, remaining: [] },
+    if (!resumePath) failedChannels.push('planner')
+    return developResult({
+      planPath,
+      surveyCoverage,
+      coverage: {
+        complete: false,
+        dropped: [],
+        incomplete: [],
+        failed_channels: failedChannels,
+        unreached: [`${change}: planning produced no work orders, so nothing was attempted`],
+        resumable: { runId: RUN_ID, remaining: [] },
+      },
     })
   }
 
@@ -1045,7 +1534,7 @@ try {
   // It dies as data rather than as a throw: the orders still exist, so they go to the
   // session as coupled instead of being discarded.
 
-  let wave1 = []
+  let waves = []
 
   // Three distinct failures, three distinct labels — a plan the partition REFUSED is a
   // planning defect, and reporting it as "did not parse" sends the reader after the wrong
@@ -1075,16 +1564,14 @@ try {
     failedChannels.push('partition')
     coupled = orders.map((wo) => wo.id)
   } else {
-    const firstWave = partition.waves[0] || []
-    wave1 = firstWave.map((id) => orderById.get(id)).filter(Boolean)
-    deferred = partition.waves.slice(1).flat()
+    waves = partition.waves.map((wave) => wave.filter((id) => orderById.has(id)))
     coupled = (partition.coupled || []).slice()
 
     // An id in the partition that matches no work order cannot be dispatched, and would
     // fail the same way on a later re-invocation. It goes to the session, named.
-    const unknown = firstWave.filter((id) => !orderById.has(id))
+    const unknown = partition.waves.flat().filter((id) => !orderById.has(id))
     if (unknown.length > 0) {
-      log(`WARNING: wave 1 names ${unknown.join(', ')}, which no work order matches; routing them to the session.`)
+      log(`WARNING: the partition names ${unknown.join(', ')}, which no work order matches; routing them to the session.`)
       coupled = coupled.concat(unknown)
       failedChannels.push('partition')
     }
@@ -1093,7 +1580,7 @@ try {
   // A planned order that the partition names nowhere would otherwise be dropped without a
   // trace, and a run missing an order would still report itself complete. IRON LAW §4: it
   // goes to the session instead, named.
-  const accounted = new Set(wave1.map((wo) => wo.id).concat(deferred).concat(coupled))
+  const accounted = new Set(waves.flat().concat(coupled))
   const unaccounted = orders.map((wo) => wo.id).filter((id) => !accounted.has(id))
 
   if (unaccounted.length > 0) {
@@ -1102,40 +1589,186 @@ try {
     if (!failedChannels.includes('partition')) failedChannels.push('partition')
   }
 
-  log(`${orders.length} work order(s): wave 1 = ${wave1.length}, deferred = ${deferred.length}, coupled = ${coupled.length}`)
+  const wavedCount = waves.flat().length
+  log(`${orders.length} work order(s): ${waves.length} wave(s) carrying ${wavedCount}, coupled = ${coupled.length}`)
 
   // ------------------------------------------------- 3b. evidence checkpoint
   //
   // The planner names, in blocking_gaps, any survey gap the change description itself
   // leans on. Dispatch is the expensive part of this pipeline, and proceeding into it on
   // evidence the request explicitly demanded and never got is the caller's decision to
-  // make — not a warning in a log stream read after the tokens are spent. Nothing is
-  // lost: the plan travels back whole in `checkpoint.preplanned`, and a re-invocation
-  // with it skips survey and planning entirely.
-  const blockingGaps = (!preplanned && Array.isArray(planned.blocking_gaps))
-    ? planned.blocking_gaps
-    : []
+  // make — not a warning in a log stream read after the tokens are spent.
+  //
+  // Nothing is lost and nothing has to be echoed back: the plan is already on disk, so the
+  // confirmation is a path and a bit. Supplying `confirmed_gaps: true` IS the confirmation —
+  // it can mean nothing else — and it is read here and nowhere else.
+  const blockingGaps = Array.isArray(planned.blocking_gaps) ? planned.blocking_gaps : []
 
-  if (blockingGaps.length > 0 && wave1.length > 0) {
+  if (blockingGaps.length > 0 && !confirmedGaps && wavedCount > 0) {
     log(`CHECKPOINT: the survey missed evidence the change itself names (${blockingGaps.length} gap(s)); dispatch withheld.`)
-    return developResult(orders, [], [], [], [], surveyCoverage, {
-      complete: false,
-      dropped: [],
-      incomplete: [],
-      failed_channels: failedChannels,
-      unreached: blockingGaps.map((gap) => 'evidence checkpoint: ' + gap)
-        .concat(['dispatch was withheld at the evidence checkpoint; confirm with the ' +
-                 'caller, then re-invoke with `preplanned` set to checkpoint.preplanned']),
-      resumable: { runId: RUN_ID, remaining: orders.map((wo) => wo.id) },
-    }, { blocking_gaps: blockingGaps, preplanned: planned })
+
+    const resumeHint = planPath
+      ? 'confirm with the caller, then re-invoke with resume_path set to ' + planPath +
+        ' and confirmed_gaps true'
+      : 'the plan was NOT persisted (plan_path is empty), so a confirmed re-invocation must ' +
+        're-plan from scratch — read the work_orders in this result before deciding'
+
+    return developResult({
+      workOrders: orders,
+      planPath,
+      surveyCoverage,
+      checkpoint: { blocking_gaps: blockingGaps, resume_path: planPath },
+      coverage: {
+        complete: false,
+        dropped: [],
+        incomplete: [],
+        failed_channels: failedChannels,
+        unreached: blockingGaps.map((gap) => 'evidence checkpoint: ' + gap)
+          .concat(['dispatch was withheld at the evidence checkpoint; ' + resumeHint]),
+        resumable: { runId: RUN_ID, remaining: orders.map((wo) => wo.id) },
+      },
+    })
   }
 
-  // -------------------------------------------------------- 4. wave 1, per order
+  // --------------------------------------------- 3c. the integration worktree
+  //
+  // The design spec's stated reason for "the workflow never merges" is that merging would
+  // mutate the tree the user is sitting in. A worktree the workflow creates and owns does
+  // not do that, so the invariant is restated precisely rather than broken: the workflow
+  // never touches the user's branch or working tree. Advancing the user's branch is still
+  // the session's act, after the human gate.
 
-  if (wave1.length > 0) {
+  if (wavedCount > 0) {
+    phase('Integrate')
+
+    const runstamp = planPath ? planPath.split('\\').join('/').replace(/\/+$/, '').split('/').pop() : ''
+
+    const setup = await agent(setupPrompt(runstamp), {
+      agentType: 'vf-agentics:verifier', effort: 'low', schema: INTEGRATION_SETUP,
+      phase: 'Integrate', label: 'integration-setup',
+    }).catch((e) => {
+      log(`WARNING: integration setup failed: ${e && e.message}`)
+      return null
+    })
+
+    const setupViolation = setup ? coherentSetup(setup) : 'the setup agent returned no result'
+
+    if (!setup || setup.stop_reason !== 'completed' || setupViolation) {
+      const why = setupViolation || (setup && setup.notes) || 'no result'
+      log(`The integration worktree could not be created (${why}); nothing is dispatched.`)
+      failedChannels.push('integration')
+      return developResult({
+        workOrders: orders,
+        coupled,
+        deferred: waves.flat(),
+        planPath,
+        surveyCoverage,
+        coverage: coverageOf({
+          coupled,
+          deferred: waves.flat(),
+          surveyCoverage,
+          failedChannels,
+          extraUnreached: extraUnreached.concat([
+            'the integration worktree could not be created: ' + why + '. No order was ' +
+            'dispatched — implementing with nowhere to merge would leave every branch ' +
+            'stranded. The plan is intact; fix the tree state and resume.',
+          ]),
+        }),
+      })
+    }
+
+    const recordedHead = integration.head_sha
+
+    integration.branch = setup.branch
+    integration.worktree = setup.worktree
+    // The head is what the setup agent OBSERVED, never what the run state said it should be.
+    // On a resume the recorded value is a claim about a branch this workflow does not own
+    // between invocations, and a claim about git is not a fact about git.
+    integration.head_sha = setup.head_sha
+    // The base survives a resume through the run state; on a fresh run it is wherever the
+    // integration branch starts. Without it, a resumed run's integration review would cover
+    // only the waves that ran after the interruption and would look exactly as thorough.
+    integration.base_sha = integration.base_sha || setup.head_sha
+
+    if (recordedHead && recordedHead !== setup.head_sha) {
+      log(`WARNING: the run state recorded ${recordedHead} as the integration head; the branch is actually at ${setup.head_sha}.`)
+      if (!failedChannels.includes('run-state')) failedChannels.push('run-state')
+      extraUnreached.push('the integration branch moved between invocations: the run state ' +
+        'recorded ' + recordedHead + ', the tree observes ' + setup.head_sha +
+        ' — this run continues from what is actually there, and whatever produced the ' +
+        'difference was not produced by this pipeline')
+    }
+
+    log(`Integration worktree ${integration.worktree} on ${integration.branch} at ${integration.head_sha}.`)
+  }
+
+  // -------------------------------------------------------- 4. the wave loop
+  //
+  // One invocation carries the whole partition. Between waves there IS a barrier, and it is
+  // the justified kind: wave k+1 branches from the head that wave k's merges produced, so it
+  // cannot start until they have happened AND been verified.
+
+  let lineStopped = ''
+
+  for (let w = 0; w < waves.length; w++) {
+    const waveNumber = w + 1
+    const waveIds = waves[w]
+    const pending = waveIds.filter((id) => !landed.has(id))
+
+    if (pending.length === 0) {
+      // Either a resumed run whose state records this wave as merged, or — rarer — a wave
+      // the partition filled entirely with ids no work order matched, which was already
+      // routed to the session and flagged as a partition failure above.
+      log(`Wave ${waveNumber}: nothing pending (${waveIds.length} order(s) already accounted for); skipping.`)
+      continue
+    }
+
+    if (lineStopped) {
+      deferred = deferred.concat(pending)
+      continue
+    }
+
+    // The gate, computed from the deps the planner already declared — no judgment, and no
+    // change to lib/independence.mjs. An order whose provider did not land has nothing to
+    // build against, so it is not dispatched. It gets its OWN bucket rather than `deferred`:
+    // `deferred` means "re-invoke and implement me", and sending a re-invocation at an order
+    // whose provider is still escalated rebuilds the failure this gate exists to prevent.
+    //
+    // Waves are topologically ordered, so a dep always sits in an earlier wave and has been
+    // decided by now. Transitivity therefore falls out of the ordering: an order blocked in
+    // wave 2 never lands, so its consumers in wave 3 are blocked in turn — and the root
+    // cause is carried forward so the human is pointed at the escalation, not at a chain.
+    const rootCause = new Map(blocked.map((b) => [b.id, b.blocked_by]))
+    const runnable = []
+
+    for (const id of pending) {
+      const wo = orderById.get(id)
+      const missing = (wo.deps || []).filter((dep) => !landed.has(dep))
+
+      if (missing.length === 0) {
+        runnable.push(wo)
+        continue
+      }
+
+      const cause = rootCause.get(missing[0]) || missing[0]
+      blocked.push({ id, blocked_by: cause })
+      rootCause.set(id, cause)
+      log(`BLOCKED ${id}: ${missing.join(', ')} did not land (root: ${cause}).`)
+    }
+
+    if (runnable.length === 0) {
+      log(`Wave ${waveNumber}: every pending order is blocked; nothing to dispatch.`)
+      continue
+    }
+
+    // Orders whose deps all landed proceed even while unrelated escalations are open — IRON
+    // LAW §7 is "escalate, never abandon", and abandoning the independent half of a wave
+    // because another order failed would be exactly that, while never building on unreviewed
+    // work.
     phase('Implement')
+    log(`Wave ${waveNumber}: dispatching ${runnable.length} order(s).`)
 
-    const chains = await pipeline(wave1, implement, verifyAndReview)
+    const chains = await pipeline(runnable, implement, verifyAndReview)
 
     // Matched by id rather than by position: an order that lost its chain entirely is still
     // an order that did not land, and it is reported instead of vanishing.
@@ -1144,7 +1777,9 @@ try {
       if (chain && chain.wo && chain.wo.id) byOrder.set(chain.wo.id, chain)
     }
 
-    for (const wo of wave1) {
+    const approved = []
+
+    for (const wo of runnable) {
       const chain = byOrder.get(wo.id) || lostChain(wo)
 
       if (chain.escalation) {
@@ -1157,8 +1792,9 @@ try {
       // records verify rounds now, and those carry mechanical facts, not review severities.
       const lastReview = [...chain.trail].reverse().find((t) => t.kind === 'review')
 
-      implemented.push({
+      const entry = {
         id: wo.id,
+        wave: waveNumber,
         branch: state.branch,
         worktree: state.worktree,
         base_sha: state.base_sha,
@@ -1171,38 +1807,256 @@ try {
           trail: chain.trail,
         },
         discovered: state.discovered,
+      }
+
+      implemented.push(entry)
+      approved.push(entry)
+    }
+
+    // ------------------------------------------------------- 4a. merge the wave
+
+    phase('Integrate')
+
+    const unmergedThisWave = []
+
+    for (const entry of approved) {
+      if (lineStopped) {
+        unmergedThisWave.push(entry.id)
+        continue
+      }
+
+      const merge = await agent(mergePrompt(entry), {
+        agentType: 'vf-agentics:verifier', effort: 'low', schema: MERGE_RESULT,
+        phase: 'Integrate', label: `merge:${entry.id}`,
+      }).catch((e) => {
+        log(`WARNING: the merge of ${entry.id} failed to run: ${e && e.message}`)
+        return null
       })
+
+      const violation = merge ? coherentMerge(merge) : 'the merge returned no result'
+
+      if (!merge || violation || !mergeOk(merge)) {
+        const conflicts = merge && merge.conflicts ? merge.conflicts : []
+        integration.merge_stopped_at = { order: entry.id, conflicts }
+        lineStopped = 'the merge of ' + entry.id + ' did not complete'
+        unmergedThisWave.push(entry.id)
+        log(`MERGE STOPPED at ${entry.id}: ${violation || (conflicts.length ? 'conflicts in ' + conflicts.join(', ') : (merge && merge.notes) || 'no result')}`)
+        continue
+      }
+
+      integration.head_sha = merge.merged_sha
+      integration.merged.push(entry.id)
+      landed.add(entry.id)
+      log(`Merged ${entry.id} — integration head is now ${integration.head_sha}.`)
+    }
+
+    integration.approved_unmerged = integration.approved_unmerged.concat(unmergedThisWave)
+
+    // ------------------------------------------ 4b. verify the head we just built
+    //
+    // Without this, a breakage introduced by the MERGE — not by any order — is inherited by
+    // wave k+1 and comes back as that wave's own escalations. That is the seven-orders-
+    // escalate-for-someone-else's-defect signature, one level up.
+
+    if (!lineStopped && integration.merged.length > 0) {
+      const wv = await agent(waveVerifyPrompt(waveNumber), {
+        agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
+        phase: 'Integrate', label: `wave-verify:${waveNumber}`,
+      }).catch((e) => {
+        log(`WARNING: wave ${waveNumber} verification failed to run: ${e && e.message}`)
+        return null
+      })
+
+      if (!wv) {
+        integration.wave_verify.push({ wave: waveNumber, build: 'unobserved', suite: 'unobserved' })
+        lineStopped = 'wave ' + waveNumber + ' verification did not run'
+        log(`LINE STOPPED: ${lineStopped}.`)
+      } else {
+        integration.wave_verify.push({ wave: waveNumber, build: wv.build, suite: wv.suite })
+
+        if (!waveVerifyOk(wv)) {
+          lineStopped = 'the merged head failed verification after wave ' + waveNumber +
+            ' (build ' + wv.build + ', suite ' + wv.suite + ')'
+          log(`LINE STOPPED: ${lineStopped}.`)
+        } else {
+          log(`Wave ${waveNumber} verified at the merged head: build ${wv.build}, suite ${wv.suite}.`)
+        }
+      }
+    }
+
+    // ----------------------------------------------------- 4c. record the wave
+    //
+    // A side channel, and it gets IRON LAW §5 treatment: a run-state write that fails must
+    // not discard work already paid for. It degrades — the run continues and the loss of the
+    // resume point travels in coverage.
+
+    if (planPath) {
+      const recorded = await agent(recorderPrompt(planPath, {
+        wave: waveNumber,
+        merged: integration.merged.slice(),
+        approved_unmerged: integration.approved_unmerged.slice(),
+        escalated: escalations.map((e) => e.id),
+        integration_base: integration.base_sha,
+        integration_head: integration.head_sha,
+      }), {
+        agentType: 'vf-agentics:run-state', effort: 'low', schema: RECORDED,
+        phase: 'Integrate', label: `record:${waveNumber}`,
+      }).catch((e) => {
+        log(`WARNING: recording wave ${waveNumber} failed: ${e && e.message}`)
+        return null
+      })
+
+      if (!recorded || recorded.stop_reason !== 'recorded') {
+        const why = recorded && recorded.notes ? recorded.notes : 'the recorder returned no result'
+        log(`WARNING: wave ${waveNumber} was not written to the run state: ${why}`)
+        if (!failedChannels.includes('run-state')) failedChannels.push('run-state')
+        extraUnreached.push('wave ' + waveNumber + ' was not written to ' + planPath +
+          '/state.jsonl (' + why + '), so a resume would re-dispatch orders this run already ' +
+          'merged')
+      }
+    }
+
+    if (lineStopped) continue
+
+    // ------------------------------------------------ 4d. the optional human gate
+
+    if (pauseBetweenWaves && w + 1 < waves.length) {
+      lineStopped = 'paused after wave ' + waveNumber + ' at the caller\'s request'
+      log(`PAUSED after wave ${waveNumber}; remaining waves are deferred with resumable state.`)
     }
   }
 
-  // ------------------------------------------------------------- 5. account
+  // ----------------------------------------------- 5. the integration review
+  //
+  // One fresh reviewer over the whole merged change. It moves in-workflow because it is the
+  // only review that can see the class of defect per-order review structurally cannot: two
+  // orders that each honored their own contract and disagreed with each other. Criticals here
+  // surface at the human gate with the trail — no new fix loop opens without a person.
+
+  if (integration.merged.length > 0) {
+    phase('Integrate')
+
+    const mergedOrders = integration.merged.map((id) => orderById.get(id)).filter(Boolean)
+
+    const review = await agent(integrationReviewPrompt(mergedOrders), {
+      agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
+      phase: 'Integrate', label: 'review:integration', ...judge,
+    }).catch((e) => {
+      log(`WARNING: the integration review failed: ${e && e.message}`)
+      return null
+    })
+
+    if (!review) {
+      failedChannels.push('integration-review')
+      extraUnreached.push('the integration review did not run, so nothing has looked at the ' +
+        'merged change as a whole — any claim that the orders fit together is unsupported')
+      extraRemaining.push('integration')
+    } else {
+      const findings = review.findings || []
+      const criticals = findings.filter((f) => f.severity === 'critical')
+      integration.review = { findings }
+
+      log(`Integration review: ${criticals.length} critical, ${findings.length - criticals.length} other.`)
+
+      for (const finding of criticals) {
+        extraUnreached.push('integration review [' + finding.id + '] ' + finding.file + ':' +
+          finding.line + ' — ' + finding.claim)
+      }
+      if (criticals.length > 0) extraRemaining.push('integration')
+    }
+  }
+
+  // ------------------------------------------------------------- 6. account
 
   if (escalations.length > 0) log(`ESCALATED: ${escalationLabels(escalations)}`)
+  if (blocked.length > 0) log(`BLOCKED: ${blocked.map((b) => b.id + ' by ' + b.blocked_by).join(', ')}`)
   if (coupled.length > 0) log(`COUPLED — the session must implement: ${coupled.join(', ')}`)
-  if (deferred.length > 0) log(`DEFERRED to a later wave: ${deferred.join(', ')}`)
-  log(`IMPLEMENTED: ${implemented.length} of ${orders.length} order(s). This workflow does not merge.`)
+  if (deferred.length > 0) log(`DEFERRED to a resumed invocation: ${deferred.join(', ')}`)
+  log(`IMPLEMENTED: ${implemented.length} of ${orders.length} order(s); MERGED: ${integration.merged.length} on ${integration.branch || '(no integration branch)'}.`)
 
   // An order whose verification was vacuous is implemented and review-approved, but the
-  // mechanical half of the assurance never ran. That fact keeps `complete` false.
-  const unmeasuredNotes = implemented
-    .filter((entry) => entry.review.measured.length === 0)
-    .map((entry) => entry.id + ': implemented and review-approved, but nothing was ' +
+  // mechanical half of the assurance never ran. That fact keeps `complete` false — and its
+  // id goes into `remaining` too, because a halt that names nothing to resume is IRON LAW
+  // §6's loud stop without its resumable half.
+  for (const entry of implemented) {
+    if (entry.review.measured.length > 0) continue
+    extraUnreached.push(entry.id + ': implemented and review-approved, but nothing was ' +
       'mechanically measurable — no build, no suite, no discriminating test')
-  const extraUnreached = (partitionNote ? [partitionNote] : []).concat(unmeasuredNotes)
+    extraRemaining.push(entry.id)
+  }
 
-  return developResult(orders, implemented, escalations, coupled, deferred, surveyCoverage,
-    coverageOf(escalations, coupled, deferred, surveyCoverage, failedChannels, extraUnreached))
+  if (partitionNote) extraUnreached.push(partitionNote)
+
+  for (const b of blocked) {
+    extraUnreached.push(blockedNote(b))
+    extraRemaining.push(b.id)
+  }
+
+  for (const id of integration.approved_unmerged) {
+    extraUnreached.push(id + ': approved but never merged — the merge run stopped before it. ' +
+      'Its branch is in `implemented` and still holds the reviewed series; a resumed run ' +
+      'implements it again from the current integration head rather than trusting a branch ' +
+      'nobody re-verified, so merge it by hand first if that work is worth keeping')
+    extraRemaining.push(id)
+  }
+
+  if (integration.merge_stopped_at) {
+    const stop = integration.merge_stopped_at
+    extraUnreached.push('the merge run stopped at ' + stop.order +
+      (stop.conflicts.length > 0
+        ? ' on conflicts in ' + stop.conflicts.join(', ') +
+          ' — the loci in a wave were declared pairwise disjoint, so this is a planner defect'
+        : ' without completing'))
+  }
+
+  for (const wv of integration.wave_verify) {
+    if (wv.build !== 'failed' && wv.suite !== 'failed' && wv.build !== 'unobserved') continue
+    extraUnreached.push('the merged head failed verification after wave ' + wv.wave +
+      ' (build ' + wv.build + ', suite ' + wv.suite + ') — this is a defect in the ' +
+      'combination, not in any one order')
+    extraRemaining.push('integration')
+  }
+
+  return developResult({
+    workOrders: orders,
+    coupled,
+    deferred,
+    blocked,
+    implemented,
+    escalations,
+    planPath,
+    surveyCoverage,
+    coverage: coverageOf({
+      escalations, coupled, deferred, surveyCoverage, failedChannels,
+      extraUnreached, extraRemaining,
+    }),
+  })
 } catch (e) {
   log(`WARNING: the run threw: ${e && e.message}`)
-  return developResult(orders, implemented, escalations, coupled, deferred, surveyCoverage, {
-    complete: false,
-    dropped: [],
-    incomplete: [],
-    failed_channels: failedChannels.concat(['pipeline']),
-    unreached: [`the run threw before it finished: ${e && e.message}`],
-    resumable: {
-      runId: RUN_ID,
-      remaining: coupled.concat(deferred).concat(escalations.map((x) => x.id)),
+  return developResult({
+    workOrders: orders,
+    coupled,
+    deferred,
+    blocked,
+    implemented,
+    escalations,
+    planPath,
+    surveyCoverage,
+    coverage: {
+      complete: false,
+      dropped: [],
+      incomplete: [],
+      failed_channels: failedChannels.concat(['pipeline']),
+      unreached: [`the run threw before it finished: ${e && e.message}`],
+      resumable: {
+        runId: RUN_ID,
+        // The integration branch and its merged set are the real resumable state here: an
+        // exception is exactly when a caller most needs to know which branch already holds
+        // finished work, and the plan path is how the next invocation picks it up.
+        remaining: coupled.concat(deferred).concat(escalations.map((x) => x.id))
+          .concat(blocked.map((b) => b.id))
+          .concat(integration.merged.length > 0 ? ['integration'] : []),
+      },
     },
   })
 }
