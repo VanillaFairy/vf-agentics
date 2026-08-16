@@ -13,11 +13,20 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 (default `normal`). Everything after the flags is the change description. `roots` defaults
 to the current directory; pass `notes` only when the user gave extra constraints.
 
+`--pause-between-waves` is an opt-in for callers who want to look at each wave before the
+next one starts. It is off unless the user asks for it: one invocation carrying the whole
+change is the point of this pipeline, and paused waves cost a re-invocation each.
+
 ## Run the pipeline
 
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working tree
    is dirty, tell the user what is uncommitted and get an explicit go/no-go before any
    workflow runs.
+
+   **Ensure `.claude/vfa/` is gitignored, once.** The run's plan and its wave-by-wave state
+   are written there, and they are scaffolding rather than source. Add the line yourself if
+   it is missing — an agent adding it would be a tree mutation, and no agent in this pipeline
+   is allowed one. `.claude/worktrees/` wants the same treatment.
 
 2. Invoke the workflow — the name is plugin-namespaced; the bare `vfa-develop` does not
    resolve:
@@ -36,19 +45,40 @@ to the current directory; pass `notes` only when the user gave extra constraints
    the only handle that pairs with `resumable.remaining` when escalated work needs
    resuming.
 
+   The workflow runs **every wave of the partition** in this one invocation. It creates its
+   own integration worktree under `.claude/worktrees/`, merges each wave's approved orders
+   into it, and verifies the merged head before the next wave branches from it. It still
+   never touches the branch or the working tree the user is sitting in — advancing those is
+   your act, at step 3d, after the human gate.
+
 3. On return, first check `checkpoint`. When it is non-null, **nothing was dispatched**:
    the survey could not reach evidence the change description itself names, and the
    planner flagged it. Present `checkpoint.blocking_gaps` to the human. On a go, re-invoke
-   the workflow with the full argument set plus `preplanned: checkpoint.preplanned` —
-   survey and planning are skipped and dispatch proceeds. On a no-go, stop; the plan in
-   the result is the deliverable. Do not implement anything yourself on this path.
+   the workflow with the full argument set plus `resume_path: checkpoint.resume_path` and
+   `confirmed_gaps: true` — the plan is already on disk, so the confirmation is a path and
+   a bit rather than a 55KB payload you retype. On a no-go, stop; the plan in the result is
+   the deliverable. Do not implement anything yourself on this path.
+
+   `checkpoint.resume_path` being empty means the planner could not persist the plan. Say so
+   plainly: a confirmed re-invocation then has to plan again from scratch, and the human
+   should know that before saying go.
 
    Otherwise walk the result IN THIS ORDER — escalations first, never last:
 
    a. **Escalations.** Present each (id, reason, unresolved criticals, trail tail) to the
       human. These are decisions, not information — do not resolve them yourself.
 
-   b. **Coupled orders.** Each `coupled` entry carries the full order body — id, title,
+   b. **Blocked orders.** `blocked` is `[{id, blocked_by}]`: orders never dispatched because
+      an order they depend on did not land, with `blocked_by` naming the escalated root
+      rather than the nearest link in the chain. **Do not re-invoke the workflow for a
+      blocked order while the escalation naming it is still open.** Its provider does not
+      exist in the tree, so a fresh coder would build against thin air and every verifier
+      would find a repository missing the thing it was told to use — that is the exact field
+      failure (seven orders escalating over a toolchain that never landed) this bucket exists
+      to prevent. Resolve the escalation with the human first; a blocked order becomes
+      resumable work only once its provider has landed.
+
+   c. **Coupled orders.** Each `coupled` entry carries the full order body — id, title,
       locus, acceptance, context, deps, contract — so nothing needs joining back up by
       hand. Honor `deps` (implement providers before their consumers) and, for an order
       with `contract: true`, hold majors open the way criticals are held below. Implement
@@ -87,51 +117,60 @@ to the current directory; pass `notes` only when the user gave extra constraints
         escalation carrying resumable state (IRON LAW §6) — never a silent stop.
       <!-- /vfa:verbatim -->
 
-   c. **Merges.** **Do not start merging while any escalation is open** — get an explicit
-      go/no-go from the human first, exactly as you did for a dirty tree in step 1. Then,
-      for each approved branch, in `implemented` order, dispatch `vf-agentics:verifier` in
-      merge mode, under the merge contract (verbatim from interfaces §5):
+   d. **The integration branch.** Read `result.integration` before you touch anything:
 
-      <!-- vfa:verbatim merge-result -->
-      Merge mode reports exactly four fields: `stop_reason` (`completed` or
-      `environment_broken`), `merged_sha` (`''` when the merge did not complete — a fact, not
-      a verdict), `conflicts` (conflicting paths verbatim from git; empty when none), and
-      `notes` (what was actually run). The caller derives the outcome as
-      `mergeOk = stop_reason === 'completed' && merged_sha !== '' && conflicts.length === 0` —
-      never from `conflicts` alone, because an `environment_broken` merge has an empty conflict
-      list too, and reading that as success waves a broken merge through. Anything that is not
-      `mergeOk` stops the merge run. A conflict is a planner defect — loci were declared
-      pairwise disjoint — surfaced to the human, never resolved silently.
-      <!-- /vfa:verbatim -->
+      - `merged` — the orders that landed, in merge order. `head_sha` is where they landed.
+      - `merge_stopped_at` — non-null means the merge run stopped at that order. The loci in
+        a wave were declared pairwise disjoint, so a conflict there is a **planner defect**:
+        surface it with the conflicting paths, never resolve it silently.
+      - `approved_unmerged` — orders that passed review and never made it in, because the
+        merge run stopped before them. They still have branches; nothing was lost.
+      - `wave_verify` — the build and suite facts at the merged head, per wave. A `failed`
+        entry is a defect in the *combination* that no single order's own verification could
+        have caught.
+      - `review.findings` — the integration review, run inside the workflow over the whole
+        merged diff. Criticals here go to the human with the trail. **Do not open a fix loop
+        for them without the human's say** — an integration critical usually means two orders
+        disagree, and which one is wrong is a design decision, not a coding one.
 
-      Report which branches merged and which did not — a half-merged run that reads as
-      whole is the kind of gap the Reporting section forbids.
+      Then, and only with an explicit go/no-go from the human — the same gate you used for a
+      dirty tree at step 1, and **never while an escalation is open** — merge once:
 
-   d. **Deferred frontier.** If `deferred` is non-empty: re-run
-      `node "${CLAUDE_PLUGIN_ROOT}/lib/independence.mjs"` over the deferred orders against
-      the merged tree (your cwd is the user's repo, not the plugin; the input carries
-      `{id, locus, deps}` per order), then re-invoke
-      `vf-agentics:vfa-develop` with **the full argument set** — `change`, `roots`, `notes`,
-      `intelligence`, `plugin_root` — plus `preplanned` carrying them. The workflow guards
-      on `change` before it looks at `preplanned`; omit it and the call returns empty
-      immediately, and the deferred ids from this iteration vanish from the report instead
-      of surfacing. Repeat from step 3. **Accumulate, don't replace:** each iteration's
-      escalations, coupled, and still-deferred ids join the running totals from prior
-      iterations, so the final report covers every order from every pass, not only the
-      last. The frontier shrinks every iteration or escalates — it never spins.
+      ```bash
+      git merge --no-ff <result.integration.branch>
+      ```
 
-   e. **Integration review.** Dispatch one fresh `vf-agentics:reviewer` over the full merged
-      diff (`merge-base..HEAD`). Criticals here go to the human with the trail — do not open
-      a new fix loop without their say.
+      One branch, one merge, on the user's branch, by you. That is the only point in this
+      pipeline where the user's tree moves, and it is deliberately the last thing that
+      happens. If that merge conflicts, stop and surface it: the integration branch was built
+      from the user's HEAD, so a conflict means the tree moved underneath the run.
+
+   e. **Deferred waves.** `deferred` is non-empty when the line stopped — a merge that did
+      not complete, a merged head that failed verification, or a caller-requested pause. Fix
+      what stopped it with the human, then re-invoke `vf-agentics:vfa-develop` with **the
+      full argument set** — `change`, `roots`, `notes`, `intelligence`, `plugin_root` — plus
+      `resume_path: result.plan_path`. The workflow guards on `change` before it looks at
+      anything else; omit it and the call returns empty immediately.
+
+      The resumed run reads the plan and the wave-by-wave state back off disk, skips the
+      orders already merged, re-attaches to the same integration branch, and carries on. It
+      pays for no survey and no planning. Repeat from step 3. **Accumulate, don't replace:**
+      each iteration's escalations, blocked, coupled and still-deferred ids join the running
+      totals, so the final report covers every order from every pass.
+
+      If `result.plan_path` is empty the run was never persisted and there is nothing to
+      resume from; say so, and treat a re-run as a fresh plan.
 
 ## Reporting — binding
 
 - You may not report success while `coverage.complete === false`. The gaps lead: name every
-  escalated, coupled-unfinished, and deferred-unfinished order FIRST, then what landed.
-- Verdicts you report are the computed ones (criticals count, verifyOk facts, coverage
-  derivation). You never soften, recompute, or paraphrase them.
+  escalated, blocked, coupled-unfinished, and deferred-unfinished order FIRST, then what
+  landed.
+- Verdicts you report are the computed ones (criticals count, verifyOk facts, mergeOk facts,
+  coverage derivation). You never soften, recompute, or paraphrase them.
 - Show the review evidence compactly: per order — commits, rounds, open majors. Majors are
-  the human's decision queue, not noise to trim.
+  the human's decision queue, not noise to trim. Then the integration review's findings
+  separately: they are about the change, not about any one order.
 - **Surface every `HUMAN:` acceptance criterion, per order, verbatim, prefix included.** The
   planner writes these for criteria only a person can judge; the reviewer passes them through
   untouched instead of ruling on them. You are the terminal consumer — if you do not put them
@@ -141,6 +180,10 @@ to the current directory; pass `notes` only when the user gave extra constraints
 ## Afterwards
 
 - Write every `discovered` entry to the project KB (knowledge-base skill handles dedupe).
-- Worktrees and branches from `implemented` are cleaned up ONLY after the human accepts the
-  merged result (`git worktree remove <path>`, `git branch -d <branch>`). Escalated orders
-  keep their worktrees — they are the resumable state.
+- Clean up ONLY after the human accepts the merged result: `git worktree remove` each
+  `implemented` worktree and the integration worktree, then `git branch -d` the integration
+  branch and each order branch. The harness also leaves the auto-named branch each worktree
+  was created on; those are safe to delete once their worktree is gone.
+- Escalated and blocked orders keep their worktrees and branches — they are the resumable
+  state. So does the run directory at `result.plan_path`: it is the only record of what this
+  run decided and what it did, and it costs nothing to keep.
