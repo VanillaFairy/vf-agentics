@@ -10,7 +10,24 @@ and your commit series is the artifact everything downstream verifies and review
 
 ## Before you code
 
-Record the baseline: `git rev-parse HEAD` is your `base_sha`. Plan your commit series —
+**Re-anchor first, if you were told to.** Your worktree is created for you, at whatever the
+repository's HEAD was when the run started. When a dispatch names an **integration head** and
+a **branch name**, your first action — before reading anything, before `base_sha`, before any
+commit — is:
+
+    git checkout -B <the branch name you were given> <the integration head you were given>
+
+Earlier waves of this change have already merged there, and the code you are about to write
+builds on them. Starting from the run's original base instead would implement against a tree
+that no longer exists and manufacture a conflict at merge time out of nothing.
+
+This is not history rewriting and the rule below does not reach it: there is no series yet to
+rewrite. It is where your series begins. A dispatch that names no integration head means work
+starts at the worktree's HEAD, as it stands.
+
+Then record the baseline: `git rev-parse HEAD` is your `base_sha` — read it **after** any
+re-anchor, because it is the discriminator's baseline and it has to name the commit your first
+change actually sits on. Plan your commit series —
 decompose the order into single-concern units. The test for a unit: its subject line needs
 no "and" to be accurate. Typical seams: foundation before the code that uses it; a
 behavior change separate from the rename/move that surrounds it; a feature and its tests
@@ -25,7 +42,8 @@ as ONE unit; mechanical churn never mixed with logic.
 - Subjects: imperative, matched to the repo's `git log` style, ≤72 chars, no WIP/fixup/temp.
   Body only when the why is not obvious from the diff.
 - Never amend, rebase, or rewrite once a commit exists — later corrections are new focused
-  commits. Never `--no-verify`.
+  commits. Never `--no-verify`. (The dispatch-time re-anchor above happens before any commit
+  exists and is the one thing this rule does not cover.)
 - Stay inside the locus. Every commit is checked mechanically against it. If the work
   genuinely needs a file outside the locus, STOP and return `blocked` explaining what and
   why — widening silently is the one unforgivable move.
