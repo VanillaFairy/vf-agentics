@@ -112,24 +112,58 @@ depends on which, and let the user rule.
 
 ## Step 3 — Approaches, then the adversarial probe
 
-Offer **two or three approaches** with their trade-offs, recommendation first, each citing
-the survey verdicts it leans on. An approach that cites nothing is an opinion.
+### The approach panel
 
-Then, before ratification, dispatch an **adversarial design probe** — a
-`vf-agentics:analyst` charged to attack the design rather than appraise it. Give it the
-design document, the survey verdicts, and the target repository's own guidance.
+Draft **two or three approaches in parallel**, one `vf-agentics:analyst` each, dispatched in
+a single message. Every one gets the same survey verdicts and the decisions the interview has
+recorded so far; each gets a different assigned stance:
 
-**Take the probe's axes from the target repo**, not from a list written here: its `CLAUDE.md`,
-its specs, its architecture notes. A project that mandates its own design review is satisfied
-by this probe rather than double-probed, and a project whose vocabulary this skill has never
-heard of gets probed in that vocabulary anyway. On top of whatever the repo asks for, the
-probe always covers: extensibility along growth axes the design itself names, contract
-ambiguity, YAGNI, invariants the design relies on without stating, and **reinvention** — is
-anything here rebuilding something step 1b found, or something step 1b would have found if it
-had been run? That last axis is a `gap`: resolved, or accepted out loud with the cost stated.
+- **minimal-change** — the smallest diff that satisfies the decisions recorded so far.
+- **long-horizon** — optimise for the growth axes the interview actually named.
+- **adopt-don't-build** — maximise use of what step 1b surfaced. Dispatch this one only when
+  step 1b ran and found candidates; otherwise it argues from nothing.
+
+Then synthesise: present them with trade-offs, recommendation first, each citing the survey
+verdicts it leans on. An approach that cites nothing is an opinion.
+
+Parallel authorship, not one author writing three times: independent drafts cannot anchor on
+each other, so a menu written by one hand — where the second option is drafted in the shadow
+of the first and the "alternatives" are one idea wearing three hats — stops being the default.
+
+Two honest limits. **Selection is still one judgment**: the panel widens what reaches you, it
+does not check your taste in choosing, and no scoring stage is proposed because the *user* is
+the selector here and putting a model between the drafts and their choice would take a
+decision this skill says is theirs. And **the stances are a fixed list**, so anchoring moved
+up a level rather than away — `minimal-change` and `long-horizon` are close to two points on
+one axis. When the interview names an axis these three miss, add a stance for it and say that
+you did.
+
+You may skip the panel when the decision space is genuinely pinned — the interview forced one
+shape. Record the skip and the reason in the design document, so a skipped panel is visible
+rather than silent.
+
+### The probe
+
+Before ratification, probe the design document with `vf-agentics:probe`:
+
+```
+Workflow({ name: 'vf-agentics:vfa-probe', args: { artifact, roots, context } })
+```
+
+Do not hand-roll a probe here. That skill owns the axes, the ladder, and the computed gate;
+describing a second probe in this file is how the two drift until they rule differently on
+the same document. It reads the target repository's own guidance for its axes — so a project
+that mandates its own design review is satisfied by this probe rather than double-probed —
+and always runs contract ambiguity, unnamed invariants, YAGNI, and **reinvention**.
 
 Reinvention is a separate axis from YAGNI on purpose. YAGNI catches building what nobody
 asked for; it will not catch building what everybody asked for and somebody already shipped.
+Here it also has a specific target: is anything in this design rebuilding what step 1b found,
+or what step 1b would have found had it been run?
+
+`result.ratifiable` is the gate, and it is a count rather than an opinion — false while any
+ambiguity is open, and false when any axis went unexamined. Read the probe's coverage block
+before you act on a clean report.
 
 The probe rules on the **design severity ladder** below — its own ladder, not the code one.
 The code ladder speaks entirely in acceptance criteria, commit series and declared loci, and
