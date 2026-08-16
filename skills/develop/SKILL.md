@@ -198,9 +198,14 @@ is how the user finds them again.
       compares the user's branch against the commit the plan was written for. Nothing was
       dispatched and no worktree was created.
 
-      `checkpoint.stale` is `[{id, files}]`: pending orders that declare a file which changed
-      on that branch since. Present each one — the order, its title, and the files — and ask
-      the human to rule per order. They have three answers, and all three are legitimate:
+      `checkpoint.stale` is `[{id, writes, reads}]`, and the split is the useful part:
+      `writes` are files the order *owns* that moved, `reads` are files it *builds against*
+      that moved. Present both, because they usually call for different rulings — an order
+      whose own files moved often just needs its diff rebasing, while an order whose
+      dependency moved may be describing an approach that no longer exists, and no rebase
+      fixes that.
+
+      Ask the human to rule per order. They have three answers and all three are legitimate:
       still valid, needs re-planning, or already done by whatever moved those files.
 
       Re-invoke with `confirmed_stale: [<ids ruled still valid>]`. Orders left out stay
@@ -208,13 +213,15 @@ is how the user finds them again.
       them, naming them as the root. If the ruling is that the plan no longer describes this
       repository, do not clear orders one at a time to force it through — plan afresh.
 
-      **This check sees one thing: files a pending order declared it owns.** It does not see
-      that a type an order builds against moved, or that an interface its context describes
-      changed shape, because those files are not in its locus. So an empty `stale` list means
-      "no declared file moved", not "the plan is still correct". Say that plainly when the
-      run is old — `/vf-agentics:runs` shows plan age for exactly this reason — and treat a
-      large drift with an empty `stale` list as a reason to re-read the plan, not a
-      clearance.
+      **What this check sees is what the planner declared** — the files each order owns and
+      the files it recorded building against. It is exact on both, and blind to a dependency
+      the planner did not write down. So an empty `stale` list means "nothing the plan
+      declared has moved", which is strong but is still not "the plan is definitely correct".
+      Say that plainly when a run is old — `/vf-agentics:runs` shows plan age for exactly this
+      reason — and treat a large drift with an empty `stale` list as a reason to re-read the
+      plan rather than a clearance. A plan whose orders all declare an empty `reads` is the
+      case to distrust most: either the work genuinely stands alone, or the planner did not
+      record what it leans on.
 
       An unreachable anchor (deleted branch, rewritten history) holds the whole run instead
       of listing orders. That one is not negotiable per order: a plan whose anchor is gone is

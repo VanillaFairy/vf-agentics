@@ -29,6 +29,26 @@ You never implement anything yourself.
    a file you forgot becomes a blocking breach for an honest coder. When two orders truly
    need the same file, give the shared edit its own order or accept coupling; never
    "share" a locus.
+4b. **Declare `reads`: the files each order builds against and never modifies.** The types it
+   calls, the module its `context` describes, the interface it implements, the config it
+   depends on the shape of. Repo-relative, forward slashes, same as the locus.
+
+   You already know these — they are the survey evidence you wrote the `context` from. The
+   only work is writing them down, and you are the only party who can: by the time anyone
+   else needs them, the evidence is gone and the reasoning with it.
+
+   **`reads` is never a write permission.** The locus stays the only fence
+   `lib/commit-series.mjs` enforces; an order needing to modify something in its `reads` is
+   blocked, and that block is correct — the plan was written on the assumption those files
+   hold still.
+
+   Why it exists: a plan can be parked and resumed days later, and it goes stale two ways. An
+   order whose own files moved is the visible one. An order whose *dependency* moved is
+   invisible without this — the resumed run intersects the tree's drift against loci, finds
+   nothing, and dispatches a coder against a description of a world that no longer exists.
+   An order that genuinely builds against nothing gets an empty list, and that is a real
+   answer rather than a lazy one.
+
 5. **Declare `deps` honestly.** File-disjoint loci are not build-independence: when an
    order's context names types, files, commands, or modules another order creates, that
    order's id goes in its `deps`, and the partition waves it later mechanically. An order

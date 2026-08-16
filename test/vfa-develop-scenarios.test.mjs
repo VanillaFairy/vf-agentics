@@ -1164,7 +1164,7 @@ test('a pending order whose declared file moved holds the run at a gate', async 
   })
 
   assert.equal(result.checkpoint.reason, 'stale')
-  assert.deepEqual(result.checkpoint.stale, [{ id: 'W2', files: ['src/W2.js'] }])
+  assert.deepEqual(result.checkpoint.stale, [{ id: 'W2', writes: ['src/W2.js'], reads: [] }])
   assert.ok(!prompts.some((p) => p.opts.label === 'integration-setup'),
     'a stale exit says nothing was dispatched, so it must not leave a worktree behind')
   assert.equal(result.coverage.complete, false)
@@ -1259,4 +1259,134 @@ test('the reviewer is charged with attacking the tests, not only the code', asyn
   assert.match(review, /TESTS ARE PART OF WHAT YOU ARE ATTACKING/)
   assert.match(review, /wrote neither/)
   assert.match(review, /criterion whose tests could not fail/)
+})
+
+// ---------------------------------------------------------------- drift in what an order READS
+//
+// AP-6. The gate above intersects moved files with each pending order's `locus` — the files
+// it will WRITE. What an order builds against is invisible to that: a type it calls, a module
+// its context describes, an interface it implements. Those live in files it never touches, so
+// the intersection is empty and the order sails through against a description of a world that
+// changed underneath it.
+//
+// The fix is not a re-survey. The planner already knows these files — it wrote the context out
+// of survey evidence that named them — it simply never recorded them. `reads` records them.
+
+const reader = (id, reads, over = {}) =>
+  order(id, { reads, ...over })
+
+test('a pending order whose read dependency moved is a stale suspect', async () => {
+  const orders = [order('W1'), reader('W2', ['src/auth/token.js'], { deps: ['W1'] })]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      // W2 writes src/W2.js, which nobody touched. It READS the token module, which moved.
+      drift: drifted({ moved_files: ['src/auth/token.js'] }),
+    }),
+  })
+
+  assert.equal(result.checkpoint.reason, 'stale',
+    'the order builds against a file that changed; its locus was never the question')
+  assert.deepEqual(result.checkpoint.stale.map((s) => s.id), ['W2'])
+})
+
+test('the checkpoint says whether an order owns the moved file or depends on it', async () => {
+  // Different rulings follow. A file you own moving may only need rebasing; a dependency
+  // moving can invalidate the approach the context describes.
+  const orders = [
+    order('W1'),
+    order('W2', { deps: ['W1'], locus: ['src/W2.js'] }),
+    reader('W3', ['src/auth/token.js'], { deps: ['W1'], locus: ['src/W3.js'] }),
+  ]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, {
+        plan: { ...loadedPlan(orders),
+                partition_raw: JSON.stringify({ waves: [['W1'], ['W2', 'W3']], coupled: [] }) },
+      }),
+      drift: drifted({ moved_files: ['src/W2.js', 'src/auth/token.js'] }),
+    }),
+  })
+
+  const byId = Object.fromEntries(result.checkpoint.stale.map((s) => [s.id, s]))
+  assert.deepEqual(byId.W2.writes, ['src/W2.js'])
+  assert.deepEqual(byId.W2.reads, [])
+  assert.deepEqual(byId.W3.writes, [])
+  assert.deepEqual(byId.W3.reads, ['src/auth/token.js'])
+})
+
+test('reads is not a licence to write: the verifier fence is still the locus', async () => {
+  const orders = [reader('W1', ['src/auth/token.js'], { locus: ['src/W1.js'] })]
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({ plan: plan(orders) }),
+  })
+
+  const verify = promptFor(prompts, 'verify:W1')
+  assert.match(verify, /--locus "src\/W1\.js"/)
+  assert.ok(!verify.includes('--locus "src/auth/token.js"'),
+    'widening the commit-series fence to read dependencies would let an order edit them')
+})
+
+test('the coder is shown its read dependencies without being allowed to touch them', async () => {
+  const orders = [reader('W1', ['src/auth/token.js'], { locus: ['src/W1.js'] })]
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({ plan: plan(orders) }),
+  })
+
+  const code = promptFor(prompts, 'code:W1')
+  assert.match(code, /src\/auth\/token\.js/)
+  assert.match(code, /read|depend/i)
+})
+
+test('an order that reads nothing behaves exactly as before', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded([order('W1'), order('W2', { deps: ['W1'] })]),
+      drift: drifted({ moved_files: ['docs/README.md'] }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(result.checkpoint, null)
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a read-drift suspect is cleared by the same per-order confirmation', async () => {
+  const orders = [order('W1'), reader('W2', ['src/auth/token.js'], { deps: ['W1'] })]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR, confirmed_stale: ['W2'] },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders),
+      drift: drifted({ moved_files: ['src/auth/token.js'] }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(result.checkpoint, null)
+  assert.deepEqual(result.implemented.map((e) => e.id), ['W2'])
+})
+
+test('the planner is told to declare what each order reads', async () => {
+  const { prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents(),
+  })
+
+  const p = promptFor(prompts, 'plan')
+  assert.match(p, /\breads\b/)
+  assert.match(p, /does not modify|never modif|without modifying/i)
 })

@@ -644,7 +644,7 @@ blocks ratification, **gap** is resolved or accepted out loud, **note** is advis
 | AP-3 | ambiguity | "the recorded `base_sha`" names two different anchors — plan-time HEAD in `plan.json` vs `integration_base` in `state.jsonl` — and they diverge exactly when F matters | rule stated: `integration_base` when the run state carries one, else `base_sha` (§5 F1) |
 | AP-4 | ambiguity | H's `failures ⊆ new red tests` joins test ids against file paths. The load-bearing computation of the proposal had no key | verifier reports `{file, id}`; subset is over files (§7 H2.3) |
 | AP-5 | ambiguity | `confirmed_stale: true` is one global bit, but §2's own worked example rules per order ("W2 unaffected, W5 re-planned") | per-order id list; contrast with `confirmed_gaps` explained (§5 F3) |
-| AP-6 | gap | F detects only "someone edited files my order owns". Context-dependency drift — a type moved, an interface changed — leaves the intersection empty and the order proceeds | limitation stated in the body; drift size reported at the checkpoint. **Accepted-out-loud pending your ruling** |
+| AP-6 | gap | F detects only "someone edited files my order owns". Context-dependency drift — a type moved, an interface changed — leaves the intersection empty and the order proceeds | **Closed, not accepted.** The disposition below was wrong: it assumed catching this needs a re-survey at resume. It does not — the planner knows the dependencies when it writes the plan. Orders now declare `reads`, and the gate intersects both, reporting `writes` and `reads` separately because they call for different rulings (increment-4 §5) |
 | AP-7 | gap | `integrated`/`landed` count waved orders only; a run with three unimplemented coupled orders reports `landed`. IRON LAW §4 reproduced in a status column | `coupled_open`/`blocked` counts beside status; CLI refuses to print the bare word (§3 D3) |
 | AP-8 | gap | The `runs` skill reading `caller_notes` out of `plan.json` and passing it along routes the settled-evidence payload through model context with no digest — F13/AF-8 against precisely the data P5 exists to protect | skill carries `resume_path` + `change` only; the envelope travels inside the loader (§3 D4) |
 | AP-9 | gap | E fed `discovered` to the verifier behind prose framing — a wave-1 coder's wrong build command laundered into a wave-3 build fact | verifier removed from the feed; coders only, with the asymmetry argued (§4 E1) |
@@ -670,11 +670,14 @@ and the merge-resolver (a defended refusal, not a gap).
 **Two accepted limitations awaiting an explicit ruling**, per the ladder's requirement
 that a gap is *accepted out loud by the user* rather than carried:
 
-1. **AP-6** — F checks locus overlap and nothing else. Closing the context-drift half
-   costs roughly a re-survey, at which point re-planning is the better purchase. Accept
-   the narrow gate, or spend more here?
-2. **AP-11** — H2 deferred behind H1's evidence. Accept the deferral, or build the
-   RED/GREEN split regardless?
+1. ~~**AP-6** — F checks locus overlap and nothing else.~~ **Ruled: close it.** The premise of
+   this question — that the drift check would have to re-survey — was itself the defect. The
+   planner holds the dependency list at plan time and merely failed to write it down; `reads`
+   writes it down. Implemented in increment-4 §5.
+2. ~~**AP-11** — H2 deferred behind H1's evidence.~~ **Ruled: build it.** The separation
+   turned out to cost nothing (locus enforcement already does the work of a separation
+   script); only the per-role verdicts cost anything. Implemented as `role`, increment-4 §9,
+   with the cycle completed by a third `refactor` role the proposal had omitted.
 
 **Independence caveat.** This probe was run by the same author as the proposal, unlike
 the AF-series in the companion document, which came from a separately dispatched

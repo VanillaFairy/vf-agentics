@@ -32,7 +32,8 @@ const WORK_ORDERS = {
   properties: {
     work_orders: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['id', 'title', 'role', 'locus', 'acceptance', 'context', 'deps', 'contract'],
+      required: ['id', 'title', 'role', 'locus', 'reads', 'acceptance', 'context', 'deps',
+                 'contract'],
       properties: {
         id: { type: 'string' },        // 'W1', 'W2', ... unique within the run
         title: { type: 'string' },     // imperative, passes the AND test
@@ -43,6 +44,17 @@ const WORK_ORDERS = {
         // verdict to an order whose whole point is that the ordinary verdict is wrong.
         role: { type: 'string', enum: ['none', 'red', 'green', 'refactor'] },
         locus: { type: 'array', items: { type: 'string' } },  // EVERY file it may create/modify, repo-relative POSIX
+        // Files this order BUILDS AGAINST and never writes — the types it calls, the module
+        // its context describes, the interface it implements. Never a write permission: the
+        // locus stays the only fence lib/commit-series.mjs enforces.
+        //
+        // This exists because a plan can go stale in two ways and the locus only sees one.
+        // A resumed run intersects the tree's drift with each pending order's files; an order
+        // whose dependency moved has an empty locus intersection and sails through against a
+        // description of a world that changed underneath it. The planner knows these files at
+        // plan time — it wrote `context` out of survey evidence that named them — so the fix
+        // is to record them, not to re-survey at resume.
+        reads: { type: 'array', items: { type: 'string' } },
         acceptance: { type: 'array', items: { type: 'string' } },  // each independently checkable
         context: { type: 'string' },   // what the coder needs to know, self-contained
         deps: { type: 'array', items: { type: 'string' } },  // ids whose OUTPUT this order builds on; the partition waves it after them
@@ -393,6 +405,9 @@ function digestOrder(order) {
   // altered in transit must stop the run — but an explicit 'none' has to digest identically
   // to an absent field, because manifests written before roles existed carry neither.
   if (order.role && order.role !== 'none') picked.role = order.role
+  // Same conditional treatment, same reason: a plan written before `reads` existed carries
+  // none, and an empty list must digest identically to an absent field.
+  if ((order.reads || []).length > 0) picked.reads = order.reads
 
   return fnv1a(canonical(picked))
 }
@@ -830,6 +845,14 @@ const criticalsText = (criticals) => (criticals || [])
               '\n    evidence: ' + f.evidence)
   .join('\n')
 
+// Why a stale suspect is suspect, in the words that decide what a human does about it.
+// "Owns" usually means the diff needs rebasing; "builds against" can mean the approach the
+// order's context describes no longer exists, and no rebase fixes that.
+const staleWhy = (s) => [
+  (s.writes || []).length > 0 ? 'owns ' + s.writes.join(', ') : null,
+  (s.reads || []).length > 0 ? 'builds against ' + s.reads.join(', ') : null,
+].filter(Boolean).join(' and ')
+
 const escalationLabels = (list) =>
   list.map((e) => e.id + ' (' + e.reason + ')').join(', ')
 
@@ -858,6 +881,16 @@ function plannerPrompt(surveyEvidence) {
     `repo-relative with forward slashes. The locus is enforced per commit downstream, so a ` +
     `file you forget becomes a blocking breach for an honest coder. Acceptance criteria are ` +
     `independently checkable and each names how it will be verified. ${acceptanceNote}\n\n` +
+    `Separately, every order declares its READS: the files it builds against and never ` +
+    `modifies — the types it calls, the module its context describes, the interface it ` +
+    `implements. You already know these; they are the survey evidence you wrote the context ` +
+    `from. Write them down. This is NOT a write permission and never widens the locus.\n\n` +
+    `They matter because a plan can be parked and resumed days later, and it goes stale in ` +
+    `two ways. An order whose own files moved is one; an order whose DEPENDENCY moved is the ` +
+    `other, and without reads it is invisible — the resumed run sees an empty intersection ` +
+    `and dispatches a coder against a description of a world that no longer exists. Only you ` +
+    `can record this, because only you are looking at the evidence right now. An order that ` +
+    `genuinely builds against nothing gets an empty list, and that is a real answer.\n\n` +
     `Declare deps honestly: when an order's context names types, files, commands, or ` +
     `modules that another order creates, that order's id goes in deps. File-disjoint loci ` +
     `are NOT build-independence — an order supplying the build manifest, lockfile, compiler ` +
@@ -1065,6 +1098,13 @@ function coderPrompt(wo, branch) {
     `CONTEXT (self-contained — there is no conversation behind it to go looking for):\n` +
     `${wo.context}\n\n` +
     `DECLARED LOCUS — the only files you may create or modify:\n${listOf(wo.locus)}\n\n` +
+    ((wo.reads || []).length > 0
+      ? `DECLARED READ DEPENDENCIES — files this order builds against. Read them; they are ` +
+        `where the context above comes from. They are NOT in your locus and you may not ` +
+        `modify them: needing to change one is blocked, and it is worth blocking over, ` +
+        `because the plan was written on the assumption that they hold still:\n` +
+        `${listOf(wo.reads)}\n\n`
+      : '') +
     `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n` +
     `${acceptanceNote} Implement toward it; do not invent a test that pretends to check it.\n\n` +
     roleSection(wo) +
@@ -1441,6 +1481,36 @@ function verifyFailureFindings(wo, v) {
   for (const f of v.series_findings || []) {
     if (!f.blocking) continue
     out.push(runtimeFinding(wo.id + '-series-' + f.check, f.check + ': ' + f.message, f.sha))
+  }
+
+  return out
+}
+
+/**
+ * Which orders a set of moved files touches, and how.
+ *
+ * Two ways an order goes stale, kept apart because they call for different rulings: a file it
+ * OWNS moving usually means its diff needs rebasing, while a file it BUILDS AGAINST moving can
+ * invalidate the approach its context describes, and no amount of rebasing fixes that.
+ *
+ * Orders already merged are skipped — their files moving is somebody building on them, which
+ * is the system working.
+ *
+ * @param {Set<string>} moved   POSIX-normalized paths changed since the anchor
+ * @param {string[][]} waves    the partition
+ * @returns {Array<{id: string, writes: string[], reads: string[]}>}
+ */
+function suspectsIn(moved, waves) {
+  const out = []
+
+  for (const id of waves.flat()) {
+    if (landed.has(id)) continue
+
+    const wo = orderById.get(id)
+    const writes = (wo.locus || []).map(posix).filter((p) => moved.has(p))
+    const reads = (wo.reads || []).map(posix).filter((p) => moved.has(p))
+
+    if (writes.length + reads.length > 0) out.push({ id, writes, reads })
   }
 
   return out
@@ -2162,15 +2232,13 @@ try {
       // globbing, no prefix matching — a locus entry names a file, and so does git.
       const moved = new Set((drift.moved_files || []).map((p) => p.split('\\').join('/')))
 
-      for (const id of waves.flat()) {
-        if (landed.has(id)) continue
-        const wo = orderById.get(id)
-        const hits = (wo.locus || []).map((p) => p.split('\\').join('/')).filter((p) => moved.has(p))
-        if (hits.length > 0) staleSuspects.push({ id, files: hits })
-      }
+      staleSuspects = suspectsIn(moved, waves)
+
+      const readOnly = staleSuspects.filter((s) => s.writes.length === 0).length
 
       log(`Drift: ${moved.size} file(s) changed on ${anchorBranch} since ${anchor}; ` +
-        `${staleSuspects.length} pending order(s) declare one of them.`)
+        `${staleSuspects.length} pending order(s) affected` +
+        (readOnly > 0 ? ` (${readOnly} through a read dependency alone)` : '') + '.')
     }
   } else if (resumePath) {
     log('No drift anchor was recorded with this plan, so the tree could not be compared.')
@@ -2200,8 +2268,7 @@ try {
          (anchorBranch || 'the recorded branch') + ' (' + anchorLost + '). Nothing was ' +
          'dispatched: a plan whose anchor is gone is a plan to re-ratify, not to patch. ' +
          'Read plan.md and decide whether it still describes this repository.']
-      : staleSuspects.map((s) =>
-        'stale: ' + s.id + ' declares ' + s.files.join(', ') + ', which changed on ' +
+      : staleSuspects.map((s) => 'stale: ' + s.id + ' ' + staleWhy(s) + ', which changed on ' +
         anchorBranch + ' since this plan was written')
         .concat(['the tree moved under this plan. Rule on each order above, then re-invoke ' +
                  'with confirmed_stale set to the ids that are still valid — anything you ' +
@@ -2256,7 +2323,7 @@ try {
     log(`Withheld as stale by the caller's ruling: ${staleWithheldIds.join(', ')}.`)
     for (const id of staleWithheldIds) {
       const suspect = staleSuspects.find((s) => s.id === id)
-      extraUnreached.push(id + ': withheld as stale — it declares ' + suspect.files.join(', ') +
+      extraUnreached.push(id + ': withheld as stale — it ' + staleWhy(suspect) +
         ', which changed since this plan was written, and the caller did not clear it')
       extraRemaining.push(id)
     }

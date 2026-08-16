@@ -143,9 +143,20 @@ whose entire contract is that nothing was dispatched.
 else `base_sha` from the envelope. A run holds two anchors and they diverge; picking the wrong
 one measures a different question and answers this one confidently.
 
-**Derived in JS:** `moved_files` ∩ each *pending* order's `locus`, exact string equality after
-the `\` → `/` normalization `lib/independence.mjs` uses. No globbing. Orders with a non-empty
-intersection are suspects.
+**Derived in JS:** `moved_files` intersected with each *pending* order's `locus` **and its
+`reads`**, exact string equality after the `\` → `/` normalization `lib/independence.mjs`
+uses. No globbing. Orders with a non-empty intersection on either side are suspects, and the
+two sides stay apart in the result:
+
+```
+checkpoint.stale: [{ id, writes: string[], reads: string[] }]
+```
+
+`writes` are files the order owns that moved; `reads` are files it builds against that moved.
+They call for different rulings — an order whose own files moved usually needs its diff
+rebasing, while an order whose dependency moved may describe an approach that no longer
+exists — so collapsing them into one list would throw away the half that decides what a human
+does next.
 
 **The gate:**
 
@@ -160,11 +171,33 @@ intersection are suspects.
 - `anchor_unreachable` holds the entire run. A plan whose anchor is gone is a plan to
   re-ratify, not to patch. An empty `moved_files` must never stand in for it.
 
-**Accepted limitation, stated in `skills/develop/SKILL.md` rather than implied away:** this
-sees files an order *declared it owns*. Drift in what an order merely *depends on* — a type
-that moved, an interface that changed shape — leaves the intersection empty and the order
-proceeds. Closing that costs roughly a re-survey, at which point re-planning is the better
-purchase.
+### `reads` — the other half of staleness (AP-6)
+
+`WORK_ORDERS` carries `reads: string[]`: the files an order **builds against and never
+modifies** — the types it calls, the module its `context` describes, the interface it
+implements.
+
+The original proposal accepted a gap here, on the reasoning that catching dependency drift
+needs a re-survey at resume time and re-planning is the cheaper purchase. **That reasoning was
+wrong, and the fix is nearly free.** The planner knows these files when it writes the plan — it
+wrote `context` out of survey evidence that named them — so the cost is recording them, not
+rediscovering them. Only the planner *can* record them: by the time anyone else needs them the
+evidence is gone.
+
+- **Never a write permission.** The locus remains the only fence `lib/commit-series.mjs`
+  enforces, and the verifier's `--locus` flags are unchanged. An order needing to modify
+  something in its `reads` is blocked, and that block is correct: the plan was written on the
+  assumption those files hold still.
+- **No effect on the partition.** `lib/independence.mjs` is untouched. Two orders reading the
+  same file are still independent — neither writes it.
+- **Digest.** `reads` joins `digestOrder` only when non-empty, in both copies, for the same
+  backward-compatibility reason as `role`.
+
+**Residual limitation, still stated in `skills/develop/SKILL.md`:** the check is exact on what
+the planner declared and blind to a dependency it did not write down. An empty `stale` list
+now means "nothing the plan declared has moved" — strong, and still not proof the plan is
+correct. A plan whose orders all declare an empty `reads` is the one to distrust: either the
+work genuinely stands alone, or nobody recorded what it leans on.
 
 ---
 
