@@ -5,13 +5,22 @@ this plugin defines.
 
 ## What this is
 
-A Claude Code plugin providing workflow-orchestrated investigation, diagnosis, and development
-over a generic codebase. Its runtime artifacts are declarative — agent markdown, workflow JS,
-`SKILL.md` — and are validated in three layers: `tools/lint.mjs` judges form, the scenario
-harness (`test/harness/workflow-host.mjs`) executes the workflows' orchestration arithmetic
-with scripted agents, and `test/verbatim-blocks.test.mjs` diffs every contract that is
-restated in prose (`<!-- vfa:verbatim <id> -->` markers) so copies cannot drift. See
+A Claude Code plugin providing workflow-orchestrated design, investigation, diagnosis, and
+development over a generic codebase. Its runtime artifacts are declarative — agent markdown,
+workflow JS, `SKILL.md` — and are validated in three layers: `tools/lint.mjs` judges form, the
+scenario harness (`test/harness/workflow-host.mjs`) executes the workflows' orchestration
+arithmetic with scripted agents, and `test/verbatim-blocks.test.mjs` diffs every contract that
+is restated in prose (`<!-- vfa:verbatim <id> -->` markers) so copies cannot drift. See
 `docs/superpowers/specs/2026-08-08-vf-agentics-design.md`.
+
+The development pipeline runs **design → ratified change → develop**. `design` interviews the
+user against surveyed evidence and produces the ratified change; `develop` surveys, plans,
+partitions, and then runs **every wave of that plan in one invocation**, merging each wave into
+an integration worktree it creates and owns. The invariant is tree ownership, not merging:
+**the workflow never mutates the user's branch or working tree.** A run's plan and its
+wave-by-wave progression are persisted under `.claude/vfa/runs/<runstamp>/`, so an interrupted
+run resumes by path instead of by re-buying its survey. Contracts:
+`docs/superpowers/specs/2026-08-16-increment-3-contracts.md`.
 
 Run the checks with:
 
