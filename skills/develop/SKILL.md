@@ -17,6 +17,13 @@ to the current directory; pass `notes` only when the user gave extra constraints
 next one starts. It is off unless the user asks for it: one invocation carrying the whole
 change is the point of this pipeline, and paused waves cost a re-invocation each.
 
+`--plan-only` surveys, plans and partitions, then stops with the plan written to disk and
+nothing implemented. Use it when the user says to plan something now and build it later, or
+wants to look at the decomposition before paying for it. The run returns a checkpoint whose
+`reason` is `plan_only`; implementing it later is a resume, not a re-plan, and costs no
+second survey. Several plans may sit parked at once — that is the point — and `/vf-agentics:runs`
+is how the user finds them again.
+
 ## Run the pipeline
 
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working tree
@@ -51,17 +58,26 @@ change is the point of this pipeline, and paused waves cost a re-invocation each
    never touches the branch or the working tree the user is sitting in — advancing those is
    your act, at step 3d, after the human gate.
 
-3. On return, first check `checkpoint`. When it is non-null, **nothing was dispatched**:
-   the survey could not reach evidence the change description itself names, and the
-   planner flagged it. Present `checkpoint.blocking_gaps` to the human. On a go, re-invoke
-   the workflow with the full argument set plus `resume_path: checkpoint.resume_path` and
-   `confirmed_gaps: true` — the plan is already on disk, so the confirmation is a path and
-   a bit rather than a 55KB payload you retype. On a no-go, stop; the plan in the result is
-   the deliverable. Do not implement anything yourself on this path.
+3. On return, first check `checkpoint`. When it is non-null, **nothing was dispatched** —
+   and `checkpoint.reason` says why. Branch on it; the three cases want different
+   conversations, and treating them alike either asks the human to rule on an empty list or
+   parks work they meant to have built.
 
+   - **`blocking_gaps`** — the survey could not reach evidence the change description itself
+     names, and the planner flagged it. Present `checkpoint.blocking_gaps`. On a go,
+     re-invoke with `resume_path: checkpoint.resume_path` and `confirmed_gaps: true` — the
+     plan is already on disk, so the confirmation is a path and a bit rather than a 55KB
+     payload you retype. On a no-go, stop; the plan in the result is the deliverable.
+   - **`plan_only`** — the user asked to park. Present the plan: the orders, their wave
+     layout, and what implementing it would involve. Say plainly that nothing was built and
+     that `resume_path` is how it gets picked up later. Do not offer to start implementing
+     unless the user asks — they said plan.
+   - **`stale`** — a resumed run found the user's tree moved under its plan. Step 3f.
+
+   In every case: **do not implement anything yourself on this path.** And
    `checkpoint.resume_path` being empty means the planner could not persist the plan. Say so
-   plainly: a confirmed re-invocation then has to plan again from scratch, and the human
-   should know that before saying go.
+   plainly — a re-invocation then has to plan again from scratch, and the human should know
+   that before deciding.
 
    Otherwise walk the result IN THIS ORDER — escalations first, never last:
 
@@ -147,10 +163,15 @@ change is the point of this pipeline, and paused waves cost a re-invocation each
 
    e. **Deferred waves.** `deferred` is non-empty when the line stopped — a merge that did
       not complete, a merged head that failed verification, or a caller-requested pause. Fix
-      what stopped it with the human, then re-invoke `vf-agentics:vfa-develop` with **the
-      full argument set** — `change`, `roots`, `notes`, `intelligence`, `plugin_root` — plus
-      `resume_path: result.plan_path`. The workflow guards on `change` before it looks at
-      anything else; omit it and the call returns empty immediately.
+      what stopped it with the human, then re-invoke `vf-agentics:vfa-develop` with
+      `change`, `plugin_root` and `resume_path: result.plan_path`.
+
+      `roots`, `notes` and `intelligence` come back off disk with the plan — they were
+      recorded in its envelope when it was written, and the workflow adopts them. Pass one
+      only to deliberately override it; the run will log that you did. `change` is still
+      required: the workflow guards on it before it looks at anything else, and it is
+      compared against the recorded change so that resuming the wrong run halts instead of
+      implementing one change's plan under another's description.
 
       The resumed run reads the plan and the wave-by-wave state back off disk, skips the
       orders already merged, re-attaches to the same integration branch, and carries on. It

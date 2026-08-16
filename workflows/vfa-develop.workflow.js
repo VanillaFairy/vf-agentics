@@ -428,6 +428,13 @@ const confirmedGaps = input.confirmed_gaps === true
 // whole point of the wave loop is that one invocation carries a whole change.
 const pauseBetweenWaves = input.pause_between_waves === true
 
+// Park the plan instead of implementing it: survey, plan and partition run exactly as they
+// would, then dispatch is withheld and the run exits through the checkpoint path with the
+// plan on disk. This is what makes "plan feature A today, implement it next week" sayable.
+// Until now the only route to a persisted-but-undispatched plan was the evidence checkpoint,
+// which fires on the planner finding gaps — an accident of evidence, never a caller's choice.
+const planOnly = input.plan_only === true
+
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
 // frontmatter default authoritative.
@@ -1688,39 +1695,65 @@ try {
   const wavedCount = waves.flat().length
   log(`${orders.length} work order(s): ${waves.length} wave(s) carrying ${wavedCount}, coupled = ${coupled.length}`)
 
-  // ------------------------------------------------- 3b. evidence checkpoint
+  // ------------------------------------------------- 3b. the dispatch checkpoint
+  //
+  // Two reasons dispatch is withheld with the plan intact, and they exit through one shape.
   //
   // The planner names, in blocking_gaps, any survey gap the change description itself
   // leans on. Dispatch is the expensive part of this pipeline, and proceeding into it on
   // evidence the request explicitly demanded and never got is the caller's decision to
-  // make — not a warning in a log stream read after the tokens are spent.
+  // make — not a warning in a log stream read after the tokens are spent. Nothing is lost
+  // and nothing has to be echoed back: the plan is already on disk, so the confirmation is a
+  // path and a bit. Supplying `confirmed_gaps: true` IS the confirmation — it can mean
+  // nothing else — and it is read here and nowhere else.
   //
-  // Nothing is lost and nothing has to be echoed back: the plan is already on disk, so the
-  // confirmation is a path and a bit. Supplying `confirmed_gaps: true` IS the confirmation —
-  // it can mean nothing else — and it is read here and nowhere else.
+  // `plan_only` is the caller asking to park. Same exit, different reason.
+  //
+  // Which is why `reason` exists at all. Before it, `checkpoint !== null` MEANT "the planner
+  // found blocking gaps" — that was the only way it went non-null, and the develop skill
+  // relies on it: it presents blocking_gaps and asks for a go. A parked plan arriving with
+  // an empty gap list would ask a question about nothing. Gaps take precedence when both
+  // hold, because the caller asked to park and the planner found a reason the plan may not
+  // be worth resuming as written; both facts travel, and the alarming one leads.
   const blockingGaps = Array.isArray(planned.blocking_gaps) ? planned.blocking_gaps : []
+  const gapsWithhold = blockingGaps.length > 0 && !confirmedGaps && wavedCount > 0
+  const checkpointReason = gapsWithhold ? 'blocking_gaps' : (planOnly ? 'plan_only' : '')
 
-  if (blockingGaps.length > 0 && !confirmedGaps && wavedCount > 0) {
-    log(`CHECKPOINT: the survey missed evidence the change itself names (${blockingGaps.length} gap(s)); dispatch withheld.`)
-
+  if (checkpointReason) {
     const resumeHint = planPath
-      ? 'confirm with the caller, then re-invoke with resume_path set to ' + planPath +
-        ' and confirmed_gaps true'
-      : 'the plan was NOT persisted (plan_path is empty), so a confirmed re-invocation must ' +
-        're-plan from scratch — read the work_orders in this result before deciding'
+      ? 're-invoke with resume_path set to ' + planPath +
+        (gapsWithhold ? ' and confirmed_gaps true' : '')
+      : 'the plan was NOT persisted (plan_path is empty), so a re-invocation must re-plan ' +
+        'from scratch — read the work_orders in this result before deciding'
+
+    const withheld = gapsWithhold
+      ? blockingGaps.map((gap) => 'evidence checkpoint: ' + gap)
+        .concat(['dispatch was withheld at the evidence checkpoint; confirm with the ' +
+                 'caller, then ' + resumeHint])
+      : ['dispatch was withheld because plan_only was requested: the plan is complete and ' +
+         'nothing was implemented. This run is not the change; it is the plan for it. To ' +
+         'implement, ' + resumeHint]
+
+    log(gapsWithhold
+      ? `CHECKPOINT: the survey missed evidence the change itself names (${blockingGaps.length} gap(s)); dispatch withheld.`
+      : `CHECKPOINT: plan_only — ${orders.length} order(s) planned across ${waves.length} wave(s), nothing dispatched.`)
 
     return developResult({
       workOrders: orders,
       planPath,
       surveyCoverage,
-      checkpoint: { blocking_gaps: blockingGaps, resume_path: planPath },
+      checkpoint: {
+        reason: checkpointReason,
+        blocking_gaps: blockingGaps,
+        stale: [],
+        resume_path: planPath,
+      },
       coverage: {
         complete: false,
         dropped: [],
         incomplete: [],
         failed_channels: failedChannels,
-        unreached: blockingGaps.map((gap) => 'evidence checkpoint: ' + gap)
-          .concat(['dispatch was withheld at the evidence checkpoint; ' + resumeHint]),
+        unreached: withheld,
         resumable: { runId: RUN_ID, remaining: orders.map((wo) => wo.id) },
       },
     })

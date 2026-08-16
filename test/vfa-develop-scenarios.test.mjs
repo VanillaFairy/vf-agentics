@@ -943,3 +943,54 @@ test('a plan file with no recorded envelope resumes rather than halting', async 
   assert.deepEqual(result.integration.merged, ['W2'])
   assert.equal(result.coverage.complete, true)
 })
+
+// ---------------------------------------------------------------- plan_only
+//
+// Parking a plan and stopping on evidence exit through one shape, so the shape has to say
+// which happened. Before `reason`, a non-null checkpoint meant "the planner found blocking
+// gaps" — the only way it went non-null — and the develop skill reads it that way.
+
+test('plan_only plans in full and dispatches nothing', async () => {
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, plan_only: true },
+    workflow: () => surveyResult(),
+    agent: happyAgents({ plan: plan([order("W1"), order("W2")]) }),
+  })
+
+  assert.equal(result.checkpoint.reason, 'plan_only')
+  assert.deepEqual(result.checkpoint.blocking_gaps, [])
+  assert.equal(result.checkpoint.resume_path, RUN_DIR)
+  assert.equal(result.work_orders.length, 2, 'the plan is the deliverable and travels whole')
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'integration-setup'),
+    'a parked plan must not create the worktree it never merges into')
+  assert.deepEqual(result.implemented, [])
+  assert.equal(result.coverage.complete, false)
+  assert.match(result.coverage.unreached.join(' '), /plan_only/)
+})
+
+test('a parked plan that also has blocking gaps reports the gaps, not the parking', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, plan_only: true },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      plan: plan([order("W1")], { blocking_gaps: ['the auth module was never searched'] }),
+    }),
+  })
+
+  assert.equal(result.checkpoint.reason, 'blocking_gaps',
+    'the caller asked to park; the planner found a reason the plan may not be worth resuming')
+  assert.deepEqual(result.checkpoint.blocking_gaps, ['the auth module was never searched'])
+  assert.match(result.coverage.unreached.join(' '), /confirmed_gaps true/)
+})
+
+test('an ordinary run carries no checkpoint at all', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => surveyResult(),
+    agent: happyAgents({ plan: plan([order("W1")]) }),
+  })
+
+  assert.equal(result.checkpoint, null)
+  assert.deepEqual(result.integration.merged, ['W1'])
+})
