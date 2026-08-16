@@ -84,6 +84,18 @@ is how the user finds them again.
    a. **Escalations.** Present each (id, reason, unresolved criticals, trail tail) to the
       human. These are decisions, not information — do not resolve them yourself.
 
+   a-bis. **Role-bearing orders.** The planner may split a behaviour into the
+      red-green-refactor cycle: a `red` order landing failing tests, a `green` order making
+      them pass, and optionally a `refactor` order restructuring afterwards. Each is verified
+      by a different standard — a red order is *required* to fail its tests — so when
+      reporting, say which role an order carried. "The tests fail" reads as a defect against
+      an ordinary order and as success against a red one, and a report that omits the role
+      makes those indistinguishable.
+
+      A wave whose merged head fails only on tests belonging to a landed red order whose
+      green has not landed yet is **not** a broken wave; the run says so in `wave_verify` and
+      continues. Do not present that as a failure.
+
    b. **Blocked orders.** `blocked` is `[{id, blocked_by}]`: orders never dispatched because
       an order they depend on did not land, with `blocked_by` naming the escalated root
       rather than the nearest link in the chain. **Do not re-invoke the workflow for a

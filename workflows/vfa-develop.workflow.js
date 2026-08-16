@@ -32,10 +32,16 @@ const WORK_ORDERS = {
   properties: {
     work_orders: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['id', 'title', 'locus', 'acceptance', 'context', 'deps', 'contract'],
+      required: ['id', 'title', 'role', 'locus', 'acceptance', 'context', 'deps', 'contract'],
       properties: {
         id: { type: 'string' },        // 'W1', 'W2', ... unique within the run
         title: { type: 'string' },     // imperative, passes the AND test
+        // The red-green-refactor cycle, as work orders. `none` is the default and the common
+        // case. A role changes how the order is VERIFIED — a red order's tests are required
+        // to fail — so it is required rather than optional: a field that may be absent is a
+        // field whose absence nobody notices, and here that silently restores the ordinary
+        // verdict to an order whose whole point is that the ordinary verdict is wrong.
+        role: { type: 'string', enum: ['none', 'red', 'green', 'refactor'] },
         locus: { type: 'array', items: { type: 'string' } },  // EVERY file it may create/modify, repo-relative POSIX
         acceptance: { type: 'array', items: { type: 'string' } },  // each independently checkable
         context: { type: 'string' },   // what the coder needs to know, self-contained
@@ -184,7 +190,7 @@ const CODER_RESULT = {
 
 const VERIFY = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'build', 'suite', 'suite_output_tail',
+  required: ['stop_reason', 'build', 'suite', 'suite_output_tail', 'failing_tests',
              'discriminator', 'series_findings', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
@@ -195,6 +201,15 @@ const VERIFY = {
     build: { type: 'string', enum: ['passed', 'failed', 'absent'] },
     suite: { type: 'string', enum: ['passed', 'failed', 'absent'] },
     suite_output_tail: { type: 'string' },  // last ~40 lines of real output, verbatim
+    // Which tests failed, by FILE and id. The file is the load-bearing half: a red order's
+    // success condition is "every failure is in the tests this order owns", and an order owns
+    // files, not test ids. Reporting ids alone would leave that comparison with no key — the
+    // ids come from suite output and the fence comes from the declared locus, and the two
+    // never join. Empty whenever the suite passed or is absent.
+    failing_tests: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['file', 'id'],
+      properties: { file: { type: 'string' }, id: { type: 'string' } } } },
     discriminator: { type: 'array', items: {
       type: 'object', additionalProperties: false,
       required: ['test_id', 'failed_on_base', 'passes_now'],
@@ -253,10 +268,70 @@ const FINDINGS = {
 // interfaces §5, verbatim. The verifier reports facts; these lines are the only place they
 // become a pass or a failure.
 
-const verifyOk = v => v.stop_reason === 'completed'
-  && v.build !== 'failed' && v.suite !== 'failed'
+const roleOf = (wo) => (wo && wo.role) || 'none'
+
+const posix = (p) => String(p || '').split('\\').join('/')
+
+/**
+ * Failures landing outside a declared set of files. The join key is the FILE — an order owns
+ * files, and suite output names tests, so a comparison on ids alone has nothing to match on.
+ */
+const failuresOutside = (failing, allowed) => {
+  const fence = new Set((allowed || []).map(posix))
+  return (failing || []).filter((f) => !fence.has(posix(f.file)))
+}
+
+const seriesClean = (v) => !v.series_findings.some(f => f.blocking)
+
+// What every role needs before its own question is even worth asking: the verifier finished,
+// the tree builds, and no commit broke its locus. A build that failed makes every downstream
+// signal meaningless — a red order's tests "fail" and a refactor's suite is "broken" for the
+// same uninformative reason.
+const verifiable = (v) => v.stop_reason === 'completed' && v.build !== 'failed' && seriesClean(v)
+
+/**
+ * True when the suite failed and every failure it named sits inside `allowed`.
+ *
+ * The emptiness check is not a formality: `failuresOutside([], anything)` is `[]`, so a suite
+ * that failed while naming no test would otherwise read as confined to whatever fence it was
+ * held against. An unnamed failure could be any failure, so it is confined to nothing.
+ */
+const failuresConfinedTo = (v, allowed) =>
+  (v.failing_tests || []).length > 0 && failuresOutside(v.failing_tests, allowed).length === 0
+
+const plainVerifyOk = v => verifiable(v)
+  && v.suite !== 'failed'
   && v.discriminator.every(d => d.failed_on_base && d.passes_now)
-  && !v.series_findings.some(f => f.blocking)
+
+// A RED order lands tests that MUST fail — that is the entire order. Four inversions, each
+// answering a way a red order can be hollow rather than red:
+//   a discriminator that is empty       — it added no test, so it produced nothing
+//   a test that passes now              — it pins behaviour that already existed
+//   a whole suite that is green         — same, from the other direction
+//   a failure outside its own locus     — it broke something; that is collateral, not the point
+// The build must still pass: tests that fail because nothing compiles pin nothing either.
+const redVerifyOk = (v, wo) => verifiable(v)
+  && (v.discriminator || []).length > 0
+  && v.discriminator.every(d => d.failed_on_base && !d.passes_now)
+  && v.suite !== 'passed'
+  && (v.suite !== 'failed' || failuresConfinedTo(v, wo.locus))
+
+// A REFACTOR order restructures with the tests locked and green. `suite === 'passed'` is
+// strict where every other verdict here accepts `absent`, and that asymmetry is the whole
+// value of the role: everywhere else a repository with no suite is a fact about the
+// repository, but a refactor whose suite never ran is an unverified rewrite — the safety net
+// the order is entirely predicated on was never observed. A new discriminating test means new
+// behaviour, which makes it a green order wearing a refactor label.
+const refactorVerifyOk = v => verifiable(v)
+  && v.suite === 'passed'
+  && (v.discriminator || []).length === 0
+
+const verifyOk = (v, wo) => {
+  const role = roleOf(wo)
+  if (role === 'red') return redVerifyOk(v, wo)
+  if (role === 'refactor') return refactorVerifyOk(v)
+  return plainVerifyOk(v)
+}
 
 const mergeOk = m => m.stop_reason === 'completed'
   && m.merged_sha !== '' && m.conflicts.length === 0
@@ -264,8 +339,15 @@ const mergeOk = m => m.stop_reason === 'completed'
 // The merged head has no single declared locus and no one change under test, so the
 // discriminator and the series check are not asked for there and their emptiness carries no
 // information. Reusing verifyOk would read that designed emptiness as two silent passes.
-const waveVerifyOk = v => v.stop_reason === 'completed'
-  && v.build !== 'failed' && v.suite !== 'failed'
+// `excused` carries the test files of red orders that have merged while the green order
+// implementing them has not. Their failure at the merged head is the DESIGNED state, not a
+// regression the merge introduced — and without this the first wave of any red/green plan
+// would stop the line on the tests it was created to land. Everything outside that set still
+// stops it, and a failing suite that names no test at all is not excused by anything: an
+// unnamed failure could be any failure.
+const waveVerifyOk = (v, excused) => v.stop_reason === 'completed'
+  && v.build !== 'failed'
+  && (v.suite !== 'failed' || failuresConfinedTo(v, excused))
 
 // ------------------------------------------------------------- the plan digest
 //
@@ -305,6 +387,13 @@ const ORDER_FIELDS = ['id', 'title', 'locus', 'acceptance', 'context', 'deps', '
 function digestOrder(order) {
   const picked = {}
   for (const field of ORDER_FIELDS) picked[field] = order[field]
+
+  // Conditional on purpose, and this file and lib/plan-digest.mjs must agree exactly or every
+  // resume halts on a false mismatch. `role` decides how an order is verified, so a role
+  // altered in transit must stop the run — but an explicit 'none' has to digest identically
+  // to an absent field, because manifests written before roles existed carry neither.
+  if (order.role && order.role !== 'none') picked.role = order.role
+
   return fnv1a(canonical(picked))
 }
 
@@ -783,6 +872,24 @@ function plannerPrompt(surveyEvidence) {
     `is reported as blocked, naming the provider. A dep you omitted therefore does not ` +
     `merely mis-schedule work; it sends a coder to build against something that never ` +
     `landed.\n\n` +
+    `Set role on every order — 'none' is the default and the common case. For behaviour ` +
+    `worth an independent examiner, split it into the red-green-refactor cycle instead:\n\n` +
+    `   role 'red'      — locus is TEST FILES ONLY. Lands tests that fail for want of an ` +
+    `implementation.\n` +
+    `   role 'green'    — locus is IMPLEMENTATION FILES ONLY, deps names the red order. ` +
+    `Makes them pass.\n` +
+    `   role 'refactor' — optional third step, deps names the green order. Restructures with ` +
+    `the tests green.\n\n` +
+    `The separation is enforced by the loci you declare, so declare them disjointly: the ` +
+    `commit-series check blocks any commit reaching outside a locus, which is what stops the ` +
+    `green order editing the tests it is being measured against. That is the entire point — ` +
+    `one agent that writes both the test and the code certifies its own reading of your ` +
+    `criteria, and an exam written by the examinee passes by construction.\n\n` +
+    `Split where a criterion pins BEHAVIOUR worth pinning independently. Do not split ` +
+    `scaffolding, wiring, config, or docs: a red order for something with no behaviour to ` +
+    `assert produces a test that cannot fail, which fails verification and wastes two orders ` +
+    `to say so. When in doubt leave role 'none' — the ordinary path already runs the ` +
+    `discriminator, which catches a test that pins nothing.\n\n` +
     `Set contract true on an order whose output other orders build against — a vocabulary ` +
     `note, shared type definitions, an interface. An ambiguity in a contract propagates ` +
     `into every consumer, so majors block a contract order downstream the way criticals ` +
@@ -886,6 +993,60 @@ function setupPrompt(runstamp) {
     `sitting in is never touched — not by you, not by anything downstream.`
 }
 
+// The red-green-refactor cycle, as instructions. Each role's charge is written against the
+// way that role is VERIFIED downstream, so a coder is never surprised by the verdict: a red
+// order is measured on its tests failing, a green one on them passing, a refactor on the
+// suite staying green while no test moves.
+function roleSection(wo) {
+  const role = roleOf(wo)
+
+  if (role === 'red') {
+    return `THIS IS A RED ORDER. You write tests that MUST FAIL, and you DO NOT IMPLEMENT ` +
+      `anything that would make them pass.\n\n` +
+      `Write them from the acceptance criteria alone. Where a criterion is precise, assert ` +
+      `exactly what it says. Where it is silent, assert the invariant rather than inventing ` +
+      `a value and freezing it — a golden value the criteria do not fix is you deciding ` +
+      `something nobody asked you to decide, and a later agent will be held to it. If a ` +
+      `criterion is genuinely ambiguous, say so in concerns rather than picking a reading ` +
+      `quietly; that ambiguity is worth more surfaced than resolved by you.\n\n` +
+      `Run them and confirm they fail FOR THE RIGHT REASON — the behaviour is missing, not ` +
+      `a typo, a bad import, or a broken build. A red test failing for the wrong reason ` +
+      `passes verification here and pins nothing at all.\n\n` +
+      `Your verification requires: the build passing, every new test failing now AND at ` +
+      `base, and every suite failure sitting inside your declared locus. A green suite fails ` +
+      `you. Implementing fails you.\n\n`
+  }
+
+  if (role === 'green') {
+    return `THIS IS A GREEN ORDER. The tests are already written, they are LOCKED, and they ` +
+      `are outside your declared locus — the commit-series check blocks any commit that ` +
+      `touches them, so you cannot edit them even by accident.\n\n` +
+      `Another agent wrote them from the same criteria you were given, and it did not see ` +
+      `your implementation. Make them pass by implementing the behaviour they describe. If a ` +
+      `test looks WRONG, you do not get to fix it and you must not implement something ` +
+      `contorted to satisfy it: ESCALATE, saying which test and why. A test you believe is ` +
+      `wrong is either a defect worth a fresh order or a disagreement about the criteria ` +
+      `worth a human — and both of those are lost the moment you quietly code around it.\n\n`
+  }
+
+  if (role === 'refactor') {
+    return `THIS IS A REFACTOR ORDER. CHANGE NO BEHAVIOUR. Restructure only.\n\n` +
+      `ADD NO TESTS and do not modify any — test files are outside your locus and the ` +
+      `commit-series check will block a commit that reaches one. The existing suite is your ` +
+      `safety net and your entire proof: it must be green before you start and green after ` +
+      `every commit.\n\n` +
+      `Your verification requires the suite to actually RUN and PASS. An absent suite fails ` +
+      `you here, unlike anywhere else in this pipeline, because a restructuring nothing ` +
+      `checked is not a verified refactor. A new discriminating test also fails you — that ` +
+      `would be new behaviour, which is a different order.\n\n` +
+      `If you find a real defect while restructuring, do not fix it silently: that is a ` +
+      `behaviour change hiding in a refactor, which is the one thing this role exists to ` +
+      `rule out. Put it in concerns.\n\n`
+  }
+
+  return ''
+}
+
 function coderPrompt(wo, branch) {
   const anchor = integration.head_sha
     ? `RE-ANCHOR FIRST — before you read anything and before your first commit:\n\n` +
@@ -906,6 +1067,7 @@ function coderPrompt(wo, branch) {
     `DECLARED LOCUS — the only files you may create or modify:\n${listOf(wo.locus)}\n\n` +
     `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n` +
     `${acceptanceNote} Implement toward it; do not invent a test that pretends to check it.\n\n` +
+    roleSection(wo) +
     callerNotes() +
     knowledgeSection() +
     `You are working in a worktree created for this order alone. The tree the user is sitting ` +
@@ -962,6 +1124,24 @@ function verifierPrompt(wo, state) {
     `this commit is recorded as absent, with what you looked for in notes. Absent is a ` +
     `fact about repo state and failed is an observed non-zero exit — never write one as ` +
     `the other. A broken build is a fact to report, not a reason to stop observing.\n\n` +
+    `3b. FAILING TESTS. Whenever the suite fails, report every failure in failing_tests as ` +
+    `{file, id}: file is the REPO-RELATIVE path of the test file with forward slashes, id is ` +
+    `the test's name as the runner printed it. The file is the half your caller computes ` +
+    `with — it intersects those paths against this order's declared locus — so a failure you ` +
+    `report with an id but no usable path cannot be placed, and a suite that failed while ` +
+    `naming nothing is treated as failing everywhere. Empty when the suite passed or is ` +
+    `absent.\n\n` +
+    (roleOf(wo) === 'red'
+      ? `THIS ORDER IS RED: its tests are SUPPOSED to fail, and your caller is checking ` +
+        `that they do and that nothing else does. Report the failures exactly as you ` +
+        `observe them. Do not treat a failing suite as an environment problem here, and do ` +
+        `not try to make it pass.\n\n`
+      : '') +
+    (roleOf(wo) === 'refactor'
+      ? `THIS ORDER IS A REFACTOR: the suite is expected to be green, and whether it RAN at ` +
+        `all is load-bearing. Be exact about absent versus passed — for this one role they ` +
+        `are not close, because absent means nothing checked the restructuring.\n\n`
+      : '') +
     `4. Discriminator: every test file added or changed between ${state.base_sha} and ` +
     `${state.head_sha} — enumerate them from the diff. For each, record whether it passes ` +
     `now, and whether it FAILED at ${state.base_sha} in this same worktree. A test that ` +
@@ -1046,17 +1226,42 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
   // a test that would pass without the change; it cannot catch a test that faithfully pins
   // the implementation's READING of an ambiguous criterion. The reviewer is the only party
   // here who wrote neither artifact, which is what makes it the one that can see this.
-  const testCharge =
-    `THE TESTS ARE PART OF WHAT YOU ARE ATTACKING. The agent that wrote this code wrote its ` +
-    `tests, so they encode one interpretation of the criteria twice and agree with ` +
-    `themselves by construction; you are the only reader here who wrote neither. For each ` +
-    `test the series adds or changes, ask whether it asserts the behaviour a criterion ` +
-    `names or the shape this implementation happened to produce, whether it froze a value ` +
-    `the criteria leave open, and whether a different correct implementation of the same ` +
-    `criterion would fail it. Then ask the reverse: is there a criterion whose tests could ` +
-    `not fail? Pinning an accident is major — it will fight the next honest change. A test ` +
-    `that cannot fail, or a criterion with no test that can, is critical: nothing is ` +
-    `verified and the series only looks it.\n\n`
+  // The charge differs by role because its premise does. For an ordinary order one agent
+  // wrote both artefacts, so they agree with themselves by construction. For a GREEN order
+  // that premise is simply false — a separate agent authored the tests from the same criteria
+  // without seeing the implementation — and telling this reviewer otherwise would send it
+  // hunting a collusion that did not happen while the real risk, an over-specified locked
+  // test the implementer contorted itself around, goes unexamined.
+  const role = roleOf(wo)
+
+  const testCharge = role === 'green'
+    ? `THE TESTS HERE WERE WRITTEN BY SOMEONE ELSE, BEFORE THIS CODE EXISTED, and this order ` +
+      `could not edit them — they sit outside its declared locus. So do not hunt for an ` +
+      `author certifying its own work; that is not the risk in this series. Two other risks ` +
+      `are. First, the implementation may satisfy the letter of a locked test while missing ` +
+      `the criterion the test was trying to express — passing tests are evidence, not proof, ` +
+      `and you have the criteria in front of you. Second, a locked test may be ` +
+      `over-specified, and the implementation may have been contorted to satisfy an accident ` +
+      `in it rather than the behaviour; that contortion is a real finding against THIS order ` +
+      `even though the test causing it is not. Say which test forced it.\n\n`
+    : role === 'refactor'
+      ? `THIS ORDER CLAIMS TO CHANGE NO BEHAVIOUR. That claim is what you are attacking. Walk ` +
+        `the diff for anything observable from outside: an error path that now returns a ` +
+        `different value, an order of operations something depended on, a default that ` +
+        `moved, a case the old code handled and the new one does not. A green suite proves ` +
+        `only that nothing TESTED changed, and the untested margin is exactly where a ` +
+        `refactor hides a behaviour change. Any behaviour change you can demonstrate is ` +
+        `critical here regardless of whether it looks like an improvement.\n\n`
+      : `THE TESTS ARE PART OF WHAT YOU ARE ATTACKING. The agent that wrote this code wrote ` +
+        `its tests, so they encode one interpretation of the criteria twice and agree with ` +
+        `themselves by construction; you are the only reader here who wrote neither. For ` +
+        `each test the series adds or changes, ask whether it asserts the behaviour a ` +
+        `criterion names or the shape this implementation happened to produce, whether it ` +
+        `froze a value the criteria leave open, and whether a different correct ` +
+        `implementation of the same criterion would fail it. Then ask the reverse: is there ` +
+        `a criterion whose tests could not fail? Pinning an accident is major — it will ` +
+        `fight the next honest change. A test that cannot fail, or a criterion with no test ` +
+        `that can, is critical: nothing is verified and the series only looks it.\n\n`
 
   return `Adversarially review one work order's commit series. Assume it is subtly wrong and ` +
     `hunt for where. You return findings; you have no way to approve anything, and an empty ` +
@@ -1132,18 +1337,14 @@ function newState(wo) {
   }
 }
 
-function verifyFailureFindings(wo, v) {
+// One function per role, each the exact complement of that role's predicate above: every
+// conjunct that can be false produces a finding here. They are kept adjacent for that reason —
+// a condition in a predicate with no matching finding escalates an order with an empty fix
+// instruction, which reads to the coder as "something is wrong, guess what".
+
+const plainFailures = (wo, v) => {
   const out = []
 
-  if (v.stop_reason !== 'completed') {
-    out.push(runtimeFinding(wo.id + '-env',
-      'verification could not run to completion: ' + v.stop_reason, v.notes || ''))
-  }
-  // 'absent' produces no finding: a repository that defines no build or suite command is a
-  // repo-state fact recorded in notes, not a defect a fix round could address.
-  if (v.build === 'failed') {
-    out.push(runtimeFinding(wo.id + '-build', 'the build command exited non-zero', v.notes || ''))
-  }
   if (v.suite === 'failed') {
     out.push(runtimeFinding(wo.id + '-suite', 'the test suite exited non-zero',
       v.suite_output_tail || ''))
@@ -1155,9 +1356,114 @@ function verifyFailureFindings(wo, v) {
       ', passes_now=' + d.passes_now,
       'a test that passes without the change under test pins nothing'))
   }
+
+  return out
+}
+
+// Every one of these says the same thing in a different way: this order is not red. It landed
+// something, but not a test that fails for want of an implementation, which is the only thing
+// a red order produces.
+const redFailures = (wo, v) => {
+  const out = []
+
+  if ((v.discriminator || []).length === 0) {
+    out.push(runtimeFinding(wo.id + '-red-empty',
+      'this is a red order and it added no test',
+      'a red order IS its tests; the diff carries none'))
+  }
+  if (v.suite === 'passed') {
+    out.push(runtimeFinding(wo.id + '-red-green',
+      'this is a red order and the whole suite passes',
+      'tests that pass before anything is implemented assert something already true'))
+  }
+  for (const d of v.discriminator || []) {
+    if (d.failed_on_base && !d.passes_now) continue
+    out.push(runtimeFinding(wo.id + '-red-disc-' + d.test_id,
+      d.test_id + ' does not fail as a red test must: failed_on_base=' + d.failed_on_base +
+      ', passes_now=' + d.passes_now,
+      'a red test must fail at base AND fail now — it pins behaviour nobody has built'))
+  }
+  for (const f of failuresOutside(v.failing_tests, wo.locus)) {
+    out.push(runtimeFinding(wo.id + '-red-stray',
+      f.file + ' fails and is not a test this order owns (' + f.id + ')',
+      'a red order fails its own new tests and nothing else; this is collateral damage'))
+  }
+  if (v.suite === 'failed' && (v.failing_tests || []).length === 0) {
+    out.push(runtimeFinding(wo.id + '-red-unnamed',
+      'the suite failed but the verifier named no failing test',
+      'an unnamed failure could be any failure, so it cannot be confined to this locus'))
+  }
+
+  return out
+}
+
+const refactorFailures = (wo, v) => {
+  const out = []
+
+  if (v.suite === 'absent') {
+    out.push(runtimeFinding(wo.id + '-refactor-unmeasured',
+      'this is a refactor order and no test suite ran',
+      'everywhere else an absent suite is a fact about the repository; for a refactor it ' +
+      'means the safety net the whole order rests on was never observed'))
+  }
+  if (v.suite === 'failed') {
+    out.push(runtimeFinding(wo.id + '-refactor-broke',
+      'this is a refactor order and the suite fails',
+      v.suite_output_tail || 'a refactor that changes behaviour is not a refactor'))
+  }
+  if ((v.discriminator || []).length > 0) {
+    out.push(runtimeFinding(wo.id + '-refactor-newtest',
+      'this is a refactor order and it added or changed a test',
+      'new behaviour pinned by a new test is a green order wearing a refactor label'))
+  }
+
+  return out
+}
+
+function verifyFailureFindings(wo, v) {
+  const out = []
+  const role = roleOf(wo)
+
+  if (v.stop_reason !== 'completed') {
+    out.push(runtimeFinding(wo.id + '-env',
+      'verification could not run to completion: ' + v.stop_reason, v.notes || ''))
+  }
+  // 'absent' produces no finding: a repository that defines no build or suite command is a
+  // repo-state fact recorded in notes, not a defect a fix round could address.
+  if (v.build === 'failed') {
+    out.push(runtimeFinding(wo.id + '-build', 'the build command exited non-zero', v.notes || ''))
+  }
+
+  if (role === 'red') out.push(...redFailures(wo, v))
+  else if (role === 'refactor') out.push(...refactorFailures(wo, v))
+  else out.push(...plainFailures(wo, v))
+
   for (const f of v.series_findings || []) {
     if (!f.blocking) continue
     out.push(runtimeFinding(wo.id + '-series-' + f.check, f.check + ': ' + f.message, f.sha))
+  }
+
+  return out
+}
+
+/**
+ * Test files whose failure at the merged head is expected rather than a regression: they
+ * belong to a red order that has merged while the green order implementing it has not.
+ *
+ * Derived from `deps`, which a green order already declares — nothing new is asked of the
+ * planner. Once the green lands the excuse expires by itself, and a red test still failing
+ * then is the pair having failed, which is exactly what it should surface as.
+ */
+function excusedRedFiles() {
+  const out = []
+
+  for (const wo of orders) {
+    if (roleOf(wo) !== 'red' || !landed.has(wo.id)) continue
+
+    const implemented = orders.some((g) =>
+      roleOf(g) === 'green' && (g.deps || []).includes(wo.id) && landed.has(g.id))
+
+    if (!implemented) out.push(...(wo.locus || []))
   }
 
   return out
@@ -1216,7 +1522,7 @@ async function verifyUntilGreen(wo, state, trail) {
     if (v.build === 'absent') log(`${wo.id}: no build command exists at this commit — repo state, not a failure.`)
     if (v.suite === 'absent') log(`${wo.id}: no test suite exists at this commit — repo state, not a failure.`)
 
-    if (verifyOk(v)) {
+    if (verifyOk(v, wo)) {
       state.measured = measuredOf(v)
       if (state.measured.length === 0) {
         log(`${wo.id}: verification passed VACUOUSLY — no build, no suite, no discriminating test. Carried into coverage.`)
@@ -2206,11 +2512,22 @@ try {
       } else {
         integration.wave_verify.push({ wave: waveNumber, build: wv.build, suite: wv.suite })
 
-        if (!waveVerifyOk(wv)) {
+        const excused = excusedRedFiles()
+
+        if (!waveVerifyOk(wv, excused)) {
+          const stray = failuresOutside(wv.failing_tests, excused)
           lineStopped = 'the merged head failed verification after wave ' + waveNumber +
-            ' (build ' + wv.build + ', suite ' + wv.suite + ')'
+            ' (build ' + wv.build + ', suite ' + wv.suite + ')' +
+            (stray.length > 0
+              ? ', failing on ' + stray.map((f) => f.file).join(', ') +
+                ', which no unimplemented red order owns'
+              : '')
           log(`LINE STOPPED: ${lineStopped}.`)
         } else {
+          if (excused.length > 0 && wv.suite === 'failed') {
+            log(`Wave ${waveNumber}: the merged head is red on purpose — every failure sits in ` +
+              `tests whose implementing order has not landed yet.`)
+          }
           log(`Wave ${waveNumber} verified at the merged head: build ${wv.build}, suite ${wv.suite}.`)
         }
       }

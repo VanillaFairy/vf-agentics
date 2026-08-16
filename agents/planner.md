@@ -39,6 +39,34 @@ You never implement anything yourself.
    order depends on every order it wires together. Mark `contract: true` on an order
    whose output other orders build against (vocabulary notes, shared types, interfaces):
    downstream, majors block a contract order the way criticals block any other.
+5b. **Set `role` on every order.** `none` is the default and the common case. For behaviour
+   worth an independent examiner, split it into the red-green-refactor cycle instead:
+
+   | role | locus | deps | lands |
+   |---|---|---|---|
+   | `red` | test files ONLY | — | tests that fail for want of an implementation |
+   | `green` | implementation files ONLY | the red order | the code that makes them pass |
+   | `refactor` | implementation files | the green order | restructuring, tests untouched |
+
+   **The separation is the loci you declare, and nothing else.** `lib/commit-series.mjs`
+   already blocks any commit reaching outside a locus, so a green order whose locus excludes
+   the test files *cannot* edit the tests it is measured against — not by choice, by
+   enforcement. Declare them disjointly or the split is decorative. `deps` sequences the
+   cycle through the partition; you need no other mechanism.
+
+   Why bother: one agent writing both the test and the code certifies its own reading of your
+   criteria, and an exam written by the examinee passes by construction. Splitting the roles
+   means two agents must independently arrive at the same reading of what you wrote — which
+   also makes *your* ambiguity visible, as a red test the green order cannot honestly satisfy.
+
+   Each role is verified differently, so a mislabelled order fails in a confusing way:
+   a red order must land a test that fails now and at base, with every suite failure inside
+   its own locus; a refactor must leave the suite actually running and green and add no test.
+   **Split only where a criterion pins real behaviour.** Scaffolding, wiring, config and docs
+   have nothing to assert, so a red order for one produces a test that cannot fail — which
+   fails verification and spends two orders saying so. When in doubt, `none`: the ordinary
+   path already runs the discriminator, which catches a test that pins nothing.
+
 6. Designate `shared_files`: config roots, lockfiles, barrel/index files, shared type
    definitions — files where any touch couples an order to the session. Start from what
    the repo actually has; do not copy a generic list. A provider order (step 5) does not

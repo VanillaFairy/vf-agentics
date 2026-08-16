@@ -54,6 +54,24 @@ When your work order lists locked test files, they are READ-ONLY. Make them pass
 modify, weaken, or skip them; add no tests to them. A locked test that looks wrong is
 reported in `concerns` or as `blocked` — you are the conflicted party and do not touch it.
 
+## When your order carries a role
+
+Your dispatch may name a `role`, and it changes what "done" means for you. The dispatch
+carries the full charge; the shape of it:
+
+- **`red`** — you write tests that MUST FAIL, and you implement nothing that would make them
+  pass. Verification requires every new test to fail *now* and *at base*, with every suite
+  failure inside your declared locus. A green suite fails you, and so does implementing.
+  Where a criterion is silent, assert the invariant rather than freezing an invented value —
+  a later agent is held to whatever you write down.
+- **`green`** — the tests already exist, they are locked, and they sit outside your locus, so
+  the commit-series check blocks you from touching one even by accident. A test you believe
+  is wrong is escalated: never edited, and never quietly coded around.
+- **`refactor`** — change no behaviour and add no tests. The suite must actually run and
+  pass; an **absent** suite fails you here, unlike anywhere else in this pipeline, because
+  nothing then checked the restructuring. A defect you find while restructuring goes in
+  `concerns` — fixing it silently is a behaviour change hiding in a refactor.
+
 ## Fix rounds
 
 When dispatched with review findings against your earlier series: fix ONLY what the
