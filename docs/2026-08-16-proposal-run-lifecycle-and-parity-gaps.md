@@ -527,8 +527,9 @@ workflow:
    be implemented.
 3. **Rules on the design ladder** already defined and verbatim-diffed in
    `skills/design/SKILL.md` — `ambiguity` / `gap` / `note`. The ladder moves nowhere; it
-   is referenced, and the existing `<!-- vfa:verbatim design-severity-ladder -->` block
-   keeps the copies honest.
+   is referenced, and the existing `design-severity-ladder` verbatim block keeps the copies
+   honest. (Written without the literal marker syntax on purpose — a bare opening marker in
+   prose is collected by `test/verbatim-blocks.test.mjs` as a real, unclosed block.)
 4. **Computes the gate in JS**: `ambiguity` count zero or not. The verdict is a count of
    open ambiguities, never a prober's opinion that the design is sound — the same reason
    `FINDINGS` carries no `approved` field anywhere else in this plugin.
