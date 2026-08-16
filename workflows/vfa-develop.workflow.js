@@ -574,16 +574,20 @@ let envelopeBase = { branch: '', sha: '' }
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
 // frontmatter default authoritative.
-let intelligence = input.intelligence === 'max' ? 'max' : 'normal'
-let judge = intelligence === 'max' ? { model: 'fable' } : {}
-let coderTier = intelligence === 'max' ? { model: 'fable' } : {}
+const tierOf = (value) => (value === 'max' ? 'max' : 'normal')
 
-/** Re-derive the model tiers after the intelligence dial moves. */
+let intelligence = 'normal'
+let judge = {}
+let coderTier = {}
+
+/** Set the dial and re-derive the model tiers from it. */
 function applyIntelligence(value) {
-  intelligence = value === 'max' ? 'max' : 'normal'
+  intelligence = tierOf(value)
   judge = intelligence === 'max' ? { model: 'fable' } : {}
   coderTier = intelligence === 'max' ? { model: 'fable' } : {}
 }
+
+applyIntelligence(input.intelligence)
 
 // ------------------------------------------------------------- the plugin root
 //
@@ -1950,7 +1954,20 @@ try {
       }
     }
     if (envelope.caller_notes && !input.notes) notes = envelope.caller_notes
-    if (envelope.intelligence && !input.intelligence) applyIntelligence(envelope.intelligence)
+
+    // The tier gets the same treatment, and it needs the log line more than roots does: the
+    // skills derive `intelligence` from the model the calling session happens to be running,
+    // so a resume carries a value whether or not anybody chose one. Adopting it in silence
+    // would re-tier somebody else's plan without a word anywhere.
+    if (envelope.intelligence) {
+      const supplied = input.intelligence ? tierOf(input.intelligence) : ''
+      const recorded = tierOf(envelope.intelligence)
+      if (supplied && supplied !== recorded) {
+        log(`Override: intelligence ${recorded} recorded, ${supplied} supplied; using the supplied value.`)
+      } else {
+        applyIntelligence(envelope.intelligence)
+      }
+    }
 
     envelopeBase = { branch: envelope.base_branch || '', sha: envelope.base_sha || '' }
 

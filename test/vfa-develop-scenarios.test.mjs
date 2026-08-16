@@ -914,6 +914,45 @@ test('an explicit caller value still wins over the record, and says so', async (
     'silently disagreeing with the plan on disk is how a resume stops being one')
 })
 
+// The tier needs the same log line more urgently than roots does. The skills derive
+// `intelligence` from the model the calling session is running, so a resume arrives carrying
+// a tier nobody typed — and a run that adopts it in silence implements one plan at another
+// plan's cost, with the plan file still claiming the tier it was written under.
+test('a caller tier that disagrees with the record wins, and says so', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts, logs } = await runWorkflow(WF, {
+    args: { ...ARGS, intelligence: 'normal', resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, { envelope: envelope({ intelligence: 'max' }) }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(prompts.find((p) => p.opts.label === 'code:W2').opts.model, undefined,
+    'the supplied tier is the one the resumed run implements at')
+  assert.ok(logs.some((l) => /Override: intelligence/.test(l)),
+    'a silent re-tier is how a resumed plan stops being the plan it resumed')
+})
+
+test('a resume that supplies the tier it already recorded is not an override', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts, logs } = await runWorkflow(WF, {
+    args: { ...ARGS, intelligence: 'max', resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, { envelope: envelope({ intelligence: 'max' }) }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(prompts.find((p) => p.opts.label === 'code:W2').opts.model, 'fable')
+  assert.ok(!logs.some((l) => /Override: intelligence/.test(l)),
+    'agreeing with the record is not a disagreement to report')
+})
+
 test('resuming under a different change halts before anything is dispatched', async () => {
   const orders = [order('W1'), order('W2', { deps: ['W1'] })]
   const { result, prompts } = await runWorkflow(WF, {
