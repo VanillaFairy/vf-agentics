@@ -26,6 +26,21 @@ Run the checks with:
 
     node tools/lint.mjs && node --test
 
+## Versioning — bump the version in two places
+
+Whenever this plugin's version is bumped, **both** of these move together, in the same change:
+
+1. `.claude-plugin/plugin.json` — the `version` field.
+2. The `vf-agentics` entry in `../.claude-plugin/marketplace.json` — the vanillafairy marketplace
+   manifest, one directory up. Note it is **outside this repo**, so a commit here does not carry it.
+
+Missing the second one does not break an install — at install time `plugin.json` wins and the
+marketplace entry is silently ignored. That is exactly why the drift survives unnoticed: the
+stale number is still what the marketplace reports to `claude plugin list --available` and to
+update tooling, so everything *reads* like a version nobody is actually running. Verify with:
+
+    claude plugin validate ..
+
 ---
 
 # §0 — THE IRON LAW
