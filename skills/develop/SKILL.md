@@ -9,9 +9,27 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 
 ## Parse arguments
 
-`--intelligence=max`, or a bare leading `max` token, sets intelligence for the whole run
-(default `normal`). Everything after the flags is the change description. `roots` defaults
-to the current directory; pass `notes` only when the user gave extra constraints.
+**Intelligence** sets the tier for the whole run — the judging agents and the coder both.
+
+<!-- vfa:verbatim intelligence-tier -->
+The dial follows the model this session is running, never how important the work feels:
+**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
+running, `normal`.
+
+The judging agents belong at the tier of the session driving them. A session that dials itself
+up because the change looked significant is charging the user for its own self-assessment; a
+Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
+one the user is talking to. Only the user moves it — a bare leading `max` token, or
+`--intelligence=max`.
+<!-- /vfa:verbatim -->
+
+**A resume derives nothing.** When you are resuming a parked run (step 3e), pass no
+`intelligence` at all — the plan's envelope carries the tier it was planned at, and the
+workflow adopts it. A derived value passed into a resume is indistinguishable from a
+deliberate override, gets logged as one, and quietly re-tiers somebody else's plan.
+
+Everything after the flags is the change description. `roots` defaults to the current
+directory; pass `notes` only when the user gave extra constraints.
 
 `--pause-between-waves` is an opt-in for callers who want to look at each wave before the
 next one starts. It is off unless the user asks for it: one invocation carrying the whole

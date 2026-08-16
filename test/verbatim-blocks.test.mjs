@@ -30,6 +30,10 @@ const REQUIRED_IDS = [
   // acceptance criteria, commit series and declared loci, none of which a design document
   // has — so a probe holding it would invent a mapping and rule badly in both directions.
   'design-severity-ladder',
+  // Four skills pass `intelligence`, and a session reads exactly one of them. A copy that
+  // drifts back to "default normal" lets that skill's session pick the tier by taste again,
+  // which is the failure this rule was written for.
+  'intelligence-tier',
 ]
 
 const OPEN = /<!--\s*vfa:verbatim\s+([a-z0-9-]+)\s*-->/g

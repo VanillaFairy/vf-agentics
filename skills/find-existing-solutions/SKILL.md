@@ -42,6 +42,20 @@ policy, an appetite for dependencies.
 
 **Roots.** Which repositories are in play. Default to the current working directory.
 
+**Intelligence.** `normal` or `max` — the tier the assessing agents run at.
+
+<!-- vfa:verbatim intelligence-tier -->
+The dial follows the model this session is running, never how important the work feels:
+**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
+running, `normal`.
+
+The judging agents belong at the tier of the session driving them. A session that dials itself
+up because the change looked significant is charging the user for its own self-assessment; a
+Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
+one the user is talking to. Only the user moves it — a bare leading `max` token, or
+`--intelligence=max`.
+<!-- /vfa:verbatim -->
+
 ## Step 2 — Run it
 
 ```

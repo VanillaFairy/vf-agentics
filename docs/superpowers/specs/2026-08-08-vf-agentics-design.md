@@ -546,7 +546,19 @@ the degradation rows against at least the bare-Epic fixture.
 
 ## §6 — The intelligence switch
 
-`--intelligence=normal|max`, defaulting to `normal`.
+`--intelligence=normal|max`. It is **derived, not chosen**:
+
+<!-- vfa:verbatim intelligence-tier -->
+The dial follows the model this session is running, never how important the work feels:
+**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
+running, `normal`.
+
+The judging agents belong at the tier of the session driving them. A session that dials itself
+up because the change looked significant is charging the user for its own self-assessment; a
+Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
+one the user is talking to. Only the user moves it — a bare leading `max` token, or
+`--intelligence=max`.
+<!-- /vfa:verbatim -->
 
 **The mechanical tier never moves.** `scout`, `historian`, `doc-researcher`, `verifier` stay
 Sonnet regardless — swapping the search tier buys nothing and costs a lot.
@@ -584,7 +596,7 @@ All four skills accept three forms:
 |---|---|
 | Bare leading token | `/investigate max how does X work` |
 | Explicit flag | `/develop --intelligence=max` |
-| Omitted | defaults to `normal` |
+| Omitted | derived from the session model, per the block above |
 
 `model` and `effort` stay orthogonal. `effort` controls how long a model thinks; `model`
 controls which model thinks. Fusing them would make "cheap model reasoning hard" and "expensive

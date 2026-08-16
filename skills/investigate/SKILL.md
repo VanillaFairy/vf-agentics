@@ -22,13 +22,22 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 
 Parse three things from what the user typed:
 
-**Intelligence.** `normal` (default) or `max`. Accept any of:
+**Intelligence.** `normal` or `max` — `max` swaps the judging tier from Opus to Fable.
 
-- a bare leading token: `/investigate max how does X work`
-- an explicit flag: `/investigate --intelligence=max ...`
-- omitted entirely
+<!-- vfa:verbatim intelligence-tier -->
+The dial follows the model this session is running, never how important the work feels:
+**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
+running, `normal`.
 
-`max` swaps the judging tier from Opus to Fable. Strip the token from the question text.
+The judging agents belong at the tier of the session driving them. A session that dials itself
+up because the change looked significant is charging the user for its own self-assessment; a
+Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
+one the user is talking to. Only the user moves it — a bare leading `max` token, or
+`--intelligence=max`.
+<!-- /vfa:verbatim -->
+
+An override arrives either way round: `/investigate max how does X work` or
+`/investigate --intelligence=max ...`. Strip the token from the question text.
 
 **Mode.** Task list or report:
 
