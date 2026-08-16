@@ -84,3 +84,21 @@ No `import`, no `require` — an import is a runtime failure, not a style issue.
 `minItems`/`maxItems`/`minLength`/`maxLength` in a schema — structured outputs drop them, so the
 author believes a bound is enforced when nothing enforces it. Put the bound in the prompt and
 enforce it in JS after the call. All of these are enforced by `tools/rules/`.
+
+## The plan digest exists twice, on purpose, and the pin is a test
+`lib/plan-digest.mjs` and the `the plan digest` block inside `workflows/vfa-develop.workflow.js`
+implement the same FNV-1a-over-canonical-JSON algorithm. They have to: the planner runs the CLI
+to write a plan's manifest, and the workflow recomputes it in-script when a resume reads that
+plan back — and a workflow script cannot import the library.
+
+**If you change one, change both.** The failure is quiet and total: every resume halts on a
+digest mismatch that is not real corruption, and the halt names an order rather than the cause.
+The pin is behavioural, in `test/vfa-develop-scenarios.test.mjs` — one scenario feeds the
+workflow a manifest that `manifestOf()` computed and asserts the run proceeds. A comment asking
+two files to stay in step would not have caught anything.
+
+## `git checkout -B <b>/W3` fails when the ref `<b>` exists
+Git stores refs as filesystem paths, so `refs/heads/vfa/…-integration` being a file means
+`refs/heads/vfa/…-integration/W3` cannot be a directory. Per-order branches are therefore
+`<integration branch>-<order id>` with a **dash**, not a slash. With a slash the run works for
+exactly one order and then fails on the second — the kind of bug that looks like a flake.
