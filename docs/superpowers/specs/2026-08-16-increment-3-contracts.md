@@ -357,6 +357,71 @@ remaining copies — the interfaces doc and `agents/verifier.md` — still pin e
 
 ---
 
+## 8. The design phase
+
+**Produced by:** `skills/design/SKILL.md` · **Consumed by:** a human, then `vf-agentics:develop`
+
+Session-driven rather than a workflow, for one reason: interviewing is interactive, and
+neither a workflow script nor an agent can talk to the user.
+
+### The artifact
+
+`docs/vfa/designs/YYYY-MM-DD-<slug>.md`, committed, written by the session. Sections: context,
+**decisions** (user-authored, each with its why), the design, graded open questions, and a
+**settled-evidence block**.
+
+That last block is the exact `notes` payload `develop` consumes: toolchain versions verified
+live, binding contracts, environmental facts, and the survey's coverage block as it stands. It
+is what stops the evidence checkpoint re-litigating what this phase already settled.
+
+### Interview grades — discipline, not pipeline fields
+
+`blocking`, `parked: <what reopens it>`, `lookup`, `compost`. They tell the interviewer what
+to do next and travel through no schema: `blocking_gaps` is planner **output**, there is no
+such input, and `vfa-survey`'s args are fixed. Exactly one of them is
+machine-consequential, and the skill states it and `tools/rules/design-gate.mjs` checks that
+it is stated:
+
+> A design with an open `blocking` question does not hand off.
+
+Everything that survives to `develop` travels through the one channel that exists — `notes` —
+either as settled evidence or as an explicitly named unknown the planner may then raise as its
+own `blocking_gaps`.
+
+### The adversarial design probe
+
+A `vf-agentics:analyst` charged to attack the design rather than appraise it, dispatched
+before ratification. Its axes come **from the target repository's own guidance** — its
+`CLAUDE.md`, its specs — rather than from a vocabulary hardcoded here, so a project that
+already mandates its own design probe is satisfied by this one instead of double-probed. On
+top of that it always covers extensibility along axes the design itself names, contract
+ambiguity, YAGNI, and unstated invariants.
+
+It rules on its **own** ladder. The code ladder (increment 2 §6) speaks entirely in acceptance
+criteria, commit series and declared loci, none of which a design document has; a probe
+holding it would have to invent a mapping and would rule badly in both directions.
+
+<!-- vfa:verbatim design-severity-ladder -->
+- **ambiguity** — a term, contract, or interface the design leaves readable two ways. Blocks
+  ratification. The archetype is one name with two incompatible definitions in the same
+  document: every consumer implements one of them, the mismatch is invisible until
+  integration, and it costs a rework round rather than a sentence.
+- **gap** — a growth axis or requirement the design names but cannot absorb without rework.
+  Resolved, or explicitly accepted by the user with the cost stated. Never silently carried.
+- **note** — advisory. Recorded in the design document, never blocks, never loops.
+<!-- /vfa:verbatim -->
+
+### Enforcement
+
+`tools/rules/design-gate.mjs` checks the three clauses that make the phase a phase: the
+terminal handoff is named (`vf-agentics:develop`), the `HARD GATE` is marked, and the
+blocking-question refusal is stated. Decidable half only — the rule checks that each clause is
+**named**, not that the prose still means it, the same split `coverage-block` and
+`task-tool-fallback` make. Turn caps are covered by `no-turn-caps`, which already applies to
+every `SKILL.md`, so this rule does not repeat them.
+
+---
+
 ## 9. Harness asks, and the one open experiment
 
 Three things sit outside this plugin's control. They are filed upstream, not worked around:

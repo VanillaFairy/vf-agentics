@@ -24,7 +24,13 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.claude'])
 
 /** Ids that must exist somewhere; a refactor that deletes the markers fails loudly. */
-const REQUIRED_IDS = ['review-loop-exit', 'severity-ladder', 'merge-result']
+const REQUIRED_IDS = [
+  'review-loop-exit', 'severity-ladder', 'merge-result',
+  // The design phase rules on its own ladder. The code one above speaks entirely in
+  // acceptance criteria, commit series and declared loci, none of which a design document
+  // has — so a probe holding it would invent a mapping and rule badly in both directions.
+  'design-severity-ladder',
+]
 
 const OPEN = /<!--\s*vfa:verbatim\s+([a-z0-9-]+)\s*-->/g
 const CLOSE = /<!--\s*\/vfa:verbatim\s*-->/g
