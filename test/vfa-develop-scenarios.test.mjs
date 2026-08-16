@@ -664,9 +664,16 @@ const loadedPlan = (orders, over = {}) => ({
   ...over,
 })
 
+const envelope = (over = {}) => ({
+  change: 'add the thing', roots: '.', caller_notes: '', intelligence: 'normal',
+  base_branch: 'master', base_sha: A40,
+  ...over,
+})
+
 const loaded = (orders, over = {}) => ({
   stop_reason: 'loaded',
   plan: loadedPlan(orders),
+  envelope: envelope(),
   manifest: manifestOf(orders),
   state: [{ wave: 1, merged: ['W1'], approved_unmerged: [], escalated: [],
             integration_base: A40, integration_head: M40 }],
@@ -853,4 +860,86 @@ test('every exit path returns the integration handle, even the ones that dispatc
   assert.ok(result.integration, 'the handle is part of the documented shape on every path')
   assert.deepEqual(result.integration.merged, [])
   assert.equal(result.coverage.complete, false)
+})
+
+// ---------------------------------------------------------------- the plan envelope
+//
+// A resumed run must implement under the conditions its plan was written for, not under
+// whatever the caller still remembers a week later. The acute case is `caller_notes`: it
+// carries the evidence a design phase settled, and losing it fails silently — the run
+// proceeds and quietly re-opens questions somebody already answered.
+
+test('a resumed run adopts the notes and tier its plan was written under', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts } = await runWorkflow(WF, {
+    // The caller passes neither notes nor intelligence — exactly the week-later resume.
+    args: { change: 'add the thing', resume_path: RUN_DIR, plugin_root: 'C:/plugin' },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, {
+        envelope: envelope({
+          roots: 'C:/repo', caller_notes: 'rsync is absent; transport is scp',
+          intelligence: 'max',
+        }),
+      }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  const code = prompts.find((p) => p.opts.label === 'code:W2')
+  assert.ok(code.prompt.includes('rsync is absent; transport is scp'),
+    'settled evidence recorded at plan time must reach the coder on a resume')
+  assert.ok(code.prompt.includes('C:/repo'), 'the roots the plan was surveyed against win')
+  assert.equal(code.opts.model, 'fable', 'the recorded intelligence tier is adopted too')
+})
+
+test('an explicit caller value still wins over the record, and says so', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts, logs } = await runWorkflow(WF, {
+    args: { ...ARGS, roots: 'C:/elsewhere', resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, { envelope: envelope({ roots: 'C:/repo' }) }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.ok(prompts.find((p) => p.opts.label === 'code:W2').prompt.includes('C:/elsewhere'))
+  assert.ok(logs.some((l) => /Override: roots/.test(l)),
+    'silently disagreeing with the plan on disk is how a resume stops being one')
+})
+
+test('resuming under a different change halts before anything is dispatched', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, change: 'add a completely different thing', resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({ 'resume-load': loaded(orders) }),
+  })
+
+  assert.equal(result.coverage.complete, false)
+  assert.ok(!prompts.some((p) => p.opts.label === 'integration-setup'),
+    'a wrong-run resume must not reach the point of creating a worktree')
+  assert.deepEqual(result.implemented, [])
+  assert.match(result.coverage.unreached.join(' '), /written for a different change/)
+})
+
+test('a plan file with no recorded envelope resumes rather than halting', async () => {
+  // Plans written before the envelope existed have none. That is a missing field, not a
+  // mismatch, and it must not brick every run planned last week.
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      'resume-load': loaded(orders, { envelope: envelope({ change: '', roots: '' }) }),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.deepEqual(result.integration.merged, ['W2'])
+  assert.equal(result.coverage.complete, true)
 })

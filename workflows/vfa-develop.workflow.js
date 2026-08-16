@@ -59,13 +59,37 @@ const WORK_ORDERS = {
 // a resumed run implements against a different contract than a fresh one.
 const RESUME_STATE = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'plan', 'manifest', 'state', 'notes'],
+  required: ['stop_reason', 'plan', 'envelope', 'manifest', 'state', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['loaded', 'unreadable'] },
     plan: {
       type: 'object', additionalProperties: false,
       required: WORK_ORDERS.required,
       properties: WORK_ORDERS.properties,
+    },
+    // The conditions the run was planned under — a SIBLING of `plan`, never a member of it.
+    // `plan` reuses WORK_ORDERS' closed property set, so a loader returning `roots` or
+    // `base_sha` inside it would fail validation outright, and one returning them nowhere
+    // would make recording them pointless. That is the same wall `plan_path` hit before it
+    // was added to WORK_ORDERS itself, and it is worth naming: the closure that makes the
+    // digest tripwire trustworthy is the closure that makes every new cross-stage fact
+    // invisible until it is contracted here.
+    //
+    // Without this, a run resumed a week later re-derives its constraints from whatever the
+    // caller still remembers. `caller_notes` is the acute case: it carries the settled
+    // evidence a design phase produced, and losing it does not fail loudly — it quietly
+    // re-opens questions someone already answered.
+    envelope: {
+      type: 'object', additionalProperties: false,
+      required: ['change', 'roots', 'caller_notes', 'intelligence', 'base_branch', 'base_sha'],
+      properties: {
+        change: { type: 'string' },
+        roots: { type: 'string' },
+        caller_notes: { type: 'string' },
+        intelligence: { type: 'string' },
+        base_branch: { type: 'string' },   // observed at plan time, not assumed
+        base_sha: { type: 'string' },      // the drift anchor for a parked plan
+      },
     },
     manifest: { type: 'array', items: {
       type: 'object', additionalProperties: false,
@@ -382,8 +406,12 @@ const measuredOf = (v) => [
 
 const input = typeof args === 'string' ? { change: args } : (args || {})
 const change = typeof input.change === 'string' ? input.change : ''
-const roots = input.roots || '.'
-const notes = input.notes || ''
+// `let`, not `const`, because a resumed run adopts the envelope its plan was written under
+// (see the loader below). Every read of these happens after the loader has run — the planner
+// is skipped on a resume, and setup, coders, verifiers and reviewers all come later — so
+// there is no window in which a stale value is read.
+let roots = input.roots || '.'
+let notes = input.notes || ''
 
 // Resume by reference, not by echo. The predecessor of this field was `preplanned`: the
 // planner's whole output, ~55KB, which a caller had to transcribe back byte-exact to say
@@ -403,9 +431,16 @@ const pauseBetweenWaves = input.pause_between_waves === true
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
 // frontmatter default authoritative.
-const intelligence = input.intelligence === 'max' ? 'max' : 'normal'
-const judge = intelligence === 'max' ? { model: 'fable' } : {}
-const coderTier = intelligence === 'max' ? { model: 'fable' } : {}
+let intelligence = input.intelligence === 'max' ? 'max' : 'normal'
+let judge = intelligence === 'max' ? { model: 'fable' } : {}
+let coderTier = intelligence === 'max' ? { model: 'fable' } : {}
+
+/** Re-derive the model tiers after the intelligence dial moves. */
+function applyIntelligence(value) {
+  intelligence = value === 'max' ? 'max' : 'normal'
+  judge = intelligence === 'max' ? { model: 'fable' } : {}
+  coderTier = intelligence === 'max' ? { model: 'fable' } : {}
+}
 
 // ------------------------------------------------------------- the plugin root
 //
@@ -653,13 +688,17 @@ const acceptanceNote =
   `human at the gate untouched: never rewritten, never turned into a synthetic test, and ` +
   `its absence from the diff is never a finding.`
 
-const callerNotes = notes ? `NOTES FROM THE CALLER:\n${notes}\n\n` : ''
+// A function rather than a constant. `notes` is adopted from the plan envelope on a resume,
+// and a constant computed at module scope would freeze the value the caller happened to pass
+// — which on a resume is usually nothing, silently dropping the settled evidence the plan was
+// written under and re-litigating questions a design phase already closed.
+const callerNotes = () => (notes ? `NOTES FROM THE CALLER:\n${notes}\n\n` : '')
 
 function plannerPrompt(surveyEvidence) {
   return `Decompose this change into work orders other agents will implement.\n\n` +
     `CHANGE: ${change}\n` +
     `REPOSITORIES: ${roots}\n\n` +
-    callerNotes +
+    callerNotes() +
     `SURVEY EVIDENCE — your evidence base, and its limits are your limits:\n` +
     `${surveyEvidence}\n\n` +
     `Every work order declares a locus naming EVERY file it may create or modify, ` +
@@ -722,6 +761,13 @@ function loaderPrompt() {
     `stored manifest array as it is written. Return the state.jsonl entries parsed, in file ` +
     `order, oldest first; a missing or empty state.jsonl means no wave completed, which is a ` +
     `fact — return an empty list and say so in notes.\n\n` +
+    `Return the ENVELOPE separately from the plan: change, roots, caller_notes, ` +
+    `intelligence, base_branch and base_sha, exactly as plan.json records them. These are ` +
+    `the conditions this run was planned under — your caller adopts them, so a resumed run ` +
+    `implements under the same roots, the same intelligence tier and the same settled ` +
+    `evidence as the original. caller_notes especially: return it whole, however long. A ` +
+    `field an older plan file simply does not have comes back as an empty string; never ` +
+    `fill one in from this dispatch, and never guess a sha.\n\n` +
     `Set plan_path to ${resumePath} — the directory you actually read.\n\n` +
     `Your caller recomputes a content digest over every order and compares it to the stored ` +
     `manifest. One reworded sentence stops the run. So do not tidy a path, do not shorten a ` +
@@ -774,7 +820,7 @@ function coderPrompt(wo, branch) {
     `DECLARED LOCUS — the only files you may create or modify:\n${listOf(wo.locus)}\n\n` +
     `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n` +
     `${acceptanceNote} Implement toward it; do not invent a test that pretends to check it.\n\n` +
-    callerNotes +
+    callerNotes() +
     `You are working in a worktree created for this order alone. The tree the user is sitting ` +
     `in is never touched, and you never merge — the workflow merges your branch into its own ` +
     `integration tree after this order is approved. Record git rev-parse HEAD as base_sha ` +
@@ -833,7 +879,7 @@ function verifierPrompt(wo, state) {
     `now, and whether it FAILED at ${state.base_sha} in this same worktree. A test that ` +
     `passes on the base proves nothing about this change, and that is exactly what the ` +
     `caller needs to know.\n\n` +
-    callerNotes +
+    callerNotes() +
     `Report facts only. stop_reason environment_broken is for the environment itself failing ` +
     `— unmeasurable is a different answer from failed, and conflating them is the laundering ` +
     `the IRON LAW forbids.`
@@ -872,7 +918,7 @@ function waveVerifyPrompt(waveNumber) {
     `series_findings and discriminator as empty arrays — that emptiness means "not asked for", ` +
     `your caller knows it did not ask, and filling them with something plausible would be a ` +
     `fabricated measurement.\n\n` +
-    callerNotes +
+    callerNotes() +
     `Every order in this wave passed its own verification in its own worktree. What you are ` +
     `measuring is whether merging them together broke something none of them broke alone — ` +
     `and if nobody measures that, the next wave inherits the breakage and reports it as its ` +
@@ -953,7 +999,7 @@ function integrationReviewPrompt(merged) {
     `only: log, show, diff. Never check out, stage, or otherwise touch this tree.\n\n` +
     `THE CHANGE: ${change}\n\n` +
     `ORDERS MERGED, IN MERGE ORDER:\n${orderLines(merged)}\n\n` +
-    callerNotes +
+    callerNotes() +
     `Look for what per-order review structurally cannot see: a contract one order defined ` +
     `and another implemented differently; a function two orders each half-wired; duplicated ` +
     `logic that arrived from two directions; an interface whose two sides disagree; ` +
@@ -1373,6 +1419,56 @@ try {
         },
       })
     }
+
+    // ------------------------------------------------- 1b. adopt the envelope
+    //
+    // The plan travels with the conditions it was written under, and on a resume those win.
+    // A caller re-invoking a week later has a change description and a path; it does not
+    // have the roots the plan was surveyed against, the intelligence tier it was planned
+    // at, or the settled evidence its design phase produced. Defaulting those to whatever
+    // this invocation happened to pass implements the same plan under different conditions
+    // and reports it as the same run.
+    //
+    // `change` is the exception, and deliberately: the workflow guards on it before the
+    // loader runs, so a caller must supply it regardless. That makes it free to compare —
+    // and the comparison catches resuming the wrong run, which otherwise implements feature
+    // A's plan while every log line says feature B.
+    const envelope = loaded.envelope || {}
+    const recordedChange = (envelope.change || '').trim()
+
+    if (recordedChange && recordedChange !== change.trim()) {
+      log('HALT: the change supplied does not match the change this plan was written for.')
+      return developResult({
+        planPath: resumePath,
+        coverage: {
+          complete: false,
+          dropped: [],
+          incomplete: [],
+          failed_channels: [],
+          unreached: [
+            'the plan at ' + resumePath + ' was written for a different change. It records ' +
+            JSON.stringify(recordedChange) + '; this invocation supplied ' +
+            JSON.stringify(change.trim()) + '. Nothing was dispatched — implementing one ' +
+            "change's plan under another's description is a wrong run that reports itself " +
+            'as a right one. Re-invoke with the recorded change, or plan afresh.',
+          ],
+          resumable: { runId: RUN_ID, remaining: [] },
+        },
+      })
+    }
+
+    // Explicit caller values still win over the record — a human who passes something has
+    // said something — but an override is logged, because silently disagreeing with the
+    // plan on disk is how a resumed run stops being the run it resumed.
+    if (envelope.roots) {
+      if (input.roots && input.roots !== envelope.roots) {
+        log(`Override: roots ${envelope.roots} recorded, ${input.roots} supplied; using the supplied value.`)
+      } else {
+        roots = envelope.roots
+      }
+    }
+    if (envelope.caller_notes && !input.notes) notes = envelope.caller_notes
+    if (envelope.intelligence && !input.intelligence) applyIntelligence(envelope.intelligence)
 
     planned = loaded.plan
     planPath = loaded.plan.plan_path || resumePath

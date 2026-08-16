@@ -20,6 +20,13 @@ You are given the absolute path of a run directory. Read and return:
   `work_orders` entire (`id`, `title`, `locus`, `acceptance`, `context`, `deps`, `contract`
   per order), `shared_files`, `partition_raw`, `blocking_gaps`, `notes`, and the stored
   `manifest`.
+- **the envelope** — `change`, `roots`, `caller_notes`, `intelligence`, `base_branch` and
+  `base_sha`, returned in their own `envelope` field rather than inside `plan`. These are
+  the conditions the run was planned under, and they are the reason a run resumed a week
+  later does not depend on a human remembering the constraints its design phase settled.
+  `caller_notes` in particular is the settled-evidence payload: return it whole. A field
+  genuinely absent from an older plan file comes back as an empty string — never guessed
+  at, and never filled in from the dispatch you are reading this in.
 - **`state.jsonl`** — one JSON object per line, the run's progression. Return them parsed,
   in file order, oldest first. A missing or empty `state.jsonl` is a **fact, not a
   failure**: it means the run never completed a wave. Return an empty list and say so in

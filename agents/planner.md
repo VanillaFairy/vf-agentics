@@ -72,10 +72,25 @@ You never implement anything yourself.
    That gives `20260816-143005`. The run directory is `.claude/vfa/runs/<runstamp>/` inside
    the **target repository** — the one you are planning against, not this plugin. Then:
 
-   a. Write `plan.json`: `{runstamp, change, work_orders, shared_files, partition_raw,
-      blocking_gaps, notes}` — `work_orders` exactly as you will return them, whole, every
-      `context` and `acceptance` entry in full. This file is what a resumed run implements
-      from; an order abbreviated here is an order implemented against an abbreviation.
+   a. Write `plan.json`: `{runstamp, change, roots, caller_notes, intelligence, base_branch,
+      base_sha, work_orders, shared_files, partition_raw, blocking_gaps, notes}` —
+      `work_orders` exactly as you will return them, whole, every `context` and `acceptance`
+      entry in full. This file is what a resumed run implements from; an order abbreviated
+      here is an order implemented against an abbreviation.
+
+      The six fields before `work_orders` are the **envelope**: the conditions this plan was
+      written under. `change`, `roots`, `caller_notes` and `intelligence` are what your
+      dispatch handed you — copied, not summarized, and `caller_notes` least of all, because
+      it carries evidence a design phase already settled and a resumed run that loses it
+      re-litigates settled questions. `base_branch` and `base_sha` are observed, not
+      assumed:
+
+          git rev-parse --abbrev-ref HEAD
+          git rev-parse HEAD
+
+      run in the target repository. They anchor the drift check a resumed run performs
+      against a tree that may have moved since you wrote this. A guessed anchor is worse
+      than none: it reports a moved world as still.
    b. Compute the manifest and, in the same step, prove the file you just wrote parses:
 
           node "<plugin-root>/lib/plan-digest.mjs" .claude/vfa/runs/<runstamp>/plan.json
