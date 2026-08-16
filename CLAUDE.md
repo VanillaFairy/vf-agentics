@@ -19,8 +19,22 @@ partitions, and then runs **every wave of that plan in one invocation**, merging
 an integration worktree it creates and owns. The invariant is tree ownership, not merging:
 **the workflow never mutates the user's branch or working tree.** A run's plan and its
 wave-by-wave progression are persisted under `.claude/vfa/runs/<runstamp>/`, so an interrupted
-run resumes by path instead of by re-buying its survey. Contracts:
-`docs/superpowers/specs/2026-08-16-increment-3-contracts.md`.
+run resumes by path instead of by re-buying its survey.
+
+Runs are a **lifecycle**, not a single invocation. `develop --plan-only` parks a plan without
+implementing it; several may sit parked at once. `runs` lists every run in a repository with a
+status derived from its artefacts (never stored) and hands a pick back to `develop`. A resume
+adopts the conditions its plan was written under — roots, tier, settled evidence — from the
+plan's envelope, and checks whether the user's tree moved under it before dispatching
+anything.
+
+`probe` is the adversarial review of a **written artefact** — a design, a proposal, a spec.
+Independent analysts get the document and the repository and nothing from the author; the
+ratification gate is a computed count of open ambiguities. `design` step 3 invokes it rather
+than describing a probe of its own.
+
+Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
+`2026-08-16-increment-4-contracts.md`.
 
 Run the checks with:
 
