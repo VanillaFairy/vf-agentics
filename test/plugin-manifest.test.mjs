@@ -36,7 +36,12 @@ test('the sibling plugins are still listed', async () => {
   const raw = await readFile(new URL('../../.claude-plugin/marketplace.json', import.meta.url), 'utf8')
   const names = JSON.parse(raw).plugins.map((p) => p.name)
 
-  for (const name of ['vf-superpowers', 'reasonable', 'investigate']) {
+  // The siblings this marketplace actually ships. `investigate` stood here until the
+  // capability moved into vf-agentics and the slot was taken by vf-grill; the assertion
+  // outlived the plugin and had been failing ever since, which is the quiet way a guard
+  // stops guarding — it is red for a reason nobody reads, so a real regression looks
+  // exactly like the noise.
+  for (const name of ['vf-superpowers', 'reasonable', 'vf-grill']) {
     assert.ok(names.includes(name), `${name} must not be dropped from the marketplace`)
   }
 })
