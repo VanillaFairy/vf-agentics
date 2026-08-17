@@ -97,9 +97,14 @@ const RESUME_STATE = {
     // caller still remembers. `caller_notes` is the acute case: it carries the settled
     // evidence a design phase produced, and losing it does not fail loudly — it quietly
     // re-opens questions someone already answered.
+    //
+    // ENVELOPE REGISTRY: this is one live copy of the envelope field list. Every other copy is
+    // named in the increment-5 contracts doc's registry section, and any change to this list
+    // cites it. There is no mechanism that finds the copies for you.
     envelope: {
       type: 'object', additionalProperties: false,
-      required: ['change', 'roots', 'caller_notes', 'intelligence', 'base_branch', 'base_sha'],
+      required: ['change', 'roots', 'caller_notes', 'intelligence', 'base_branch', 'base_sha',
+                 'programme', 'slice'],
       properties: {
         change: { type: 'string' },
         roots: { type: 'string' },
@@ -107,6 +112,15 @@ const RESUME_STATE = {
         intelligence: { type: 'string' },
         base_branch: { type: 'string' },   // observed at plan time, not assumed
         base_sha: { type: 'string' },      // the drift anchor for a parked plan
+        // Which programme and which of its slices this run implements — copied from
+        // programme.json by the dispatching skill, never retyped. They are what makes a run
+        // attributable: without them a programme's own runs are indistinguishable from every
+        // other run in the repository, and progress has to be stored as a claim somewhere
+        // instead of derived from the runs that exist. Both are '' for an ordinary run, and
+        // '' is a real answer — a run that belongs to no programme is not this layer's
+        // business, which is a different fact from a run whose tags could not be read.
+        programme: { type: 'string' },
+        slice: { type: 'string' },
       },
     },
     manifest: { type: 'array', items: {
@@ -118,11 +132,20 @@ const RESUME_STATE = {
         acceptance_n: { type: 'integer' },
         digest: { type: 'string' },   // FNV-1a over the canonical order, from lib/plan-digest.mjs
       } } },
+    // Two line types in one append-only log, and one TOTAL shape carrying both. The schema is
+    // `additionalProperties: false` over a closed `required`, so a union is not expressible
+    // here; the alternative — making half the fields optional — would mean a wave line missing
+    // `merged` and an order line legitimately without one are the same value, which is the
+    // absence nobody notices. So every line carries every field, and `kind` says which half is
+    // load-bearing. A line written before this contract carries no `kind`; it comes back as
+    // `wave`, which is not a guess — every line ever written before this version was one.
     state: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['wave', 'merged', 'approved_unmerged', 'escalated',
-                 'integration_base', 'integration_head', 'discovered'],
+      required: ['kind', 'wave', 'merged', 'approved_unmerged', 'escalated',
+                 'integration_base', 'integration_head', 'discovered',
+                 'order', 'branch', 'worktree', 'head_sha'],
       properties: {
+        kind: { type: 'string', enum: ['wave', 'order-approved'] },
         wave: { type: 'integer' },
         merged: { type: 'array', items: { type: 'string' } },
         approved_unmerged: { type: 'array', items: { type: 'string' } },
@@ -135,6 +158,15 @@ const RESUME_STATE = {
         // waves that ran after the interruption.
         integration_base: { type: 'string' },
         integration_head: { type: 'string' },
+        // The `order-approved` half: one line per order the moment its review closed, written
+        // long before the wave it belongs to ends. A usage limit lands in the middle of a
+        // wave — the longest single stretch this pipeline has — and without these lines every
+        // order already implemented, verified and approved but not yet merged is invisible to
+        // the resume, which re-implements all of it. '' on a wave line.
+        order: { type: 'string' },
+        branch: { type: 'string' },
+        worktree: { type: 'string' },
+        head_sha: { type: 'string' },
       } } },
     notes: { type: 'string' },
   },
@@ -176,6 +208,38 @@ const INTEGRATION_SETUP = {
     worktree: { type: 'string' },   // absolute path, observed
     branch: { type: 'string' },
     head_sha: { type: 'string' },   // what HEAD actually is in that worktree — read, not assumed
+    notes: { type: 'string' },
+  },
+}
+
+// What an interrupted earlier invocation left behind in git. Order branches are named
+// deterministically (`vfa/<runstamp>-<order-id>`), so a later invocation of the same run can
+// FIND the work its predecessor did — which is the whole reason the naming is deterministic
+// rather than incidental.
+//
+// The shape carries everything a coder result would have carried, because that is exactly
+// what these commits are about to be treated as: adopted, then routed through the ordinary
+// verify and review machinery. Nothing is trusted because it was found and nothing is
+// discarded because it was interrupted.
+const SCAVENGE = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'found', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
+    found: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['id', 'branch', 'worktree', 'base_sha', 'head_sha', 'commits'],
+      properties: {
+        id: { type: 'string' },
+        branch: { type: 'string' },
+        worktree: { type: 'string' },   // absolute, and it must be enterable — observed
+        base_sha: { type: 'string' },   // the fork point, observed with git merge-base
+        head_sha: { type: 'string' },
+        commits: { type: 'array', items: {
+          type: 'object', additionalProperties: false,
+          required: ['sha', 'subject'],
+          properties: { sha: { type: 'string' }, subject: { type: 'string' } } } },
+      } } },
     notes: { type: 'string' },
   },
 }
@@ -283,6 +347,9 @@ const FINDINGS = {
 const roleOf = (wo) => (wo && wo.role) || 'none'
 
 const posix = (p) => String(p || '').split('\\').join('/')
+
+/** A run directory's last path segment IS its runstamp — the planner minted the name. */
+const runstampOf = (dir) => posix(dir).replace(/\/+$/, '').split('/').pop() || ''
 
 /**
  * Failures landing outside a declared set of files. The join key is the FILE — an order owns
@@ -566,6 +633,24 @@ const planOnly = input.plan_only === true
 // different state from having looked and cleared nothing.
 const confirmedStale = Array.isArray(input.confirmed_stale) ? input.confirmed_stale : null
 
+// Where the integration worktree branches from. Absent is today's behaviour: the repository's
+// current HEAD. Present, it is A NAMED REF AND NOTHING ELSE — a bare sha is refused at input,
+// below, rather than accepted and quietly stored.
+//
+// The refusal is not fussiness. The envelope records `base_branch` so that a resume can
+// RE-RESOLVE the anchor and compare it against where the world is now; a sha re-resolves to
+// itself, so the drift observation would compare the anchor to the anchor and report a moved
+// world as still. The one check this pipeline has for "the tree changed under my plan" would
+// pass unconditionally, and pass silently.
+const baseRef = typeof input.base_ref === 'string' ? input.base_ref.trim() : ''
+
+// Which programme and which of its slices this run implements. Copied from programme.json by
+// the dispatching skill and carried into the plan envelope by the planner; nothing in this
+// script reads them for a decision. They exist so that a later reader can tell this run apart
+// from every other run in the repository — see the envelope registry note above.
+let programme = typeof input.programme === 'string' ? input.programme.trim() : ''
+let slice = typeof input.slice === 'string' ? input.slice.trim() : ''
+
 // Recorded at plan time, adopted from the envelope on resume. The drift anchor of last
 // resort: for a plan that was parked and never ran, there is no integration base to measure
 // against and this is the only record of the world it was written for.
@@ -774,6 +859,31 @@ if (!change.trim()) {
   })
 }
 
+// A detached sha as `base_ref` is refused here, before anything is dispatched, rather than
+// stored and discovered later. The whole value of recording the base is that a resume can ask
+// git where that ref is NOW and compare; a sha answers with itself, so the comparison holds
+// unconditionally and the drift gate — the only thing standing between a parked plan and a
+// repository that moved under it — reports "nothing moved" forever. Failing at input is the
+// only place this is visible.
+if (baseRef && SHA_RE.test(baseRef)) {
+  return developResult({
+    coverage: {
+      complete: false,
+      dropped: [],
+      incomplete: [],
+      failed_channels: [],
+      unreached: [
+        'base_ref was given as ' + baseRef + ', which is a commit sha rather than a named ' +
+        'ref. Nothing was dispatched. The envelope records the base so a later run can ' +
+        're-resolve it and see whether the world moved; a sha re-resolves to itself, so the ' +
+        'drift observation would compare the anchor against the anchor and report a moved ' +
+        'tree as unchanged. Pass the branch or tag name instead.',
+      ],
+      resumable: { runId: RUN_ID, remaining: [] },
+    },
+  })
+}
+
 // ---------------------------------------------------------------- escalations
 //
 // interfaces §7. Escalations are data: nothing throws its way out of this pipeline, and
@@ -956,8 +1066,40 @@ function plannerPrompt(surveyEvidence) {
     `plan_path. That path is how an interrupted run resumes without buying this plan a ` +
     `second time. If you genuinely could not write it, return plan_path as an empty string ` +
     `and say why in notes — never a path you did not create.\n\n` +
+    envelopeSection() +
     `Put the survey coverage limits you inherited, and any locus you are less than certain ` +
     `about, in notes.`
+}
+
+// The envelope half of the planner's dispatch: the conditions this plan is written under, in
+// the exact words the plan file has to record them in. It is a separate function because two
+// of the fields are supplied by the caller and two are OBSERVED, and the difference decides
+// whether a resumed run can tell that the world moved.
+function envelopeSection() {
+  const base = baseRef
+    ? `THE BASE IS A NAMED REF THIS RUN WAS GIVEN: ${baseRef}\n` +
+      `Record base_branch as exactly that name — not the branch you happen to be standing ` +
+      `on — and base_sha as what it resolves to right now:\n\n` +
+      `   git rev-parse ${baseRef}\n\n` +
+      `If that ref does not resolve, say so in notes and record base_branch as the name ` +
+      `anyway with base_sha empty. Never substitute HEAD: a plan recorded against the wrong ` +
+      `base measures drift against a world it was never written for.\n\n`
+    : `Record base_branch and base_sha as your charter says — observed with ` +
+      `git rev-parse --abbrev-ref HEAD and git rev-parse HEAD, never assumed.\n\n`
+
+  const tags = programme
+    ? `THIS RUN BELONGS TO A PROGRAMME. Record these two fields in the envelope exactly as ` +
+      `given, character for character — they are copied from the programme's own plan file ` +
+      `and a retyped one matches nothing:\n\n` +
+      `   programme: ${programme}\n` +
+      `   slice: ${slice}\n\n` +
+      `They are what lets a later reader tell this run apart from every other run in the ` +
+      `repository. Without them the programme's progress has to be stored as somebody's ` +
+      `claim instead of derived from the runs that actually exist.\n\n`
+    : `This run belongs to no programme: record programme and slice as empty strings. That ` +
+      `is a real answer, not a missing one.\n\n`
+
+  return base + tags
 }
 
 function loaderPrompt() {
@@ -970,12 +1112,21 @@ function loaderPrompt() {
     `order, oldest first; a missing or empty state.jsonl means no wave completed, which is a ` +
     `fact — return an empty list and say so in notes.\n\n` +
     `Return the ENVELOPE separately from the plan: change, roots, caller_notes, ` +
-    `intelligence, base_branch and base_sha, exactly as plan.json records them. These are ` +
-    `the conditions this run was planned under — your caller adopts them, so a resumed run ` +
-    `implements under the same roots, the same intelligence tier and the same settled ` +
-    `evidence as the original. caller_notes especially: return it whole, however long. A ` +
-    `field an older plan file simply does not have comes back as an empty string; never ` +
-    `fill one in from this dispatch, and never guess a sha.\n\n` +
+    `intelligence, base_branch, base_sha, programme and slice, exactly as plan.json records ` +
+    `them. These are the conditions this run was planned under — your caller adopts them, so ` +
+    `a resumed run implements under the same roots, the same intelligence tier and the same ` +
+    `settled evidence as the original. caller_notes especially: return it whole, however ` +
+    `long. A field an older plan file simply does not have comes back as an empty string; ` +
+    `never fill one in from this dispatch, and never guess a sha.\n\n` +
+    `Every state.jsonl line comes back carrying every field of the line shape, because there ` +
+    `are two line types and one shape holds both. A line with a "kind" uses it. A line ` +
+    `WITHOUT one is a wave line — every line written before this format existed was — so ` +
+    `return kind "wave" for it, wave/merged/approved_unmerged/escalated/discovered/` +
+    `integration_base/integration_head as the file has them, and order, branch, worktree and ` +
+    `head_sha as empty strings. An "order-approved" line is the mirror: its own four fields ` +
+    `from the file, and the wave-line fields empty — wave 0, the four arrays empty, the two ` +
+    `integration strings empty. This is a fixed mapping between two shapes, not a repair: ` +
+    `never carry a value across from the other half.\n\n` +
     `Set plan_path to ${resumePath} — the directory you actually read.\n\n` +
     `Your caller recomputes a content digest over every order and compares it to the stored ` +
     `manifest. One reworded sentence stops the run. So do not tidy a path, do not shorten a ` +
@@ -1020,14 +1171,60 @@ function setupPrompt(runstamp) {
       `and use it below, then report the branch and path you actually used.\n`) +
     `\nBRANCH: vfa/<runstamp>-integration\n` +
     `WORKTREE: .claude/worktrees/vfa-<runstamp>-integration (report it as an ABSOLUTE path)\n` +
-    `BASE: the repository's current HEAD.\n\n` +
+    (baseRef
+      ? `BASE: the named ref ${baseRef}. Resolve it with git rev-parse ${baseRef} and branch ` +
+        `from what that gives you — NOT from the repository's current HEAD. If ${baseRef} ` +
+        `does not resolve, stop and return stop_reason environment_broken with what git ` +
+        `said: this run was told where to build from, and building somewhere else instead ` +
+        `would produce a change that merges into a tree it was never written against.\n\n`
+      : `BASE: the repository's current HEAD.\n\n`) +
     `Create it, cd into it, and report the branch, the absolute path, and the HEAD you ` +
     `OBSERVE there with git rev-parse HEAD — not the SHA you expected. If the branch or the ` +
     `path already exists this is a resumed run: do not delete anything, do not force, attach ` +
     `or enter what is there and report the HEAD you find, which may already be ahead of the ` +
-    `repository's HEAD because earlier waves merged into it.\n\n` +
+    `base because earlier waves merged into it.\n\n` +
     `This worktree is the workflow's own. Everything merges here and the tree the user is ` +
     `sitting in is never touched — not by you, not by anything downstream.`
+}
+
+// What an interrupted invocation of THIS run left in git, if anything. Read-only reconnaissance
+// plus, where there is something to adopt, a worktree to hold it — the verifier and the
+// reviewer are dispatched into a directory, and a bare branch is not one.
+function scavengePrompt(candidates) {
+  const lines = candidates
+    .map((c) => '   ' + c.id + '   branch ' + c.branch +
+      (c.worktree ? '   last known worktree ' + c.worktree : ''))
+    .join('\n')
+
+  return `SCAVENGE MODE. Find out what an interrupted earlier invocation of this run already ` +
+    `built, and make it reachable. You judge nothing and you fix nothing.\n\n` +
+    `REPOSITORY: ${roots}\n` +
+    `INTEGRATION BRANCH: ${integration.branch}\n\n` +
+    `CANDIDATE ORDERS — each names the branch its coder would have committed to:\n${lines}\n\n` +
+    `For each candidate, in the target repository:\n\n` +
+    `1. git rev-parse --verify <branch>   — if it does not resolve, this order was never ` +
+    `started. Leave it out of found entirely; that is the ordinary case and not a problem.\n` +
+    `2. git merge-base <branch> ${integration.branch}   — the fork point. Report it as ` +
+    `base_sha. It is the baseline the discriminator will be measured against, so it must be ` +
+    `observed rather than assumed.\n` +
+    `3. git log --reverse --format=%H%x09%s <base_sha>..<branch>   — the commits. A branch ` +
+    `that resolves with NO commits ahead of the fork point holds nothing to adopt: leave it ` +
+    `out too.\n` +
+    `4. Make it enterable. git worktree list — if that branch already has a worktree, use ` +
+    `that path. If it does not, create one:\n\n` +
+    `   git worktree add .claude/worktrees/vfa-<the branch's last path segment> <branch>\n\n` +
+    `   Report the ABSOLUTE path. Do not delete, do not force, and do not check the branch ` +
+    `out anywhere else — everything downstream is dispatched into the path you report, and a ` +
+    `wrong one sends a fix round at the wrong tree.\n` +
+    `5. Report head_sha as git rev-parse <branch>, read back rather than expected.\n\n` +
+    `Report only what you OBSERVED. An order you could not resolve, could not enter, or ` +
+    `could not read commits for is left out of found, with the reason in notes — your caller ` +
+    `treats an absent entry as "there is nothing here to adopt" and dispatches a coder, which ` +
+    `is the safe reading either way. What must never happen is an entry naming a worktree ` +
+    `you did not confirm you could enter.\n\n` +
+    `If git itself is unusable, return stop_reason environment_broken with what it said. ` +
+    `Your caller then implements every candidate from scratch, which costs tokens and loses ` +
+    `nothing.`
 }
 
 // The red-green-refactor cycle, as instructions. Each role's charge is written against the
@@ -1248,6 +1445,64 @@ function recorderPrompt(runDir, entry) {
     `Record what you were handed and nothing else — you do not know which orders "should" ` +
     `have merged, and a wave that merged nothing is recorded as a wave that merged nothing.`
 }
+
+// state.jsonl is one append-only file, and two things write to it now: a wave line at the end
+// of each wave, and an order-approved line the moment each order's review closes. Order lines
+// are written from INSIDE the pipeline, so two can come due at the same instant — and the
+// recorder appends by reading the file and writing it back, which is a lost-update race the
+// moment two of them run at once.
+//
+// So the writes are serialized here rather than hoped about. A promise chain is the whole
+// mechanism. Determinism belongs in JS (IRON LAW §8), and "the log is missing the line for W4"
+// is exactly the kind of damage nothing downstream can detect: the resume simply re-implements
+// an order that was already finished, and reports itself as having done the work twice
+// nowhere at all.
+let stateWrites = Promise.resolve()
+
+function appendState(entry, label) {
+  if (!planPath) return Promise.resolve(null)
+
+  const next = stateWrites.then(() =>
+    agent(recorderPrompt(planPath, entry), {
+      agentType: 'vf-agentics:run-state', effort: 'low', schema: RECORDED,
+      phase: 'Integrate', label,
+    }).catch((e) => {
+      log(`WARNING: the run-state write for ${label} failed: ${e && e.message}`)
+      return null
+    }))
+
+  // The chain has to survive a failed link. A rejection left uncaught here would poison every
+  // later append — one unwritable line would silently end the run's whole durable record.
+  stateWrites = next.catch(() => null)
+  return next
+}
+
+// One line shape, two line types. Every field appears on every line because the loader's
+// schema is closed over a total `required` set (see RESUME_STATE.state), and these two
+// builders are the only places the shape is written — so the emptiness is deliberate in one
+// place rather than forgotten in several.
+const waveLine = (parts) => ({
+  kind: 'wave',
+  wave: parts.wave,
+  merged: parts.merged,
+  approved_unmerged: parts.approved_unmerged,
+  escalated: parts.escalated,
+  discovered: parts.discovered,
+  integration_base: parts.integration_base,
+  integration_head: parts.integration_head,
+  order: '', branch: '', worktree: '', head_sha: '',
+})
+
+const orderLine = (wave, state) => ({
+  kind: 'order-approved',
+  wave,
+  merged: [], approved_unmerged: [], escalated: [], discovered: [],
+  integration_base: '', integration_head: '',
+  order: state.id,
+  branch: state.branch,
+  worktree: state.worktree,
+  head_sha: state.head_sha,
+})
 
 function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
   const prior = priorBlockers.length === 0 ? '' :
@@ -1739,18 +1994,52 @@ async function reviewLoop(wo, state, trail) {
   }
 }
 
-// The branch each order's coder re-anchors onto and commits to. Derived from the integration
-// branch with a dash rather than a slash: git stores refs as paths, so `<b>/W3` cannot exist
-// while the ref `<b>` does, and the checkout would fail on the second order of the run.
-const orderBranch = (wo) => integration.branch + '-' + wo.id
+// The branch each order's coder re-anchors onto and commits to: `vfa/<runstamp>-<order-id>`.
+//
+// A dash rather than a slash between the parts, because git stores refs as paths — `<b>/W3`
+// cannot exist while the ref `<b>` does, and the checkout would fail on the second order of
+// the run.
+//
+// The name is DERIVED rather than incidental, and that is the whole of the scavenging
+// mechanism: a later invocation of the same run knows the runstamp, so it knows exactly which
+// branches its interrupted predecessor would have written to and can go and look. An
+// incidental name is work that exists, is finished, and cannot be found.
+//
+// The fallback keeps the old shape for the one case where no runstamp exists — the planner
+// wrote no plan file and the setup agent minted a branch this script only learned by reading
+// it back. Nothing can be scavenged in that case either, and both facts have the same cause.
+const orderBranch = (id) =>
+  (runstamp ? 'vfa/' + runstamp + '-' + id : integration.branch + '-' + id)
 
 async function implement(wo) {
   const state = newState(wo)
   const trail = []
 
+  // IRON LAW §3, applied to the work rather than to the plan: an interrupted invocation's
+  // commits are RESUMED, never redone. They are also never trusted — nothing below is skipped
+  // for them. The series goes through the same verifier and the same fresh reviewers a coder's
+  // output would, and an ordinary fix round finishes it if the review finds it wanting.
+  //
+  // Nothing is trusted because it was found; nothing is discarded because it was interrupted.
+  const found = scavenged.get(wo.id)
+
+  if (found) {
+    state.worktree = found.worktree
+    state.branch = found.branch
+    state.base_sha = found.base_sha
+    state.head_sha = found.head_sha
+    state.commits = found.commits
+    // No concerns and no discoveries: the coder that would have reported them never returned.
+    // Empty here is honest — it says nothing was told to us, which is different from being
+    // told there was nothing.
+    log(`${wo.id}: adopting ${found.commits.length} commit(s) an interrupted invocation left ` +
+      `on ${found.branch}; they are verified and reviewed as if fresh.`)
+    return { wo, state, trail, escalation: null }
+  }
+
   try {
     const call = await dispatch(wo, state, trail, 'the coder for ' + wo.id, [],
-      () => agent(coderPrompt(wo, orderBranch(wo)), {
+      () => agent(coderPrompt(wo, orderBranch(wo.id)), {
         agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
         phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderTier,
       }), coherentNewSeries)
@@ -1791,7 +2080,7 @@ async function implement(wo) {
   }
 }
 
-async function verifyAndReview(carried, wo) {
+async function verifyAndReview(carried, wo, waveNumber) {
   const held = carried && carried.state ? carried : lostChain(wo)
   if (held.escalation) return held
 
@@ -1800,6 +2089,14 @@ async function verifyAndReview(carried, wo) {
     if (stalled) return { wo, state: held.state, trail: held.trail, escalation: stalled }
 
     const escalation = await reviewLoop(wo, held.state, held.trail)
+
+    // An order is approved the instant this returns null, and that instant is what gets
+    // recorded. Waiting for the wave to end records nothing a limit landing MID-wave can use —
+    // and mid-wave is the longest single stretch in this pipeline. The field incident died
+    // exactly there, with a wave's worth of implemented, verified and approved work on
+    // branches, and its retry started from scratch because nothing on disk mentioned any of it.
+    if (!escalation) await appendState(orderLine(waveNumber, held.state), `record:${wo.id}`)
+
     return { wo, state: held.state, trail: held.trail, escalation }
   } catch (e) {
     return { wo, state: held.state, trail: held.trail, escalation: esc(wo, 'budget',
@@ -1829,6 +2126,15 @@ let blocked = []
 let surveyCoverage = null
 let partitionNote = ''
 let planPath = ''
+// The run's identity in git. Every branch this run creates is named from it, which is what
+// makes an interrupted run's work findable rather than merely present.
+let runstamp = ''
+// What an earlier invocation left on disk and in git, by order id. Populated on a resume:
+// `approvedOnDisk` from the run's own order-approved state lines, `scavenged` from branches
+// that actually exist. An order in `scavenged` is not re-implemented — it is adopted and then
+// verified and reviewed exactly as fresh work would be.
+const approvedOnDisk = new Map()
+const scavenged = new Map()
 const implemented = []
 const escalations = []
 const failedChannels = []
@@ -1971,11 +2277,47 @@ try {
 
     envelopeBase = { branch: envelope.base_branch || '', sha: envelope.base_sha || '' }
 
+    // A run's programme and slice are its identity, not a condition it can be re-run under.
+    // The record wins; an explicit caller value overrides and is logged, exactly as roots is,
+    // because a resume that quietly re-attributes itself makes the programme's derived
+    // progress wrong about the one run it is watching most closely.
+    if (envelope.programme) {
+      if (programme && programme !== envelope.programme) {
+        log(`Override: programme ${envelope.programme} recorded, ${programme} supplied; using the supplied value.`)
+      } else {
+        programme = envelope.programme
+      }
+    }
+    if (envelope.slice) {
+      if (slice && slice !== envelope.slice) {
+        log(`Override: slice ${envelope.slice} recorded, ${slice} supplied; using the supplied value.`)
+      } else {
+        slice = envelope.slice
+      }
+    }
+
     planned = loaded.plan
     planPath = loaded.plan.plan_path || resumePath
     resumeState = loaded.state || []
+    runstamp = runstampOf(planPath)
 
     for (const entry of resumeState) {
+      // A line with no `kind` predates the two-type log and is a wave line — every line
+      // written before that format existed was one. The loader is asked to say so explicitly;
+      // this default covers a loader that did not.
+      if ((entry.kind || 'wave') === 'order-approved') {
+        // Approved, and — unless a later wave line names it merged — never merged. This is
+        // the half of the run the wave-grained log could not see.
+        if (entry.order) {
+          approvedOnDisk.set(entry.order, {
+            branch: entry.branch || '',
+            worktree: entry.worktree || '',
+            head_sha: entry.head_sha || '',
+          })
+        }
+        continue
+      }
+
       for (const id of entry.merged || []) landed.add(id)
       // A resumed run inherits what its own earlier waves learned. Without this the
       // accumulator is per-invocation, and the wave that runs after an interruption is the
@@ -1987,7 +2329,13 @@ try {
       if (entry.integration_head) integration.head_sha = entry.integration_head
     }
 
+    const unmergedApproved = [...approvedOnDisk.keys()].filter((id) => !landed.has(id))
+
     log(`Resumed: ${landed.size} order(s) already merged; integration head ${integration.head_sha || '(none recorded)'}.`)
+    if (unmergedApproved.length > 0) {
+      log(`The run state records ${unmergedApproved.join(', ')} as approved but not merged — ` +
+        `their work will be looked for before any coder is dispatched for them.`)
+    }
   } else {
     phase('Survey')
 
@@ -2357,7 +2705,7 @@ try {
   if (wavedCount > 0) {
     phase('Integrate')
 
-    const runstamp = planPath ? planPath.split('\\').join('/').replace(/\/+$/, '').split('/').pop() : ''
+    runstamp = planPath ? runstampOf(planPath) : runstamp
 
     const setup = await agent(setupPrompt(runstamp), {
       agentType: 'vf-agentics:verifier', effort: 'low', schema: INTEGRATION_SETUP,
@@ -2415,7 +2763,72 @@ try {
         'difference was not produced by this pipeline')
     }
 
+    // When no plan file was written the setup agent minted the runstamp itself, and the only
+    // record of it is the branch name it reports back. Recovering it here is what keeps order
+    // branches deterministically named even on that path.
+    if (!runstamp) {
+      const minted = /^vfa\/(.+)-integration$/.exec(integration.branch || '')
+      if (minted) runstamp = minted[1]
+    }
+
     log(`Integration worktree ${integration.worktree} on ${integration.branch} at ${integration.head_sha}.`)
+
+    // ---------------------------------------------------- 3c-bis. scavenge
+    //
+    // Only a resume can have a predecessor. On a fresh run every branch this looks for is one
+    // this run is about to create, so asking would be asking whether the future exists.
+    //
+    // The candidate set is every pending order, not only the ones the state file records as
+    // approved: a run can die between a coder's last commit and the review that would have
+    // approved it, and those commits are exactly as findable and exactly as worth adopting.
+    // The state file narrows what we EXPECT to find; git decides what is actually there.
+    if (resumePath && runstamp) {
+      const candidates = waves.flat()
+        .filter((id) => !landed.has(id) && !staleWithheldIds.includes(id))
+        .map((id) => ({
+          id,
+          branch: orderBranch(id),
+          worktree: (approvedOnDisk.get(id) || {}).worktree || '',
+        }))
+
+      if (candidates.length > 0) {
+        const found = await agent(scavengePrompt(candidates), {
+          agentType: 'vf-agentics:verifier', effort: 'low', schema: SCAVENGE,
+          phase: 'Implement', label: 'scavenge',
+        }).catch((e) => {
+          log(`WARNING: the scavenge pass failed: ${e && e.message}`)
+          return null
+        })
+
+        if (!found || found.stop_reason !== 'completed') {
+          // Degraded, never fatal: every candidate is implemented from scratch, which costs
+          // tokens and loses nothing. The cost is named rather than absorbed silently.
+          const why = found && found.notes ? found.notes : 'the scavenge pass returned no result'
+          log(`WARNING: nothing could be scavenged (${why}); every pending order is implemented afresh.`)
+          if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
+        } else {
+          for (const entry of found.found || []) {
+            // An entry naming no worktree, no base, or no commit cannot be verified or
+            // reviewed, and adopting it would put a fix round in an unknown directory. It is
+            // dropped, loudly, and its order is implemented from scratch.
+            const usable = entry.worktree && entry.branch && SHA_RE.test(entry.base_sha || '') &&
+              SHA_RE.test(entry.head_sha || '') && (entry.commits || []).length > 0
+
+            if (!usable) {
+              log(`Scavenge: ignoring the report for ${entry.id} — it names no usable worktree, base and commit series.`)
+              continue
+            }
+            if (!orderById.has(entry.id)) continue
+
+            scavenged.set(entry.id, entry)
+          }
+
+          log(scavenged.size > 0
+            ? `Scavenged ${[...scavenged.keys()].join(', ')} — adopted, and verified and reviewed as if fresh.`
+            : `Scavenge found nothing on disk; every pending order is implemented from scratch.`)
+        }
+      }
+    }
   }
 
   // -------------------------------------------------------- 4. the wave loop
@@ -2484,7 +2897,8 @@ try {
     phase('Implement')
     log(`Wave ${waveNumber}: dispatching ${runnable.length} order(s).`)
 
-    const chains = await pipeline(runnable, implement, verifyAndReview)
+    const chains = await pipeline(runnable, implement,
+      (carried, wo) => verifyAndReview(carried, wo, waveNumber))
 
     // Matched by id rather than by position: an order that lost its chain entirely is still
     // an order that did not land, and it is reported instead of vanishing.
@@ -2624,7 +3038,7 @@ try {
     // resume point travels in coverage.
 
     if (planPath) {
-      const recorded = await agent(recorderPrompt(planPath, {
+      const recorded = await appendState(waveLine({
         wave: waveNumber,
         merged: integration.merged.slice(),
         approved_unmerged: integration.approved_unmerged.slice(),
@@ -2634,13 +3048,7 @@ try {
         // Persisted so a resume inherits it. Without this the accumulator is per-invocation
         // and a run picked up next week starts as ignorant as a fresh one.
         discovered: [...knowledge],
-      }), {
-        agentType: 'vf-agentics:run-state', effort: 'low', schema: RECORDED,
-        phase: 'Integrate', label: `record:${waveNumber}`,
-      }).catch((e) => {
-        log(`WARNING: recording wave ${waveNumber} failed: ${e && e.message}`)
-        return null
-      })
+      }), `record:wave-${waveNumber}`)
 
       if (!recorded || recorded.stop_reason !== 'recorded') {
         const why = recorded && recorded.notes ? recorded.notes : 'the recorder returned no result'

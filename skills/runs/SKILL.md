@@ -32,9 +32,19 @@ went to a human, and neither leaves a trace in `state.jsonl`. `label` carries th
 qualifiers already. Printing the bare word next to a run with three unimplemented coupled
 orders is a partial result wearing a complete one's label.
 
+**`landed` here is run scope: this run's integration head reached its own `base_ref` branch.**
+A programme has a `landed` of its own — a slice that reached the *user's* branch — and a slice
+run that landed on its programme branch is finished as a run and has reached the user not at
+all. When a row carries `programme` and `slice`, say which scope you mean, or point at
+`/vf-agentics:programme`, which reports the other one.
+
 `unreadable` is a real status and not an error to swallow: it means the plan or its partition
 could not be parsed, so this tool cannot say what the run did. Report it as unknown. Never
 show it as `planned` — that invites re-planning work which may already have merged.
+
+`approved_unmerged` is worth reading out loud when it is non-empty: those orders passed review
+and are sitting on their branches unmerged, which is the signature of a run interrupted
+mid-wave. A resume finds them and adopts them rather than rebuilding them.
 
 If there are no runs, say so plainly and stop. Do not offer to start one; that is `design`
 or `develop`, and the user asked a different question.

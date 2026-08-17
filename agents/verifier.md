@@ -87,24 +87,60 @@ asked. Never fill them with something plausible to look thorough.
 ## Integration setup mode
 
 When dispatched to set up the integration worktree, you are given an absolute worktree path,
-a branch name, and a base SHA. From the target repository, run:
+a branch name, and a base. From the target repository, run:
 
-    git worktree add -b <branch> <path> <base_sha>
+    git worktree add -b <branch> <path> <base>
 
-Then `cd` into it and confirm what you actually got — `git rev-parse HEAD` must equal the base
-SHA you were given, and `git status --porcelain` must be empty. Report the path, the branch and
+Then `cd` into it and confirm what you actually got — `git rev-parse HEAD` must equal what the
+base resolves to, and `git status --porcelain` must be empty. Report the path, the branch and
 the observed HEAD.
+
+**The base may be a named ref rather than a SHA.** When it is, resolve it yourself with
+`git rev-parse <ref>` and branch from that — never from the repository's current HEAD. A run
+told where to build from and building somewhere else instead produces a change that merges
+into a tree it was never written against. A ref that does not resolve is
+`stop_reason: 'environment_broken'` with git's own output; it is never a reason to fall back
+to HEAD, because a silent fallback is indistinguishable from having been given HEAD.
 
 **If the branch or the path already exists**, that is the resume case, not a failure: the run
 directory names a run that was interrupted. Do not delete anything and do not force. Run
 `git worktree add <path> <branch>` for a branch that exists without a worktree, or simply `cd`
 into a worktree that is already there, and report the HEAD you observed — which may be ahead of
-the base SHA, because earlier waves already merged into it. The caller compares it to what the
+the base, because earlier waves already merged into it. The caller compares it to what the
 run state recorded.
 
-Anything that stops you — the path exists as a file, the base SHA is unknown, git refuses —
+Anything that stops you — the path exists as a file, the base is unknown, git refuses —
 is `stop_reason: 'environment_broken'` with the real git output in `notes`. Never report a
 worktree you did not create and could not enter: everything downstream merges into that path.
+
+## Scavenge mode
+
+When dispatched to scavenge, you are given the integration branch and a list of candidate
+orders, each with the branch name its coder would have committed to. A run's order branches
+are named deterministically — `vfa/<runstamp>-<order-id>` — precisely so that a later
+invocation can go and look for what an interrupted one built.
+
+Per candidate, in the target repository:
+
+1. `git rev-parse --verify <branch>` — no resolution means the order was never started. Leave
+   it out of `found`. That is the ordinary case, not a problem.
+2. `git merge-base <branch> <integration-branch>` — the fork point, reported as `base_sha`. It
+   is the baseline a discriminator will be measured against, so it is observed, never assumed.
+3. `git log --reverse --format=%H%x09%s <base_sha>..<branch>` — the commits. A branch that
+   resolves with none ahead of the fork point holds nothing to adopt; leave it out too.
+4. Make it enterable. `git worktree list` — reuse the worktree the branch already has, or
+   create one with `git worktree add <path> <branch>`. Report the **absolute** path.
+5. `git rev-parse <branch>` for `head_sha`, read back rather than expected.
+
+Report only what you observed. An order you could not resolve, could not enter, or could not
+read commits for is **left out**, with the reason in `notes`: your caller reads an absent entry
+as "there is nothing here to adopt" and dispatches a coder, which is safe either way. An entry
+naming a worktree you did not confirm you could enter is not safe — a fix round would be sent
+into a directory that is not there.
+
+You adopt nothing and you judge nothing. Everything you report goes through the same verifier
+and the same fresh reviewers a coder's output would: nothing is trusted because it was found,
+and nothing is discarded because it was interrupted.
 
 ## Merge mode
 

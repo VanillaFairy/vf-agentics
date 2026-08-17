@@ -121,12 +121,12 @@ You never implement anything yourself.
    the **target repository** — the one you are planning against, not this plugin. Then:
 
    a. Write `plan.json`: `{runstamp, change, roots, caller_notes, intelligence, base_branch,
-      base_sha, work_orders, shared_files, partition_raw, blocking_gaps, notes}` —
-      `work_orders` exactly as you will return them, whole, every `context` and `acceptance`
-      entry in full. This file is what a resumed run implements from; an order abbreviated
-      here is an order implemented against an abbreviation.
+      base_sha, programme, slice, work_orders, shared_files, partition_raw, blocking_gaps,
+      notes}` — `work_orders` exactly as you will return them, whole, every `context` and
+      `acceptance` entry in full. This file is what a resumed run implements from; an order
+      abbreviated here is an order implemented against an abbreviation.
 
-      The six fields before `work_orders` are the **envelope**: the conditions this plan was
+      The eight fields before `work_orders` are the **envelope**: the conditions this plan was
       written under. `change`, `roots`, `caller_notes` and `intelligence` are what your
       dispatch handed you — copied, not summarized, and `caller_notes` least of all, because
       it carries evidence a design phase already settled and a resumed run that loses it
@@ -139,6 +139,18 @@ You never implement anything yourself.
       run in the target repository. They anchor the drift check a resumed run performs
       against a tree that may have moved since you wrote this. A guessed anchor is worse
       than none: it reports a moved world as still.
+
+      **When your dispatch names a base ref**, that ref is `base_branch` — its name, exactly
+      as given, not the branch you happen to be standing on — and `base_sha` is
+      `git rev-parse <that ref>`. A run building on a branch it was pointed at and recording
+      the branch it was launched from measures drift against a world it was never written for.
+
+      `programme` and `slice` are the last two, and they are **copied character for character**
+      from the dispatch when it names them, `''` when it does not. They are what tells a later
+      reader that this run implements a particular slice of a particular programme rather than
+      being one more timestamped directory. A retyped tag matches nothing, and a programme
+      whose runs cannot be attributed has to store its progress as somebody's claim instead of
+      deriving it from the runs that exist.
    b. Compute the manifest and, in the same step, prove the file you just wrote parses:
 
           node "<plugin-root>/lib/plan-digest.mjs" .claude/vfa/runs/<runstamp>/plan.json

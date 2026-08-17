@@ -142,3 +142,92 @@ test('a runstamp that is not a timestamp yields no planned_at rather than a wron
   assert.equal(plannedAt(''), '')
   assert.equal(plannedAt(undefined), '')
 })
+
+// --- attribution: which programme, which slice --------------------------------------------
+//
+// Two columns, and without them a programme cannot tell its own runs from every other
+// timestamped directory in the repository — which forces its progress to be STORED as a claim
+// rather than derived from the runs that exist. That is exactly the failure this file's whole
+// design refuses, reproduced one level up.
+
+test('a run carries the programme and slice its plan recorded', () => {
+  const run = deriveRun('20260816-143005',
+    plan({ programme: '2026-08-15-eva-plays-2', slice: 'walk' }), [], null)
+
+  assert.equal(run.programme, '2026-08-15-eva-plays-2')
+  assert.equal(run.slice, 'walk')
+})
+
+test('an ordinary run reports empty tags, which is an answer and not a gap', () => {
+  const run = deriveRun('20260816-143005', plan(), [], null)
+
+  assert.equal(run.programme, '')
+  assert.equal(run.slice, '')
+})
+
+test('an unreadable run still carries the two columns, so a reader can group it', () => {
+  const run = deriveRun('20260816-143005', null, [], null, ['plan.json could not be read'])
+
+  assert.equal(run.status, 'unreadable')
+  assert.equal(run.programme, '')
+  assert.equal(run.slice, '')
+})
+
+// --- two line types in one log (§9.3) ------------------------------------------------------
+//
+// `order-approved` lines are written the instant an order's review closes, long before the
+// wave they belong to ends. Every count here has to keep asking the question it means to ask:
+// before this, `state.length` was the wave count, and order lines would have inflated it.
+
+const approvedLine = (order, over = {}) => ({
+  kind: 'order-approved', wave: 1, merged: [], approved_unmerged: [], escalated: [],
+  discovered: [], integration_base: '', integration_head: '',
+  order, branch: 'vfa/20260816-143005-' + order, worktree: 'C:/wt/' + order,
+  head_sha: 'ccccccc', ...over,
+})
+
+test('order-approved lines are not waves', () => {
+  const state = [approvedLine('W1'), approvedLine('W2'),
+    { ...wave({ merged: ['W1', 'W2'] }), kind: 'wave' }]
+
+  const run = deriveRun('20260816-143005', plan(), state, null)
+
+  assert.equal(run.waves_recorded, 1, 'three lines, one wave')
+  assert.equal(run.integration_head, 'bbbbbbb', 'the head comes from the wave line')
+})
+
+test('an order approved but never merged is reported as approved_unmerged', () => {
+  // The signature of an interruption mid-wave: W1 and W2 finished review, the run died before
+  // either was merged, and nothing in a wave-grained log would have mentioned them at all.
+  const run = deriveRun('20260816-143005', plan(),
+    [approvedLine('W1'), approvedLine('W2')], null)
+
+  assert.deepEqual(run.approved_unmerged.sort(), ['W1', 'W2'])
+  assert.equal(run.status, 'planned',
+    'no wave has completed, so the run has not started merging — the orders are the news')
+})
+
+test('an order that later merged stops being approved_unmerged', () => {
+  const state = [approvedLine('W1'), { ...wave({ merged: ['W1'] }), kind: 'wave' },
+    approvedLine('W2')]
+
+  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).approved_unmerged, ['W2'])
+})
+
+test('a wave snapshot and an order line naming the same order report it once', () => {
+  const state = [approvedLine('W3'),
+    { ...wave({ merged: ['W1', 'W2'], approved_unmerged: ['W3'] }), kind: 'wave' }]
+
+  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).approved_unmerged, ['W3'])
+})
+
+test('a line written before kind existed is still a wave line', () => {
+  // Every line written before the second type existed was a wave line, so reading it as one is
+  // the file's history rather than a guess. A run parked under the old format must resume with
+  // exactly the arithmetic it had.
+  const run = deriveRun('20260816-143005', plan(), [wave({ merged: ['W1', 'W2', 'W3'] })], true)
+
+  assert.equal(run.status, 'landed')
+  assert.equal(run.waves_recorded, 1)
+  assert.deepEqual(run.merged, ['W1', 'W2', 'W3'])
+})

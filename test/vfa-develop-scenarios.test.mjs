@@ -106,6 +106,9 @@ const happyAgents = (over = {}) => scriptedAgents({
   // The default resumed world is the world the plan was written against: the branch sits
   // exactly on the anchor and nothing moved. Only a resume dispatches this at all.
   drift: { stop_reason: 'completed', user_head: A40, moved_files: [], notes: 'unchanged' },
+  // Likewise resume-only, and the default answer is the common one: the predecessor left
+  // nothing on any order branch, so every pending order is implemented from scratch.
+  scavenge: { stop_reason: 'completed', found: [], notes: 'no order branch exists' },
   ...integrationCast(),
   'code:': coded(),
   'verify:': verified(),
@@ -416,8 +419,15 @@ test('a wave-2 coder is re-anchored onto the head wave 1 merged', async () => {
   const w2 = prompts.find((p) => p.opts.label === 'code:W2').prompt
   assert.match(w2, /RE-ANCHOR FIRST/)
   assert.ok(w2.includes(M40), 'wave 2 must branch from the head wave 1 produced')
-  assert.ok(w2.includes('vfa/20260816-143005-integration-W2'),
-    'the order branch is derived from the integration branch with a dash, never a slash')
+  // `vfa/<runstamp>-<order-id>`, derived from the runstamp rather than from the integration
+  // branch. Deterministic on purpose: a later invocation of the same run knows the runstamp,
+  // so it knows which branches to look for when it goes scavenging. And still a dash rather
+  // than a slash between the parts — git stores refs as paths, so `<b>/W2` cannot exist while
+  // the ref `<b>` does.
+  assert.ok(w2.includes('vfa/20260816-143005-W2'),
+    'the order branch is derived from the runstamp with a dash, never a slash')
+  assert.ok(!w2.includes('vfa/20260816-143005-integration-W2'),
+    'the order branch no longer hangs off the integration branch name')
 })
 
 test('the wave-1 coder is re-anchored onto the integration base', async () => {
@@ -437,11 +447,63 @@ test('each wave is recorded to the run state as it completes', async () => {
     }),
   })
 
-  const records = prompts.filter((p) => (p.opts.label || '').startsWith('record:'))
+  const records = prompts.filter((p) => (p.opts.label || '').startsWith('record:wave-'))
   assert.equal(records.length, 2)
   assert.ok(records[1].prompt.includes('"merged":["W1","W2"]'))
   assert.ok(records[1].prompt.includes('"integration_head":"' + N40 + '"'))
   assert.ok(records[1].prompt.includes('"integration_base":"' + A40 + '"'))
+  assert.ok(records[1].prompt.includes('"kind":"wave"'),
+    'the line type is written explicitly — a reader must not have to infer it from shape')
+})
+
+// --- order-grain durable state (§9.3) ------------------------------------------------------
+//
+// The wave line is written when a wave ENDS, and a wave is the longest single stretch in this
+// pipeline. A usage limit landing in the middle of one used to lose every order already
+// implemented, verified and approved but not yet merged — that is the field incident of
+// 2026-08-17, whose retry started from scratch twice with all of it sitting in git.
+
+test('each approved order is recorded the moment its review closes', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts } = await run({
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1'], ['W2']]),
+      'merge:': mergeSequence([M40, N40]),
+    }),
+  })
+
+  const orderLines = prompts.filter((p) => (p.opts.label || '') === 'record:W1' ||
+    (p.opts.label || '') === 'record:W2')
+
+  assert.equal(orderLines.length, 2)
+  assert.ok(orderLines[0].prompt.includes('"kind":"order-approved"'))
+  assert.ok(orderLines[0].prompt.includes('"order":"W1"'))
+  // The branch and worktree recorded are the ones the coder REPORTED, never the ones it was
+  // asked for. A resume goes looking in the tree, and the tree holds what was actually made.
+  assert.ok(orderLines[0].prompt.includes('"branch":"wo-w1"'))
+  assert.ok(orderLines[0].prompt.includes('"worktree":"C:/wt/w1"'))
+  assert.ok(orderLines[0].prompt.includes('"head_sha":"' + B40 + '"'))
+})
+
+test('an order-approved line is written before the wave line it belongs to', async () => {
+  const { prompts } = await run({ agent: happyAgents() })
+
+  const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
+
+  assert.deepEqual(labels, ['record:W1', 'record:wave-1'],
+    'recording the order after the wave would record nothing an interruption could use')
+})
+
+test('an escalated order is never recorded as approved', async () => {
+  const { prompts } = await run({
+    agent: happyAgents({
+      'verify:': verified({ build: 'failed' }),
+      'fix:': coded({ status: 'blocked', commits: [], summary: 'cannot fix' }),
+    }),
+  })
+
+  assert.ok(!prompts.some((p) => (p.opts.label || '') === 'record:W1'),
+    'an order that escalated has no approved series to adopt on a resume')
 })
 
 test('nothing is recorded when there is no run directory to record into', async () => {
@@ -669,7 +731,7 @@ const loadedPlan = (orders, over = {}) => ({
 
 const envelope = (over = {}) => ({
   change: 'add the thing', roots: '.', caller_notes: '', intelligence: 'normal',
-  base_branch: 'master', base_sha: A40,
+  base_branch: 'master', base_sha: A40, programme: '', slice: '',
   ...over,
 })
 
@@ -1125,7 +1187,7 @@ test('a wave records what it learned, and a resume inherits it', async () => {
       'merge:': mergeSequence([M40, N40]),
     }),
   })
-  assert.match(promptFor(writing, 'record:1'), /POSTGRES_URL/)
+  assert.match(promptFor(writing, 'record:wave-1'), /POSTGRES_URL/)
 
   // ...and read back on the way in.
   const { prompts: reading } = await runWorkflow(WF, {

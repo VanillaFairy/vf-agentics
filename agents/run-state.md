@@ -20,17 +20,32 @@ You are given the absolute path of a run directory. Read and return:
   `work_orders` entire (`id`, `title`, `locus`, `acceptance`, `context`, `deps`, `contract`
   per order), `shared_files`, `partition_raw`, `blocking_gaps`, `notes`, and the stored
   `manifest`.
-- **the envelope** — `change`, `roots`, `caller_notes`, `intelligence`, `base_branch` and
-  `base_sha`, returned in their own `envelope` field rather than inside `plan`. These are
-  the conditions the run was planned under, and they are the reason a run resumed a week
-  later does not depend on a human remembering the constraints its design phase settled.
-  `caller_notes` in particular is the settled-evidence payload: return it whole. A field
-  genuinely absent from an older plan file comes back as an empty string — never guessed
-  at, and never filled in from the dispatch you are reading this in.
+- **the envelope** — `change`, `roots`, `caller_notes`, `intelligence`, `base_branch`,
+  `base_sha`, `programme` and `slice`, returned in their own `envelope` field rather than
+  inside `plan`. These are the conditions the run was planned under, and they are the reason a
+  run resumed a week later does not depend on a human remembering the constraints its design
+  phase settled. `caller_notes` in particular is the settled-evidence payload: return it whole.
+  A field genuinely absent from an older plan file comes back as an empty string — never
+  guessed at, and never filled in from the dispatch you are reading this in. `programme` and
+  `slice` are usually empty, and empty is a real answer: most runs belong to no programme.
 - **`state.jsonl`** — one JSON object per line, the run's progression. Return them parsed,
   in file order, oldest first. A missing or empty `state.jsonl` is a **fact, not a
   failure**: it means the run never completed a wave. Return an empty list and say so in
   `notes`.
+
+  **Two line types, one returned shape.** Every line you return carries every field, because
+  the shape your caller validates against is closed. Which half is real is said by `kind`:
+
+  | `kind` | the fields that mean something |
+  |---|---|
+  | `wave` | `wave`, `merged`, `approved_unmerged`, `escalated`, `discovered`, `integration_base`, `integration_head` |
+  | `order-approved` | `wave`, `order`, `branch`, `worktree`, `head_sha` |
+
+  Fill the other half with empties — `''` for strings, `[]` for arrays, `0` for `wave` on an
+  order line that does not record one. **A line on disk with no `kind` at all is a `wave`
+  line**: every line written before this format existed was one, so saying that is reading the
+  file's history, not guessing at a value. What you must never do is carry a value across from
+  the other half to make a line look complete.
 
 **Copy, do not compose.** Every `context` string is returned character for character. Do
 not tidy a locus path, do not shorten a context that reads long, do not drop an acceptance
@@ -47,15 +62,20 @@ missing two orders looks exactly like a plan that had five.
 
 ## Record mode
 
-You are given the absolute path of a run directory and one wave-outcome object. Append it
-to `state.jsonl` as **a single line of JSON**, then a newline.
+You are given the absolute path of a run directory and one outcome object — a wave that
+finished, or an order that was just approved. Append it to `state.jsonl` as **a single line of
+JSON**, then a newline. The object is given to you complete; write it as handed, including its
+`kind`.
 
 Read the file first and write it back with your line added — the file is an append-only
 log and every earlier line is history. Losing one silently rewrites what the run did. If
 the file does not exist yet, create it with your line as its first.
 
 Record exactly what you were handed. You do not know which orders "should" have merged and
-you are not asked; a wave that merged nothing is recorded as a wave that merged nothing.
+you are not asked; a wave that merged nothing is recorded as a wave that merged nothing. An
+order-approved line arrives long before the wave it belongs to ends, and that is the point of
+it: a run interrupted mid-wave otherwise loses every order already implemented, verified and
+approved but not yet merged, and its retry rebuilds all of it.
 
 If the write fails — the directory is gone, the path is not writable — return
 `stop_reason: 'unwritable'` with the real error in `notes`. Your caller treats that as a
