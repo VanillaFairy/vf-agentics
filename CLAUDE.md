@@ -33,8 +33,25 @@ Independent analysts get the document and the repository and nothing from the au
 ratification gate is a computed count of open ambiguities. `design` step 3 invokes it rather
 than describing a probe of its own.
 
+Above a run sits the **programme layer**, for a design whose honest decomposition is several
+deliverable slices rather than one change. It repeats the same WHAT → HOW → DO split one level
+up: `design` writes a directory (`system.md` plus just-in-time leaves), `plan` turns it into
+`programme.json` — slices, dependencies, and the contracts that pass between them, built with
+the user, and **the artifact's existence is the authorization** — and `programme` drives one
+`develop` run per slice onto a branch the layer owns. Progress is derived from an append-only
+event log by `lib/programme.mjs`, never stored as a status; the user's checkout moves once, at
+the end, on their yes. **`plan` decides slices; the planner agent decides work orders.**
+
+The pipeline is friendly to interruption by default. `develop` looks for an existing run for
+the same change before planning a new one, records each order the moment its review closes
+rather than when its wave ends, and — because order branches are named deterministically —
+finds and **adopts** an interrupted invocation's commits rather than rebuilding them. Adopted
+work is never trusted: it goes through the same verifier and the same fresh reviewers.
+
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
-`2026-08-16-increment-4-contracts.md`.
+`2026-08-16-increment-4-contracts.md` and `2026-08-17-increment-5-contracts.md`. **Any change
+to the plan envelope's field list cites the registry in increment 5 §1** — nothing finds its
+copies for you.
 
 Run the checks with:
 

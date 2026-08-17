@@ -13,16 +13,23 @@ run again, and a way to notice that the world moved while it sat there.
 
 ## 1. `plan.json` — the envelope
 
-The planner writes six fields before `work_orders`:
+> **Registry copy 1 of the envelope field list.** Every live copy is named in
+> `2026-08-17-increment-5-contracts.md` §1, which increment 5 extended with `programme` and
+> `slice`. Any future change to this list cites that registry — nothing finds the copies for
+> you, and a missed one drops a field in silence.
+
+The planner writes eight fields before `work_orders`:
 
 ```json
 { "runstamp", "change", "roots", "caller_notes", "intelligence",
-  "base_branch", "base_sha", "work_orders": [...], ... }
+  "base_branch", "base_sha", "programme", "slice", "work_orders": [...], ... }
 ```
 
 `change`, `roots`, `caller_notes` and `intelligence` are what the dispatch handed the planner,
 copied rather than summarized. `base_branch` and `base_sha` are **observed** in the target
-repository with `git rev-parse --abbrev-ref HEAD` and `git rev-parse HEAD`.
+repository with `git rev-parse --abbrev-ref HEAD` and `git rev-parse HEAD` — or, when the
+dispatch names a `base_ref`, that ref's name and `git rev-parse <ref>`. `programme` and `slice`
+are copied from `programme.json` when the run implements a slice, and `''` otherwise.
 
 **Why.** A resumed run used to rebuild its own conditions from whatever the caller still
 remembered. `caller_notes` is the acute case: it carries the settled evidence a design phase
@@ -36,10 +43,13 @@ fields and were never covered by it.
 
 ## 2. `RESUME_STATE.envelope` — a sibling, never a member
 
+> **Registry copy 2.** See `2026-08-17-increment-5-contracts.md` §1.
+
 ```js
 envelope: {
   type: 'object', additionalProperties: false,
-  required: ['change', 'roots', 'caller_notes', 'intelligence', 'base_branch', 'base_sha'],
+  required: ['change', 'roots', 'caller_notes', 'intelligence', 'base_branch', 'base_sha',
+             'programme', 'slice'],
   properties: { /* all string */ },
 }
 ```
@@ -56,9 +66,11 @@ should prompt a documented procedure, not a third rediscovery.
 
 **Precedence, derived in JS:**
 
-- `roots`, `caller_notes`, `intelligence` — the loaded envelope wins. An explicit caller value
-  still overrides, and the override is logged; silently disagreeing with the plan on disk is
-  how a resumed run stops being the run it resumed.
+- `roots`, `caller_notes`, `intelligence`, `programme`, `slice` — the loaded envelope wins. An
+  explicit caller value still overrides, and the override is logged; silently disagreeing with
+  the plan on disk is how a resumed run stops being the run it resumed. The two tags get the
+  logging most of all: a resume that quietly re-attributes itself makes a programme's derived
+  progress wrong about the one run it is watching hardest.
 - `change` — **compared, never adopted.** The workflow guards on `change` before the loader
   runs, so a caller must supply it regardless; the comparison is therefore free, and it
   catches resuming the wrong run. A mismatch is a halt with nothing dispatched.
@@ -76,6 +88,14 @@ should prompt a documented procedure, not a third rediscovery.
 Statuses: `planned` (plan, no state) · `in-flight` (waved orders outstanding) · `integrated`
 (every waved order merged) · `landed` (integrated, and the integration head is an ancestor of
 `base_branch`) · `unreadable`.
+
+`landed` here is **run scope**: this run's integration head reached its own `base_ref` branch.
+A programme has a `landed` of its own — a slice that reached the *user's* branch — and the two
+are different questions. A slice run that landed on the programme branch is finished as a run
+and has reached the user not at all. See `2026-08-17-increment-5-contracts.md` §4.
+
+Rows also carry `programme` and `slice` (registry copy 6), and `waves_recorded` counts **wave
+lines only** — `state.jsonl` carries two line types from increment 5 onward.
 
 Three rules the arithmetic exists to hold:
 

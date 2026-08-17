@@ -366,9 +366,23 @@ neither a workflow script nor an agent can talk to the user.
 
 ### The artifact
 
-`docs/vfa/designs/YYYY-MM-DD-<slug>.md`, committed, written by the session. Sections: context,
-**decisions** (user-authored, each with its why), the design, graded open questions, and a
-**settled-evidence block**.
+**A file for a single-change design, a directory for a programme.** This sentence and
+`skills/design/SKILL.md` step 4 are its two canonical homes, and they change together.
+
+```
+docs/vfa/designs/YYYY-MM-DD-<slug>.md          one change
+
+docs/vfa/designs/YYYY-MM-DD-<name>/            a programme (increment 5)
+  system.md            the root design — pure WHAT, carries no graph
+  slices/<slice>.md    leaf designs, written just in time
+  programme.json       written later, by the plan skill
+  plan.md              likewise
+```
+
+Committed, written by the session. Sections: context, **decisions** (user-authored, each with
+its why), the design, graded open questions, and a **settled-evidence block**. From increment 5
+the last three carry `<!-- vfa:section ... -->` markers so that everything consuming a design
+document does it mechanically — see `2026-08-17-increment-5-contracts.md` §5.
 
 That last block is the exact `notes` payload `develop` consumes: toolchain versions verified
 live, binding contracts, environmental facts, and the survey's coverage block as it stands. It
