@@ -392,6 +392,188 @@ test('V3: a title in an unrelated object literal is not a phase declaration', ()
   assert.match(violation.message, /Scout/)
 })
 
+// --- V4: the meta literal is literal ---------------------------------------------
+//
+// The failure this catches has already happened in this plugin. `vfa-probe` shipped with a
+// `description` written as a three-line concatenation — ordinary, readable JavaScript that
+// every check above passed — and the runtime, which reads meta statically instead of
+// evaluating it, refused to register the workflow. Nothing reported that. The workflow was
+// just not there, and stayed not there, until somebody went looking for why a skill's
+// Workflow call could not resolve its own plugin's name.
+//
+// So the fixtures below are ordinary code, not contrived code. That is the point.
+
+test('V4: a concatenated description is flagged — the bug that shipped', () => {
+  const concatenated = src(
+    'export const meta = {', //                                    1
+    "  name: 'vfa-probe',", //                                     2
+    "  description: 'Adversarially probe an artefact with ' +", // 3
+    "    'independent analysts.',", //                             4
+    '  phases: [],', //                                            5
+    '}', //                                                        6
+  )
+
+  const violation = onlyViolation(check(concatenated, WF))
+
+  assert.equal(violation.line, 3)
+  assert.match(violation.message, /pure literal/)
+})
+
+test('V4: each concatenation operator is reported where it sits', () => {
+  const twoJoins = src(
+    'export const meta = {', //                1
+    "  name: 'vfa-survey',", //                2
+    "  description: 'one ' +", //              3
+    "    'two ' +", //                         4
+    "    'three',", //                         5
+    '  phases: [],', //                        6
+    '}', //                                    7
+  )
+
+  const found = check(twoJoins, WF)
+
+  assert.deepEqual(found.map((v) => v.line), [3, 4])
+})
+
+test('V4: an interpolating template literal is flagged', () => {
+  const interpolated = src(
+    'const SUBJECT = "the repository"', //          1
+    'export const meta = {', //                    2
+    "  name: 'vfa-survey',", //                    3
+    '  description: `Gather evidence about ${SUBJECT}.`,', // 4
+    '  phases: [],', //                            5
+    '}', //                                        6
+  )
+
+  const violation = onlyViolation(check(interpolated, WF))
+
+  assert.equal(violation.line, 4)
+  assert.match(violation.message, /template literal/)
+})
+
+test('V4: a template literal with no interpolation is a literal and passes', () => {
+  const plain = src(
+    'export const meta = {', //                1
+    '  name: `vfa-survey`,', //                2
+    '  description: `plain backticks`,', //    3
+    '  phases: [],', //                        4
+    '}', //                                    5
+  )
+
+  assert.deepEqual(check(plain, WF), [])
+})
+
+test('V4: a function call inside meta is flagged', () => {
+  const called = src(
+    'export const meta = {', //                        1
+    "  name: 'vfa-survey',", //                        2
+    "  description: describe('survey'),", //           3
+    '  phases: [],', //                                4
+    '}', //                                            5
+  )
+
+  // The call parenthesis and the bare `describe` are two different ways of saying the same
+  // thing, and both are reported: a reader fixing one has already fixed the other, and a
+  // rule that reports only the parenthesis reads as if the identifier were fine.
+  const found = check(called, WF)
+
+  assert.equal(found.length, 2)
+  assert.ok(found.every((v) => v.line === 3))
+  assert.match(found[0].message, /function call/)
+})
+
+test('V4: a spread inside meta is flagged', () => {
+  const spread = src(
+    'export const meta = {', //                1
+    "  name: 'vfa-survey',", //                2
+    '  phases: [...BASE_PHASES],', //          3
+    '}', //                                    4
+  )
+
+  const found = check(spread, WF)
+
+  assert.ok(found.some((v) => /spread/.test(v.message)))
+  assert.ok(found.every((v) => v.line === 3))
+})
+
+test('V4: a bare identifier standing in for a value is flagged', () => {
+  const borrowed = src(
+    'export const meta = {', //                1
+    "  name: 'vfa-survey',", //                2
+    '  description: SURVEY_BLURB,', //         3
+    '  phases: [],', //                        4
+    '}', //                                    5
+  )
+
+  const violation = onlyViolation(check(borrowed, WF))
+
+  assert.equal(violation.line, 3)
+  assert.match(violation.message, /SURVEY_BLURB/)
+})
+
+test('V4: keys are identifiers too and are never flagged as values', () => {
+  const keys = src(
+    'export const meta = {', //                                1
+    "  name: 'vfa-survey',", //                                2
+    "  whenToUse: 'when evidence is wanted',", //              3
+    '  phases: [', //                                          4
+    "    { title: 'Plan', detail: 'scope the topics' },", //   5
+    '  ],', //                                                 6
+    '}', //                                                    7
+  )
+
+  assert.deepEqual(check(keys, WF), [])
+})
+
+test('V4: true, false and null are literals and pass', () => {
+  const flags = src(
+    'export const meta = {', //                1
+    "  name: 'vfa-survey',", //                2
+    '  hidden: false,', //                     3
+    '  owner: null,', //                       4
+    '  phases: [],', //                        5
+    '}', //                                    6
+  )
+
+  assert.deepEqual(check(flags, WF), [])
+})
+
+test('V4: only the meta block is judged — the script body concatenates freely', () => {
+  const body = src(
+    clean, //                                                     1-13
+    "const prompt = 'a ' + 'b' + `${clean}`", //                  14
+    'export function build(x) { return [...x] }', //              15
+  )
+
+  assert.deepEqual(check(body, WF), [])
+})
+
+test('V4: a comment inside meta may say anything', () => {
+  const commented = src(
+    'export const meta = {', //                                  1
+    "  name: 'vfa-survey',", //                                  2
+    '  // built from parts elsewhere: NAME + SUFFIX, ${x}', //   3
+    '  phases: [],', //                                          4
+    '}', //                                                      5
+  )
+
+  assert.deepEqual(check(commented, WF), [])
+})
+
+test('V4: every shipped workflow has a literal meta', async () => {
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+
+  const dir = fileURLToPath(new URL('../workflows/', import.meta.url))
+
+  for (const name of readdirSync(dir).filter((n) => n.endsWith('.workflow.js'))) {
+    const found = check(readFileSync(dir + name, 'utf8'), 'workflows/' + name)
+      .filter((v) => /pure literal/.test(v.message))
+
+    assert.deepEqual(found, [], `${name} has a non-literal meta: ${JSON.stringify(found)}`)
+  }
+})
+
 // --- purity ----------------------------------------------------------------------
 //
 // Rules hold no mutable state (../shared/conventions.md). A module-level global regex whose

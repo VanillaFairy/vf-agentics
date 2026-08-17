@@ -1,4 +1,4 @@
-// tools/rules/workflow-meta.mjs — pins a workflow's meta literal against two silent failures.
+// tools/rules/workflow-meta.mjs — pins a workflow's meta literal against three silent failures.
 //
 // 1. An unprefixed name. The workflow namespace is flat and global across every installed
 //    plugin, so `survey` collides with anyone else's `survey`. The `reasonable` plugin already
@@ -6,6 +6,12 @@
 // 2. A `phase('X')` call with no matching `meta.phases` entry. `meta.phases` drives the progress
 //    display; an unmatched call silently gets its own ungrouped box. Nothing throws — the
 //    display is just quietly wrong, and no test run will ever show it.
+// 3. A meta literal that is not literal. The runtime reads this block STATICALLY and never
+//    evaluates it, so `description: 'a' + 'b'` is valid JavaScript that the runtime refuses —
+//    and a refused workflow does not register at all. Nothing anywhere says so; the workflow is
+//    simply absent when something tries to invoke it. That is not hypothetical: `vfa-probe`'s
+//    description was a two-line concatenation, it passed every check in this file, and the
+//    installed plugin never had the workflow.
 //
 // Deliberately NOT flagged: the reverse check, a declared phase with no `phase()` call. That is
 // a normal intermediate state while a workflow is being written, and flagging it would fight the
@@ -15,7 +21,9 @@
 // stray `meta.title` sitting next to `name` declares no phase.
 //
 // No parser: strings and comments are blanked (below) and the rest is regex plus brace counting.
-// The `meta` literal is a pure literal by platform constraint, so it is never evaluated.
+// V4 is the one check that needs the ORIGINAL text as well — an interpolation lives inside a
+// template literal, which is exactly what blanking erases — so the scanner reports the string
+// spans alongside the blanked copy.
 
 export const id = 'workflow-meta'
 
@@ -41,9 +49,17 @@ const PHASE_CALL = /\bphase\s*\(\s*(['"`])([^'"`]*)\1\s*\)/dg
  * Replace the contents of strings and comments with spaces, preserving length and
  * newlines so line numbers survive. Delimiters are kept so brace scanning still sees
  * balanced structure outside them.
+ *
+ * `strings` records where each string literal sat, because one check has to read back
+ * inside one: a `${...}` interpolation is only visible in the original text, and blanking
+ * is what makes every OTHER check safe. Returning both keeps a single scan authoritative
+ * about what is and is not inside a string.
+ *
+ * @returns {{ blanked: string, strings: Array<{quote: string, start: number, end: number}> }}
  */
-function blankStringsAndComments(source) {
+function scan(source) {
   const out = source.split('')
+  const strings = []
   let i = 0
   const n = source.length
 
@@ -78,6 +94,7 @@ function blankStringsAndComments(source) {
         if (source[j] === c) break
         j++
       }
+      strings.push({ quote: c, start: i, end: Math.min(j + 1, n) })
       blank(i + 1, j)
       i = j + 1
       continue
@@ -86,7 +103,7 @@ function blankStringsAndComments(source) {
     i++
   }
 
-  return out.join('')
+  return { blanked: out.join(''), strings }
 }
 
 /**
@@ -116,7 +133,7 @@ const within = (blanked, pattern, start, end) =>
 const quotedValue = (source, match) => source.slice(...match.indices[2])
 
 export function check(source) {
-  const blanked = blankStringsAndComments(source)
+  const { blanked, strings } = scan(source)
 
   const meta = META_DECL.exec(blanked)
   if (!meta) {
@@ -137,6 +154,7 @@ export function check(source) {
   return [
     ...checkName(source, blanked, metaStart, metaEnd),
     ...checkPhases(source, blanked, metaStart, metaEnd),
+    ...checkLiteral(source, blanked, strings, metaStart, metaEnd),
   ]
 }
 
@@ -191,4 +209,79 @@ function declaredTitleMatches(blanked, metaStart, metaEnd) {
 
   const arrayStart = metaStart + phases.index + phases[0].length - 1
   return within(blanked, TITLE, arrayStart, spanEnd(blanked, arrayStart))
+}
+
+// --- V4: the meta literal is literal ---------------------------------------------------
+//
+// Everything below decides ONE question: could a static reader evaluate this block without
+// running JavaScript? Four constructs say no, and each of them is ordinary, useful code that
+// a person writes without a second thought — which is why the failure is worth a rule. The
+// fifth case, a bare identifier standing where a value belongs, is decidable here for a
+// pleasant reason: in an object literal a key is always followed by a colon, so an identifier
+// that is not is necessarily a value.
+
+/** Operators and calls that cannot appear in a literal. Order is presentation order. */
+const NON_LITERAL = [
+  { pattern: /\+/g, what: 'string concatenation (+)' },
+  { pattern: /\(/g, what: 'a function call' },
+  { pattern: /\.\.\./g, what: 'a spread' },
+]
+
+/** Keywords that ARE literals despite matching the identifier shape. */
+const LITERAL_WORDS = new Set(['true', 'false', 'null'])
+
+const IDENT = /[A-Za-z_$][\w$]*/g
+
+/** The first non-whitespace character at or after `from`, or '' at end of text. */
+function nextNonSpace(text, from) {
+  let i = from
+  while (i < text.length && /\s/.test(text[i])) i++
+  return text[i] || ''
+}
+
+const WHY =
+  `The runtime reads meta STATICALLY and never evaluates it, so a workflow whose meta it ` +
+  `cannot read does not register at all — and nothing anywhere reports that. It is simply ` +
+  `absent when something tries to invoke it. Write every value as one literal.`
+
+function checkLiteral(source, blanked, strings, metaStart, metaEnd) {
+  const violations = []
+
+  for (const { pattern, what } of NON_LITERAL) {
+    for (const match of within(blanked, pattern, metaStart, metaEnd)) {
+      violations.push({
+        line: lineOf(source, match.index),
+        message: `meta is not a pure literal: ${what} inside the meta block. ${WHY}`,
+      })
+    }
+  }
+
+  // Template interpolation. Read from the ORIGINAL text, because blanking has already
+  // replaced the `${...}` with spaces — this is the one question the blanked copy cannot
+  // answer, and it is the reason `scan` reports where the strings were.
+  for (const span of strings) {
+    if (span.quote !== '`' || span.start < metaStart || span.start >= metaEnd) continue
+    if (!source.slice(span.start, span.end).includes('${')) continue
+
+    violations.push({
+      line: lineOf(source, span.start),
+      message: `meta is not a pure literal: a template literal interpolates \${...}. ${WHY}`,
+    })
+  }
+
+  // A bare identifier where a value belongs — `name: NAME`, `phases: PHASES`. Decidable
+  // because a key in an object literal is always followed by a colon and a value never is.
+  for (const match of within(blanked, IDENT, metaStart, metaEnd)) {
+    if (LITERAL_WORDS.has(match[0])) continue
+    if (nextNonSpace(blanked, match.index + match[0].length) === ':') continue
+
+    violations.push({
+      line: lineOf(source, match.index),
+      message:
+        `meta is not a pure literal: "${match[0]}" stands where a value belongs, so the ` +
+        `value comes from somewhere else in the file. ${WHY}`,
+    })
+  }
+
+  return violations
 }
