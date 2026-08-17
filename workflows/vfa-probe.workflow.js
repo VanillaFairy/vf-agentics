@@ -1,8 +1,6 @@
 export const meta = {
   name: 'vfa-probe',
-  description: 'Adversarially probe a written artefact — a design, a proposal, a spec — with ' +
-    'independent analysts who receive the document and the target repository\'s own guidance ' +
-    'and nothing from its author. Rules on the design severity ladder; the gate is computed.',
+  description: 'Adversarially probe a written artefact — a design, a proposal, a spec — with independent analysts who receive the document and the target repository\'s own guidance and nothing from its author. Rules on the design severity ladder; the gate is computed.',
   phases: [
     { title: 'Axes', detail: 'read the target repo\'s own review guidance for what to attack' },
     { title: 'Probe', detail: 'one analyst per axis, in parallel, artefact-only handoff' },
