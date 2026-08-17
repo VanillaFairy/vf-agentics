@@ -1,23 +1,29 @@
-// tools/rules/design-gate.mjs — pins the three clauses that make the design phase a phase.
+// tools/rules/design-gate.mjs — pins the clauses that make a gated skill a gate.
 //
-// `design` produces a ratified change and hands it to `develop`. Three sentences carry that
-// whole contract, and all three are the kind of thing an edit softens without meaning to:
+// Two skills in this plugin end by moving something the user owns, and each carries a small
+// number of sentences that are the whole of that contract. All of them are the kind of thing
+// an edit softens without meaning to, and none of them fails loudly when it goes: the skill
+// still reads well, still runs, and has quietly stopped doing the one thing it existed for.
 //
-//   1. the terminal handoff — WITHOUT it the skill is a document generator, and the design
-//      it produced is never built by the pipeline it was written for;
-//   2. the hard gate — WITHOUT it the skill drifts into "the design looks settled, let's
-//      start", which is exactly the leak into the implement phase the phase exists to stop;
-//   3. the blocking-question refusal — WITHOUT it a design ships with a question nobody
-//      answered, and the planner meets it downstream as a blocking gap instead.
+// A MAP rather than one list, keyed by file. When this rule was written it was scoped to
+// `skills/design/SKILL.md` alone, and its own header said so: "widening this rule is a
+// decision to make when a second gated skill exists, not before." The programme skill is that
+// second skill, and it settles the question the same way — by widening the shape rather than
+// by generalising the clauses. Most skills have no terminal handoff and no gate; asking every
+// SKILL.md for one would be noise, and a rule that produces noise gets ignored wholesale.
+//
+// The clause sets are DIFFERENT on purpose, and the difference is the interesting part. The
+// design skill has a HARD GATE because ratification is a human act at a moment where a wrong
+// shape still costs one paragraph. The programme skill has none, because §3.4 of the
+// programme design abolished per-leaf ratification outright: authorization there flows from
+// the plan artifact existing at all, and that artifact can only come into being through a
+// session with the user. Forcing design's clauses onto it would pin a ceremony the design
+// deliberately removed — which is to say the rule would enforce a bug.
 //
 // DECIDABLE HALF ONLY, deliberately — the same split `tools/rules/task-tool-fallback.mjs`
 // and `tools/rules/coverage-block.mjs` make. This rule checks that each clause is NAMED. It
 // cannot check that the surrounding prose still means it; that is review's half, and a rule
 // pretending otherwise would be the laundering the IRON LAW forbids.
-//
-// Scoped to one file on purpose. These are not general skill properties — most skills have no
-// terminal handoff and no gate, and asking every SKILL.md for them would be noise. Widening
-// this rule is a decision to make when a second gated skill exists, not before.
 //
 // Known limit, accepted: each check is satisfied by the token appearing anywhere, including
 // inside a sentence that rules it out ("this skill has no HARD GATE"). Naming the clause is
@@ -29,9 +35,9 @@
 
 export const id = 'design-gate'
 
-export const applies = /^skills\/design\/SKILL\.md$/
+export const applies = /^skills\/(design|programme)\/SKILL\.md$/
 
-const CLAUSES = [
+const DESIGN_CLAUSES = [
   {
     pattern: /\bvf-agentics:develop\b/,
     message:
@@ -56,6 +62,39 @@ const CLAUSES = [
   },
 ]
 
+const PROGRAMME_CLAUSES = [
+  {
+    // Tolerant of inflection and of case. A rule that fails on "merges" rather than "merge",
+    // or on a sentence that happens to open a paragraph, is a rule people phrase around — and
+    // phrasing around a rule costs more than the rule ever caught.
+    pattern: /\bmerges?\s+the\s+programme\s+branch\b/i,
+    message:
+      `The programme skill never names the act that ends a programme. Slices accumulate on a ` +
+      `branch this layer owns, and if nothing says "merge the programme branch" the work ` +
+      `never reaches the user at all — a programme that reports itself complete while every ` +
+      `deliverable sits on a branch nobody asked about.`,
+  },
+  {
+    // Case-insensitive: the sentence naturally opens a paragraph, and a rule that fires on a
+    // capital letter teaches people to phrase around it rather than to mean it.
+    pattern: /the user's checkout is untouched/i,
+    message:
+      `The programme skill does not state that the user's checkout is untouched. That is the ` +
+      `invariant the whole branch-and-worktree arrangement exists to hold — the layer runs ` +
+      `for days across many runs, and the moment it is unstated, one slice's convenience ` +
+      `merge lands in the tree the user is sitting in.`,
+  },
+  // Deliberately NOT here: HARD GATE. The programme design abolished per-leaf ratification —
+  // authorization flows from the plan artifact existing, and a leaf is dispatchable when the
+  // plan exists and its markers are present. A rule demanding a gate here would pin a
+  // ceremony the design removed on purpose.
+]
+
+const CLAUSES = {
+  'skills/design/SKILL.md': DESIGN_CLAUSES,
+  'skills/programme/SKILL.md': PROGRAMME_CLAUSES,
+}
+
 /**
  * Pure. No filesystem, no other rules, no globals.
  * @param {string} source   full file text
@@ -63,7 +102,7 @@ const CLAUSES = [
  * @returns {Violation[]}   empty array when clean
  */
 export function check(source, filePath) {
-  return CLAUSES
+  return (CLAUSES[filePath] || [])
     .filter((clause) => !clause.pattern.test(source))
     .map((clause) => ({ line: 0, message: clause.message }))
 }

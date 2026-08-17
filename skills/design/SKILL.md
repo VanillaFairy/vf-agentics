@@ -89,6 +89,32 @@ what stops somebody asking in three weeks why this was not just a library. An **
 sweep is a `blocking` open question when the design leans on building from scratch — you
 cannot ratify "we must write this" on a search that never reached the registry.
 
+## Step 1c — Is this one change, or several?
+
+A design whose honest decomposition is many deliverable slices has no shape in a pipeline that
+hands `develop` exactly one ratified change. It gets built either as one oversized run — in the
+field: thirteen orders, forty-two agents, 1.32M tokens, one order landed — or as staging in
+prose that nothing reads and nothing keeps true.
+
+So when the evidence supports it, **recommend staging and let the user rule.** The signals:
+
+- an order-count estimate materially past one run's healthy size. The field number is **6–12
+  orders in ≤3 waves**; it is folklore from one project, it feeds a recommendation, and it is
+  never a computed gate;
+- more than one deliverable the user could actually use;
+- subsystems with narrow seams between them.
+
+A design that stays a single change keeps today's shape exactly, and that is the common case.
+A staged one becomes a **programme**: this skill writes the root design and the first slice's
+leaf, `/vf-agentics:plan` turns it into a graph with the user, and `/vf-agentics:programme`
+drives it. Read §4 of the layer's design before recommending it, so you can say what the user
+is agreeing to.
+
+**A slice is a deliverable, not a layer.** Each one ends with something a person can use. A
+"data-model slice" nobody can experience is containment wearing a slice's name — it has all the
+cost of a slice and delivers nothing, and the feedback that was supposed to shape the next
+slice never arrives.
+
 ## Step 2 — The interview
 
 **One question at a time**, walking the decision tree in dependency order — whatever
@@ -201,9 +227,26 @@ written down and left alone.
 
 ## Step 4 — The artifact and the HARD GATE
 
-Write `docs/vfa/designs/YYYY-MM-DD-<slug>.md` in the target repository, and commit it. **You**
-write it — the agents in this plugin are read-only by design, and artifact writing is the main
-session's job. Sections:
+Write the design in the target repository, and commit it. **You** write it — the agents in this
+plugin are read-only by design, and artifact writing is the main session's job.
+
+**Where it goes — a file for a single-change design, a directory for a programme.**
+
+```
+docs/vfa/designs/YYYY-MM-DD-<slug>.md          one change
+
+docs/vfa/designs/YYYY-MM-DD-<name>/            a programme
+  system.md            the root design — pure WHAT, and it carries NO graph
+  slices/<slice>.md    leaf designs, written just in time (below)
+  programme.json       written later, by /vf-agentics:plan
+  plan.md              likewise
+```
+
+**The programme's identifier is the directory name, entire** — `2026-08-15-eva-plays-2`. There
+is no `slug` field anywhere; a field restating the directory name can only ever disagree with
+it.
+
+Sections, in both shapes:
 
 1. **Context** — the problem, and what the survey established about the system as it is.
 2. **Decisions** — user-authored, each with its *why*. This is the section the design exists
@@ -218,14 +261,71 @@ That last block is not decoration: it is **the exact `notes` payload `develop` c
 it is what stops the evidence checkpoint re-litigating questions this session already settled.
 Write it to be read by a planner, not by a person.
 
+### Section markers — the machine-readable half
+
+Three sections carry markers, in a root document and a leaf alike:
+
+```
+<!-- vfa:section change -->            one paragraph: the ratified change, verbatim
+<!-- vfa:section decisions -->         the user-authored decisions
+<!-- vfa:section settled-evidence -->  the payload a planner consumes
+<!-- /vfa:section -->
+```
+
+They exist so everything downstream that consumes a design document does it **mechanically**.
+`lib/programme.mjs --notes` concatenates marked sections byte for byte; the ratified change is
+*extracted*, never composed; and a document missing a required marker fails loudly by name,
+which is what keeps an empty payload from being indistinguishable from "no settled evidence".
+
+They are also the **completeness signal**. A leaf whose required sections are absent is a
+design that was never finished — whatever else is in the file — and the programme skill routes
+it straight back to `awaiting-design`. That is the whole recovery mechanism for a session that
+died mid-design: no ceremony, no re-asking, just a document that does not yet parse as done.
+
+**Write them last**, as the final act of the pass. A marker present over a half-written section
+is worse than no marker: it says finished.
+
+### Leaf designs are written just in time
+
+In a programme, **only the frontier slice's leaf is written at ratification.** Later slices
+exist in the plan as positioned, contracted, undesigned nodes. Feedback beats prediction: a leaf
+designed months early is designed at the moment of least knowledge, against a tree that will
+not exist when it is implemented.
+
+When an undesigned slice reaches the frontier, `/vf-agentics:programme` invokes **this skill**
+with `programme` and `slice` arguments. In that scoped mode:
+
+- the root document and delivered predecessors' leaves are **settled context** — read, not
+  re-litigated;
+- the survey and the interview are scoped to slice-local decisions;
+- the leaf is written into the programme tree and committed on the programme branch;
+- the probe runs on the leaf. The probers get the repository, and the root and predecessor
+  documents are *in* the repository — so cross-slice contracts are probed as evidence the
+  probers found themselves, never as author-supplied `context`;
+- step 3's own gate applies unchanged: **the pass cannot end while a blocking probe ambiguity
+  is open**;
+- the markers above are emitted as the final act;
+- **step 5 is skipped** — you return to the programme skill, which owns the dispatch, the
+  envelope tags and the notes assembly.
+
+If the leaf conversation reveals the graph itself is wrong — the slice wants splitting, a
+dependency is missing — that is a plan revision. Say so and hand back; the user is by
+construction present for the conversation.
+
 **HARD GATE.** No implementation, and no `develop` invocation, until the user has read the
 document and ratified it in as many words. Not "looks good so far", not silence, not your own
 judgment that it is obviously right. This gate is the whole reason the phase exists: it is the
 last point at which a wrong shape costs a paragraph.
 
+In scoped mode there is no second ratification and no per-leaf "go". Authorization to build a
+slice comes from `programme.json` existing at all — it can only have come into being through a
+`plan` session with the user, so it *is* that conversation's work product. A leaf is
+dispatchable when the plan exists and the leaf's markers are present. The gate above governs
+the ratification of a design; it is not a second ceremony bolted onto every slice.
+
 ## Step 5 — Hand off
 
-Once ratified:
+Once ratified — **a single-change design only; scoped mode returns instead**:
 
 ```
 Skill({ skill: 'vf-agentics:develop', args: '<the ratified change, in one paragraph>' })
@@ -233,6 +333,15 @@ Skill({ skill: 'vf-agentics:develop', args: '<the ratified change, in one paragr
 
 and pass the settled-evidence block through as `notes`. `develop` surveys, plans, partitions
 and implements from there.
+
+A **programme** hands off to the graph rather than to the build:
+
+```
+Skill({ skill: 'vf-agentics:plan', args: '<the design directory>' })
+```
+
+`plan` decides slices with the user; the planner agent inside a run decides work orders. Same
+word, two grains, and they never meet.
 
 Report the coverage honestly on the way out, the same as everywhere else in this plugin: if
 the survey did not complete, say which channel did not, and say that the design rests on it.

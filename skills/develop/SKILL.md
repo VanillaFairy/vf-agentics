@@ -42,6 +42,50 @@ wants to look at the decomposition before paying for it. The run returns a check
 second survey. Several plans may sit parked at once — that is the point — and `/vf-agentics:runs`
 is how the user finds them again.
 
+`base_ref` names the branch the run's integration worktree is cut from. Absent, it is the
+current HEAD. A programme's slice run passes the programme branch, because its predecessors'
+work lives there and nowhere else. **It is a named ref only** — pass a branch or a tag, never
+a sha; the workflow refuses a sha at input, and the refusal is the point, not fussiness (a sha
+re-resolves to itself, so the drift check would compare the anchor to the anchor forever).
+
+`programme` and `slice` tag the run as implementing one slice of one programme. Copy them from
+`programme.json`; never retype them. They are what makes a run attributable, and an
+unattributable run forces a programme to store its progress as a claim instead of deriving it.
+
+## Step 0 — Resume before you plan
+
+**Before anything else, look for a run that already exists for this change.**
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/run-status.mjs" <repo-root>
+```
+
+Compare each row's `change` against the change you were handed, **exact string**. A row that
+matches and is `planned` or `in-flight` is not a coincidence — it is this work, already
+surveyed and already planned, possibly already half built. **Resume it** (step 3e's
+`resume_path`, which is the run directory) rather than starting over.
+
+This makes re-invocation idempotent, and idempotent entry is exactly what a retry is: a naive
+re-invocation by a session that remembers nothing. Without this step nothing was ever required
+to look, and in the field a complex run died on a session limit and its retry started from
+scratch — twice — with the resumable plan sitting on disk the whole time and worktrees full of
+finished commits beside it.
+
+An `in-flight` row may be live in another session right now. Say what you found and ask; the
+user is the one who knows. What you must not do is silently plan the same change a second time.
+
+**Which resume, when.** Two tiers exist and they are not interchangeable:
+
+- **`resumeFromRunId`**, the harness's own replay, when *this conversation* recorded the
+  `runId` of the launch (step 2 mandates recording it). Every completed agent returns from
+  cache and only what died re-runs. This is the cheap one, and it is available only inside the
+  conversation that launched the run.
+- **`resume_path`**, the durable one, otherwise. It crosses sessions and machines-with-the-same-
+  checkout. It pays for the loader agent and for nothing else — no survey, no planning.
+
+Reach for the first when you can and the second when you cannot. The field incident used
+neither, because until now no skill said when to use which.
+
 ## Run the pipeline
 
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working tree
@@ -57,7 +101,7 @@ is how the user finds them again.
    resolve:
 
    ```
-   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, intelligence, plugin_root } })
+   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, intelligence, plugin_root, base_ref, programme, slice } })
    ```
 
    `plugin_root` is this plugin's absolute root (`${CLAUDE_PLUGIN_ROOT}`); the workflow
@@ -186,6 +230,20 @@ is how the user finds them again.
       git merge --no-ff <result.integration.branch>
       ```
 
+      **Superseded inside a programme.** When this run is one slice of a programme, the merge
+      below is not the merge that happens, and the block that says so is pinned in both skills:
+
+      <!-- vfa:verbatim programme-merge-target -->
+      In a programme run, develop step 3d's merge target is the programme branch, in the
+      programme worktree, performed by the programme skill without a per-slice ask; its
+      dirty-tree and no-open-escalation guards apply unchanged; the user-branch merge it
+      describes happens once, at landing.
+      <!-- /vfa:verbatim -->
+
+      The reason the ask does not fire per slice is that the question the user wants asked is
+      about *their* branch, and the programme branch is not their branch. Merging a reviewed
+      slice into a branch the layer owns is hygiene.
+
       One branch, one merge, on the user's branch, by you. That is the only point in this
       pipeline where the user's tree moves, and it is deliberately the last thing that
       happens. If that merge conflicts, stop and surface it: the integration branch was built
@@ -203,11 +261,24 @@ is how the user finds them again.
       compared against the recorded change so that resuming the wrong run halts instead of
       implementing one change's plan under another's description.
 
-      The resumed run reads the plan and the wave-by-wave state back off disk, skips the
-      orders already merged, re-attaches to the same integration branch, and carries on. It
-      pays for no survey and no planning. Repeat from step 3. **Accumulate, don't replace:**
-      each iteration's escalations, blocked, coupled and still-deferred ids join the running
+      The resumed run reads the plan and the state back off disk, skips the orders already
+      merged, re-attaches to the same integration branch, and carries on. It pays for no
+      survey and no planning. Repeat from step 3. **Accumulate, don't replace:** each
+      iteration's escalations, blocked, coupled and still-deferred ids join the running
       totals, so the final report covers every order from every pass.
+
+      **It also scavenges.** Order branches are named `vfa/<runstamp>-<order-id>`, which is
+      what makes an interrupted invocation's work findable rather than merely present: before
+      dispatching a coder for any pending order, a resumed run asks git whether that branch
+      already exists with commits on it. Where it does, those commits are **adopted, not
+      re-implemented, and not trusted** — they go through the same verifier and the same fresh
+      reviewers a coder's output would, and an ordinary fix round finishes them if the review
+      finds them wanting. Report adoption when it happens; a run that says "implemented W4"
+      about commits it found rather than wrote is describing work it did not do.
+
+      The run state now records an order the moment its **review closes**, not when its wave
+      ends. That is the difference between a limit landing mid-wave costing one order and
+      costing all of them.
 
       If `result.plan_path` is empty the run was never persisted and there is nothing to
       resume from; say so, and treat a re-run as a fresh plan.
