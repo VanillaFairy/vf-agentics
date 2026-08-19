@@ -54,6 +54,17 @@ test('every waved order merged is integrated, and ancestry promotes it to landed
   assert.equal(deriveRun('20260816-143005', plan(), state, true).status, 'landed')
 })
 
+test('order-approved lines alone make a run in-flight, never planned', () => {
+  // The 2026-08-19 shape: a run died mid-wave-1, so state.jsonl holds order lines and no
+  // wave line. `planned` here invites re-planning work that sits reviewed on its branches —
+  // the exact wrong invitation for the one run most worth resuming.
+  const state = [{ kind: 'order-approved', wave: 1, order: 'W1', branch: 'vfa/x-W1' }]
+  const run = deriveRun('20260816-143005', plan(), state, null)
+
+  assert.equal(run.status, 'in-flight')
+  assert.deepEqual(run.approved_unmerged, ['W1'])
+})
+
 test("git's unanswerable ancestry is not read as a no-but-known", () => {
   // Both land on `integrated`, which is the safe word. What must NOT happen is a crash or a
   // claim: null means the branch was deleted or the object is missing from this clone, and
@@ -203,8 +214,9 @@ test('an order approved but never merged is reported as approved_unmerged', () =
     [approvedLine('W1'), approvedLine('W2')], null)
 
   assert.deepEqual(run.approved_unmerged.sort(), ['W1', 'W2'])
-  assert.equal(run.status, 'planned',
-    'no wave has completed, so the run has not started merging — the orders are the news')
+  assert.equal(run.status, 'in-flight',
+    'reviewed orders are progress: `planned` here invited re-planning work that sat ' +
+    'finished on its branches, which is how the 2026-08-19 duplicate run read as fresh work')
 })
 
 test('an order that later merged stops being approved_unmerged', () => {
