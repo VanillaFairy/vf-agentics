@@ -200,6 +200,31 @@ const DRIFT = {
   },
 }
 
+// What .claude/vfa/runs already holds, before this invocation plans anything. The agent
+// reports rows verbatim from lib/run-status.mjs; THIS SCRIPT compares each row's change
+// against its own — the agent holds no verdict on whether a run is "the same work", because
+// a paraphrase-tolerant judgment there is exactly how a near-duplicate slips through.
+const EXISTING_RUNS = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'runs', 'notes'],
+  properties: {
+    // `unobservable` is its own answer: a CLI that would not run means the question was
+    // never asked, which is not the same as a repository with no runs in it.
+    stop_reason: { type: 'string', enum: ['observed', 'unobservable'] },
+    runs: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['runstamp', 'path', 'change', 'status'],
+      properties: {
+        runstamp: { type: 'string' },
+        path: { type: 'string' },      // the run directory, absolute — a resume_path as-is
+        change: { type: 'string' },    // verbatim from the row, never summarized
+        status: { type: 'string' },    // the derived word: planned | in-flight | integrated | landed | unreadable
+      },
+    } },
+    notes: { type: 'string' },
+  },
+}
+
 const INTEGRATION_SETUP = {
   type: 'object', additionalProperties: false,
   required: ['stop_reason', 'worktree', 'branch', 'head_sha', 'notes'],
@@ -633,6 +658,16 @@ const planOnly = input.plan_only === true
 // different state from having looked and cleared nothing.
 const confirmedStale = Array.isArray(input.confirmed_stale) ? input.confirmed_stale : null
 
+// Supplying this IS the confirmation that a second run for the same change is deliberate —
+// there is nothing else it could mean. Read only at the existing-run guard below. Without it,
+// a fresh invocation that finds a planned or in-flight run recording this exact change halts
+// at a checkpoint instead of planning a duplicate. Twice in the field a caller relaunched
+// with the harness's cache replay, the cache silently missed, and this script — never told it
+// was a resume — surveyed, planned, minted a new runstamp and re-implemented a change whose
+// plan and half-built order branches sat on disk the whole time. The guard is the mechanical
+// end of that: the one entry point that cannot forget to look is this script itself.
+const confirmedDuplicate = input.confirmed_duplicate === true
+
 // Where the integration worktree branches from. Absent is today's behaviour: the repository's
 // current HEAD. Present, it is A NAMED REF AND NOTHING ELSE — a bare sha is refused at input,
 // below, rather than accepted and quietly stored.
@@ -656,9 +691,12 @@ let slice = typeof input.slice === 'string' ? input.slice.trim() : ''
 // against and this is the only record of the world it was written for.
 let envelopeBase = { branch: '', sha: '' }
 
-// The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
-// the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
-// frontmatter default authoritative.
+// The intelligence dial. `normal` inherits each agent's frontmatter model — which pins the
+// coder to sonnet: the volume tier of this pipeline is the coder, its output is gated by the
+// verifier and fresh adversarial reviewers rather than by its own brilliance, and `inherit`
+// in the field billed every coding agent at whatever model the interactive session happened
+// to run. `max` overrides the judging tier and the coder to fable. Spreading {} rather than
+// passing model: undefined keeps the frontmatter default authoritative.
 const tierOf = (value) => (value === 'max' ? 'max' : 'normal')
 
 let intelligence = 'normal'
@@ -1159,6 +1197,26 @@ function driftPrompt(anchor, branch) {
     `moved_files, and that IS the good case — say so in notes.`
 }
 
+function existingRunsPrompt() {
+  return `EXISTING-RUN OBSERVATION MODE. Report what runs already exist in this repository ` +
+    `and stop. You create nothing, resume nothing, and judge nothing — your caller compares ` +
+    `the rows you return against the change it was handed.\n\n` +
+    `REPOSITORY ROOT(S): ${roots}\n\n` +
+    `For each root, run exactly:\n\n` +
+    `   node "${pluginRoot}/lib/run-status.mjs" <root>\n` +
+    rootWarning +
+    `   It prints {"runs":[...]} — copy each row's runstamp, change and status into your ` +
+    `result VERBATIM, character for character. Do not trim the change, do not summarize it, ` +
+    `do not drop rows that look finished or unreadable: the caller's comparison is exact ` +
+    `string equality, and a change you shortened is a duplicate it cannot see. Report path ` +
+    `as the ABSOLUTE path of the run's directory: <root>/.claude/vfa/runs/<runstamp>.\n\n` +
+    `A repository with no runs directory prints {"runs":[]} — report that as observed with ` +
+    `an empty list, which IS the good case. Return stop_reason unobservable only when the ` +
+    `command itself would not run, with what actually happened in notes: "there are no ` +
+    `runs" and "I could not look" are different facts, and the second one standing in for ` +
+    `the first is how a half-built run gets planned a second time.`
+}
+
 function setupPrompt(runstamp) {
   const stamp = runstamp || '<mint one>'
 
@@ -1329,6 +1387,15 @@ function coderFixPrompt(wo, state, instruction) {
     `BRANCH: ${state.branch}\n` +
     `BASE SHA: ${state.base_sha}\n` +
     `CURRENT HEAD: ${state.head_sha}\n\n` +
+    `REATTACH FIRST — before reading anything, run git branch --show-current in the ` +
+    `worktree. If it prints ${state.branch}, proceed. If it prints NOTHING, the tree is on ` +
+    `a detached HEAD — an interrupted earlier round can leave it that way — and a commit ` +
+    `made there is unreachable the moment the worktree is removed; runs in the field lost ` +
+    `fix commits exactly so. Reattach before your first commit: run ` +
+    `git merge-base --is-ancestor ${state.branch} HEAD; if that exits 0, HEAD carries ` +
+    `commits the branch pointer is missing, so adopt them with ` +
+    `git switch -C ${state.branch}; otherwise the branch is ahead of where you stand, so ` +
+    `return to it with git switch ${state.branch}.\n\n` +
     `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
     `DECLARED LOCUS — still the fence:\n${listOf(wo.locus)}\n\n` +
     `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n` +
@@ -1389,6 +1456,10 @@ function verifierPrompt(wo, state) {
     `passes on the base proves nothing about this change, and that is exactly what the ` +
     `caller needs to know.\n\n` +
     callerNotes() +
+    `Leave the worktree checked out on ${state.branch} when you finish, whatever the ` +
+    `discriminator had to check out along the way — verify with git branch --show-current ` +
+    `before you return. A worktree left on a detached HEAD strands every fix commit a later ` +
+    `round makes there.\n\n` +
     `Report facts only. stop_reason environment_broken is for the environment itself failing ` +
     `— unmeasurable is a different answer from failed, and conflating them is the laundering ` +
     `the IRON LAW forbids.`
@@ -2338,6 +2409,105 @@ try {
     }
   } else {
     phase('Survey')
+
+    // ------------------------------------------- 0. the existing-run guard
+    //
+    // Before this invocation buys a survey and a plan, one cheap observation: does a run
+    // recording THIS EXACT change already sit on disk, planned or in flight? The develop
+    // skill's step 0 asks its caller to look, but a skill instruction guards only the
+    // callers that read it — twice in the field a relaunch whose cache replay silently
+    // missed arrived here as a fresh invocation and re-bought a half-built change in full.
+    // This script is the one entry point that cannot forget to look.
+    //
+    // The comparison is exact string equality over the recorded change, computed HERE — the
+    // agent reports rows and holds no verdict. `planned` and `in-flight` block; `integrated`
+    // and `landed` do not (re-implementing a landed change is legitimate rework); a matching
+    // `unreadable` row cannot match, because its change is empty — unreadable rows are named
+    // in the log instead, so they are never silently waved past.
+    if (!confirmedDuplicate) {
+      const observed = await agent(existingRunsPrompt(), {
+        agentType: 'vf-agentics:verifier', effort: 'low', schema: EXISTING_RUNS,
+        phase: 'Survey', label: 'existing-runs',
+      }).catch((e) => {
+        log(`WARNING: the existing-run observation failed: ${e && e.message}`)
+        return null
+      })
+
+      if (!observed || observed.stop_reason !== 'observed') {
+        // Halt loudly rather than degrade. Everything else in this pipeline degrades on a
+        // failed side channel (IRON LAW §5) because work already paid for must not be
+        // discarded — but nothing is paid for yet, and the two mispredictions are not
+        // priced alike: a false halt costs one re-invocation, while planning blind here is
+        // the multi-million-token duplicate run this guard exists to prevent. The failure
+        // mode is not hypothetical: an active usage limit kills agents exactly like this
+        // one, at exactly this moment, on exactly the relaunch that most needs the guard.
+        const why = observed && observed.notes
+          ? observed.notes : 'the observation returned no result'
+        log(`HALT: .claude/vfa/runs could not be observed (${why}); nothing was dispatched.`)
+        return developResult({
+          coverage: {
+            complete: false,
+            dropped: [],
+            incomplete: [],
+            failed_channels: ['existing-runs'],
+            unreached: [
+              'the existing-run guard could not observe .claude/vfa/runs: ' + why +
+              ' — nothing was dispatched, because planning without looking is how a ' +
+              'half-built run gets planned a second time. Re-invoke to try again; if you ' +
+              'are recovering an interrupted run, re-invoke with resume_path instead.',
+            ],
+            resumable: { runId: RUN_ID, remaining: [] },
+          },
+        })
+      }
+
+      const unreadableRows = (observed.runs || []).filter((r) => r.status === 'unreadable')
+      if (unreadableRows.length > 0) {
+        log(`${unreadableRows.length} run(s) under .claude/vfa/runs are unreadable and could ` +
+          `not be compared against this change: ` +
+          unreadableRows.map((r) => r.runstamp).join(', '))
+      }
+
+      const duplicate = (observed.runs || []).find((r) =>
+        (r.status === 'planned' || r.status === 'in-flight') &&
+        (r.change || '').trim() === change.trim())
+
+      if (duplicate) {
+        log(`CHECKPOINT: existing_run — ${duplicate.path || duplicate.runstamp} already ` +
+          `records this exact change (status ${duplicate.status}); dispatch withheld.`)
+        return developResult({
+          checkpoint: {
+            reason: 'existing_run',
+            blocking_gaps: [],
+            stale: [],
+            existing_run: {
+              runstamp: duplicate.runstamp,
+              path: duplicate.path,
+              status: duplicate.status,
+            },
+            resume_path: duplicate.path,
+          },
+          coverage: {
+            complete: false,
+            dropped: [],
+            incomplete: [],
+            failed_channels: failedChannels,
+            unreached: [
+              'a run recording this exact change already exists at ' + duplicate.path +
+              ' with status ' + duplicate.status + '. Nothing was surveyed, planned or ' +
+              'dispatched: that run was paid for once, and its plan — possibly with ' +
+              'half-built order branches beside it — resumes for the cost of a loader. ' +
+              'Re-invoke with resume_path set to that path to continue it, or with ' +
+              'confirmed_duplicate true if a second, parallel run of the same change is ' +
+              'genuinely intended.',
+            ],
+            resumable: { runId: RUN_ID, remaining: [] },
+          },
+        })
+      }
+    } else {
+      log('confirmed_duplicate supplied: the existing-run guard is bypassed by request.')
+    }
 
     // Registered workflows are plugin-namespaced, so the qualified name is tried first and
     // the bare name second — the reference then survives a runtime that resolves siblings

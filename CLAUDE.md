@@ -43,7 +43,11 @@ event log by `lib/programme.mjs`, never stored as a status; the user's checkout 
 the end, on their yes. **`plan` decides slices; the planner agent decides work orders.**
 
 The pipeline is friendly to interruption by default. `develop` looks for an existing run for
-the same change before planning a new one, records each order the moment its review closes
+the same change before planning a new one — and the workflow enforces the same check
+mechanically: a fresh invocation whose change string matches a `planned` or `in-flight` run
+on disk halts at a checkpoint (`existing_run`) instead of planning a duplicate, because a
+skill instruction guards only the callers that read it and a silent harness-cache miss
+arrives as a fresh invocation. It records each order the moment its review closes
 rather than when its wave ends, and — because order branches are named deterministically —
 finds and **adopts** an interrupted invocation's commits rather than rebuilding them. Adopted
 work is never trusted: it goes through the same verifier and the same fresh reviewers.

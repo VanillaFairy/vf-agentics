@@ -109,6 +109,7 @@ const loaded = (over = {}) => ({
 })
 
 const cast = (over = {}) => scriptedAgents({
+  'existing-runs': { stop_reason: 'observed', runs: [], notes: 'no runs directory' },
   plan: plan(),
   drift: { stop_reason: 'completed', user_head: A40, moved_files: [], notes: 'unchanged' },
   scavenge: { stop_reason: 'completed', found: [], notes: 'no order branch exists' },

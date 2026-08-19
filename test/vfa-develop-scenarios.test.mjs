@@ -101,7 +101,12 @@ const integrationCast = (over = {}) => ({
   ...over,
 })
 
+// The fresh-path default for the existing-run guard: the repository has never been planned
+// against. Only a fresh (non-resume) invocation dispatches this at all.
+const noExistingRuns = { stop_reason: 'observed', runs: [], notes: 'no runs directory' }
+
 const happyAgents = (over = {}) => scriptedAgents({
+  'existing-runs': noExistingRuns,
   plan: plan([order('W1')]),
   // The default resumed world is the world the plan was written against: the branch sits
   // exactly on the anchor and nothing moved. Only a resume dispatches this at all.
@@ -200,7 +205,7 @@ test('blocking_gaps withholds dispatch and hands back the path, not the plan', a
     blocking_gaps: ['latest-tooling-versions — WO-1 pins versions against it'],
   })
   const { result, prompts } = await run({
-    agent: scriptedAgents({ plan: planned }),
+    agent: scriptedAgents({ 'existing-runs': noExistingRuns, plan: planned }),
     workflow: () => surveyResult({ coverage: {
       complete: false, dropped: [], incomplete: ['latest-tooling-versions'],
       failed_channels: [], unreached: [], resumable: { runId: 'r', remaining: [] },
@@ -222,6 +227,7 @@ test('blocking_gaps withholds dispatch and hands back the path, not the plan', a
 test('a checkpoint with no persisted plan says a re-invocation must re-plan', async () => {
   const { result } = await run({
     agent: scriptedAgents({
+      'existing-runs': noExistingRuns,
       plan: plan([order('W1')], { blocking_gaps: ['a gap'], plan_path: '' }),
     }),
   })
@@ -246,14 +252,15 @@ test('confirmed_gaps is the confirmation: the same plan dispatches', async () =>
 
 test('a survey that resolves under neither name stops the run before planning', async () => {
   const { result, prompts } = await run({
-    agent: scriptedAgents({}),
+    agent: scriptedAgents({ 'existing-runs': noExistingRuns }),
     workflow: (name) => { throw new Error(`Workflow "${name}" not found. Available: x`) },
   })
 
   assert.deepEqual(result.work_orders, [])
   assert.deepEqual(result.coverage.failed_channels, ['survey'])
   assert.ok(/broken reference/.test(result.coverage.unreached[0]))
-  assert.equal(prompts.length, 0, 'planning must not proceed on a broken survey reference')
+  assert.ok(prompts.every((p) => p.opts.label === 'existing-runs'),
+    'planning must not proceed on a broken survey reference — only the run guard may have run')
 })
 
 test('a survey that throws mid-run degrades, labeled as a throw, and planning continues', async () => {
@@ -273,6 +280,7 @@ test('a survey that throws mid-run degrades, labeled as a throw, and planning co
 test('a partition that refused the plan is labeled a planning defect, with full coupled bodies', async () => {
   const { result } = await run({
     agent: scriptedAgents({
+      'existing-runs': noExistingRuns,
       plan: plan([order('W1')], {
         partition_raw: '{"error":"partition: dependency cycle involving W1"}',
       }),
@@ -289,6 +297,7 @@ test('a partition that refused the plan is labeled a planning defect, with full 
 test('an unparseable partition_raw is labeled a paraphrase, not a refusal', async () => {
   const { result } = await run({
     agent: scriptedAgents({
+      'existing-runs': noExistingRuns,
       plan: plan([order('W1')], { partition_raw: 'two waves, no coupling' }),
     }),
   })

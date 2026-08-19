@@ -86,6 +86,17 @@ user is the one who knows. What you must not do is silently plan the same change
 Reach for the first when you can and the second when you cannot. The field incident used
 neither, because until now no skill said when to use which.
 
+**Trust `resumeFromRunId` once, not forever.** The harness cache is an optimization, not a
+record: it can miss silently, and when it does the workflow sees an ordinary fresh
+invocation. In the field this happened on the relaunch after a resumed run was killed
+mid-flight (`TaskStop`) — byte-identical arguments, zero cache hits, and the run re-surveyed
+and re-planned a change whose half-built branches sat on disk. So: after ANY hard kill of a
+running invocation — `TaskStop`, a crash, a session limit that died mid-write — relaunch
+with `resume_path`, not `resumeFromRunId`. The workflow itself now refuses to plan a change
+that already has a `planned` or `in-flight` run recording the same change string (checkpoint
+`existing_run`, step 3), so a cache miss can no longer silently buy a duplicate — but that
+refusal is a stop, and passing `resume_path` up front is the version of it that keeps moving.
+
 ## Run the pipeline
 
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working tree
@@ -121,9 +132,19 @@ neither, because until now no skill said when to use which.
    your act, at step 3d, after the human gate.
 
 3. On return, first check `checkpoint`. When it is non-null, **nothing was dispatched** —
-   and `checkpoint.reason` says why. Branch on it; the three cases want different
+   and `checkpoint.reason` says why. Branch on it; the cases want different
    conversations, and treating them alike either asks the human to rule on an empty list or
    parks work they meant to have built.
+
+   - **`existing_run`** — the workflow found a `planned` or `in-flight` run already
+     recording this exact change and refused to plan it twice.
+     `checkpoint.existing_run` names the run (runstamp, path, status) and
+     `checkpoint.resume_path` is ready to pass back. This is almost always a resume you
+     meant to make: re-invoke with that `resume_path`. If a second, parallel run of the
+     same change is genuinely intended — it almost never is — re-invoke with
+     `confirmed_duplicate: true`. Never work around this checkpoint by rewording the
+     change: implementing one description's plan under another is the wrong-run failure
+     the change comparison exists to catch.
 
    - **`blocking_gaps`** — the survey could not reach evidence the change description itself
      names, and the planner flagged it. Present `checkpoint.blocking_gaps`. On a go,
@@ -334,6 +355,15 @@ neither, because until now no skill said when to use which.
 
 ## Afterwards
 
+- **Progress lives in derived state, never in a hand-maintained ledger.** A run's status is
+  derived from `plan.json` and `state.jsonl` by `/vf-agentics:runs`; a programme's is derived
+  from its event log by `/vf-agentics:programme`. A progress file the session maintains by
+  hand duplicates both, is stale the moment either moves, and costs the most expensive tokens
+  in the pipeline — the orchestrating session's — on every rewrite. In the field one such
+  file's mid-run commit to the base branch was misattributed as a locus breach and killed a
+  2.9-hour run. If the project keeps one anyway, it is the user's file: update it only after
+  a run returns, never while one is in flight, and put nothing in it that `runs` or
+  `programme` already derives.
 - Write every `discovered` entry to the project KB (knowledge-base skill handles dedupe).
 - Clean up ONLY after the human accepts the merged result: `git worktree remove` each
   `implemented` worktree and the integration worktree, then `git branch -d` the integration

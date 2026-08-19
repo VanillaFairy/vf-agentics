@@ -110,6 +110,7 @@ const verifierSaying = (byLabel, fallback = verified()) =>
   }
 
 const cast = (over = {}) => scriptedAgents({
+  'existing-runs': { stop_reason: 'observed', runs: [], notes: 'no runs directory' },
   plan: pairPlan(),
   drift: { stop_reason: 'completed', user_head: A40, moved_files: [], notes: 'unchanged' },
   'integration-setup': setUp(),
