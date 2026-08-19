@@ -2233,9 +2233,17 @@ try {
     phase('Plan')
     log(`Resuming from ${resumePath}: survey and planning are skipped.`)
 
+    // The loader is the one dispatch in this pipeline whose entire job is faithful
+    // long-output transcription: a plan of 100KB+ re-emitted byte-exact through a schema.
+    // That is the job the frontmatter tier is worst at, and it failed in the field on
+    // 2026-08-19 — haiku copied 1 of 14 orders and paraphrased the rest, and the digest
+    // tripwire below halted the run. So the tier is raised HERE, at the read path alone:
+    // the write path (the wave recorder, same agent type) appends one small JSON line and
+    // stays at the frontmatter default. If a sonnet load ever trips the digest, raise this
+    // call site again — never the frontmatter.
     const loaded = await agent(loaderPrompt(), {
       agentType: 'vf-agentics:run-state', effort: 'low', schema: RESUME_STATE,
-      phase: 'Plan', label: 'resume-load',
+      model: 'sonnet', phase: 'Plan', label: 'resume-load',
     }).catch((e) => {
       log(`WARNING: the run-state loader failed: ${e && e.message}`)
       return null

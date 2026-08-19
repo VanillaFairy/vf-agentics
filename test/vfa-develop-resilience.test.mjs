@@ -146,6 +146,25 @@ const promptFor = (prompts, label) => {
   return hit.prompt
 }
 
+// --- the loader tier (the 2026-08-19 transcription failure) --------------------------------
+
+test('the resume loader is dispatched above the run-state frontmatter tier', async () => {
+  // The loader's whole job is re-emitting a 100KB+ plan byte-exact through a schema; in the
+  // field the frontmatter tier (haiku) paraphrased 13 of 14 orders and the digest gate
+  // halted the run. The read path carries the override; the write path must not.
+  const { prompts } = await resumed()
+
+  const loader = prompts.find((p) => p.opts.label === 'resume-load')
+  assert.ok(loader, 'a resume dispatches the loader')
+  assert.equal(loader.opts.model, 'sonnet',
+    'faithful transcription at length is a capability, not a diligence')
+
+  const recorder = prompts.find((p) => (p.opts.label || '').startsWith('record:'))
+  assert.ok(recorder, 'a completed wave dispatches the recorder')
+  assert.equal(recorder.opts.model, undefined,
+    'the recorder appends one small JSON line — the frontmatter default stays authoritative')
+})
+
 // --- base_ref (§5.4) -----------------------------------------------------------------------
 
 test('base_ref reaches the integration setup as the base to branch from', async () => {
