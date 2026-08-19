@@ -391,7 +391,8 @@ test('the same finding ruled unfixed in two consecutive rounds escalates as revi
 
 test('a major blocks a contract order and is driven through a fix round', async () => {
   const M1 = { id: 'M1', severity: 'major', file: 'src/W1.js', line: 1,
-               claim: 'TapTarget defined twice', evidence: 'sections disagree' }
+               claim: 'TapTarget defined twice', evidence: 'sections disagree',
+               failure_scenario: 'a consumer implementing section 2 rejects section 5 input' }
   const { result, prompts } = await run({
     agent: happyAgents({
       plan: plan([order('W1', { contract: true })]),

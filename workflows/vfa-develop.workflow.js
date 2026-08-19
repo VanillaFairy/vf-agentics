@@ -375,7 +375,7 @@ const FINDINGS = {
   properties: {
     findings: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['id', 'severity', 'file', 'line', 'claim', 'evidence'],
+      required: ['id', 'severity', 'file', 'line', 'claim', 'evidence', 'failure_scenario'],
       properties: {
         id: { type: 'string' },        // 'F1', 'F2', ... unique within the ROUND
         severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
@@ -383,6 +383,12 @@ const FINDINGS = {
         line: { type: 'integer' },     // 0 when the finding is about the series/whole diff
         claim: { type: 'string' },     // the defect, falsifiably stated
         evidence: { type: 'string' },  // why it is real — code cited, not vibes
+        // The concrete input, state, or consumer that goes wrong — what makes a severity a
+        // consequence rather than a conviction. '' on a minor. A MAJOR with an empty
+        // scenario cannot block (computed below): in the field, majors that named no harm
+        // were taste findings wearing a blocking label, and each one bought a full
+        // fix-verify-review round.
+        failure_scenario: { type: 'string' },
       } } },
     fix_verdicts: { type: 'array', items: {
       type: 'object', additionalProperties: false,
@@ -1653,7 +1659,9 @@ const orderLine = (wave, state) => ({
 })
 
 function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
-  const prior = priorBlockers.length === 0 ? '' :
+  const followUp = priorBlockers.length > 0
+
+  const prior = !followUp ? '' :
     `FINDINGS HELD OPEN FROM THE PREVIOUS ROUND — rule on each one in fix_verdicts (fixed / ` +
     `not_fixed / regressed) with evidence, then re-attack the areas that were touched: ` +
     `fresh code written under pressure is the most defect-dense diff there is. Treat both ` +
@@ -1681,7 +1689,7 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
   // test the implementer contorted itself around, goes unexamined.
   const role = roleOf(wo)
 
-  const testCharge = role === 'green'
+  const testCharge = followUp ? '' : role === 'green'
     ? `THE TESTS HERE WERE WRITTEN BY SOMEONE ELSE, BEFORE THIS CODE EXISTED, and this order ` +
       `could not edit them — they sit outside its declared locus. So do not hunt for an ` +
       `author certifying its own work; that is not the risk in this series. Two other risks ` +
@@ -1710,15 +1718,29 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
         `fight the next honest change. A test that cannot fail, or a criterion with no test ` +
         `that can, is critical: nothing is verified and the series only looks it.\n\n`
 
-  return `Adversarially review one work order's commit series. Assume it is subtly wrong and ` +
-    `hunt for where. You return findings; you have no way to approve anything, and an empty ` +
-    `findings list is an observation rather than a blessing — the verdict is computed by the ` +
-    `caller from what you return.\n\n` +
+  const span = followUp
+    ? `FIX SPAN UNDER REVIEW: ${state.deltaBase || state.base_sha}..${state.head_sha} — the ` +
+      `commits landed since the last round, and ONLY them. The full series was adversarially ` +
+      `reviewed in round 1 and the merged change is reviewed whole again at integration; ` +
+      `this round's charter is the delta. Rule on the open blockers, then walk the fix ` +
+      `commits — including any tests they add — for defects the fixes introduced. A CRITICAL ` +
+      `you happen to see outside the span is still a critical and is still reported; a major ` +
+      `or minor outside the span is out of scope this round, because re-adjudicating settled ` +
+      `code with fresh eyes is how a review loop stops converging.\n`
+    : `SERIES UNDER REVIEW: ${state.base_sha}..${state.head_sha}\n`
+
+  return `Adversarially review one work order's commit series. Your job is to try to FALSIFY ` +
+    `the claim that this series meets its acceptance criteria — by constructing concrete ` +
+    `failing scenarios, never by producing a list. Finding nothing is a real, common, and ` +
+    `reportable answer; you are not measured by finding count, and a severity is never ` +
+    `raised to make a round look thorough. You return findings; you have no way to approve ` +
+    `anything, and an empty findings list is an observation rather than a blessing — the ` +
+    `verdict is computed by the caller from what you return.\n\n` +
     `WORKTREE — cd into it; everything below is read from there:\n${state.worktree}\n` +
     `BRANCH: ${state.branch}\n` +
-    `SERIES UNDER REVIEW: ${state.base_sha}..${state.head_sha}\n` +
-    `Walk that series commit by commit, oldest first — ` +
-    `git log --reverse -p ${state.base_sha}..${state.head_sha}, or git show <sha> per ` +
+    span +
+    `Walk the span commit by commit, oldest first — ` +
+    `git log --reverse -p, or git show <sha> per ` +
     `commit. Your Bash is for READ-ONLY git only: log, show, diff. Never run anything that ` +
     `writes, checks out, stages, or otherwise touches the tree — you are reading evidence, ` +
     `not handling it. A commit labeled refactor that changes behavior is visible only in the ` +
@@ -1737,10 +1759,21 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
     `ADVISORY SERIES FINDINGS (subject style and the like). Context only, and not yours to ` +
     `re-litigate:\n${advisoryLines(advisories)}\n\n` +
     prior +
-    `Walk the series commit by commit, then the whole change against each criterion in turn, ` +
-    `constructing the concrete input or state under which the implementation violates it. ` +
-    `Every finding is falsifiable: claim states the defect so it could be proven wrong, and ` +
-    `evidence cites the code that makes it real. Finding nothing new after an honest attack ` +
+    (followUp
+      ? `Rule on the open blockers first, then walk the fix span against the criteria the ` +
+        `blockers named. `
+      : `Walk the series commit by commit, then the whole change against each criterion in turn, ` +
+        `constructing the concrete input or state under which the implementation violates it. `) +
+    `Every finding is falsifiable: claim states the defect so it could be proven wrong, ` +
+    `evidence cites the code that makes it real, and failure_scenario names the concrete ` +
+    `input, state, or consumer that goes wrong ('' only on a minor). Severity is assigned by ` +
+    `consequence, never by conviction: a major that cannot name its harm is a minor, and a ` +
+    `finding whose only remedy is rewriting an already-landed commit is advisory — the ` +
+    `series is append-only. No hedging: a concrete problem exists at a specific place and ` +
+    `you describe it, or the finding is omitted entirely — never "might", "could", ` +
+    `"consider". Before returning, drop any draft finding that is owned by the build and ` +
+    `suite the verifier already ran, that a re-read with context shows is not a defect, or ` +
+    `that a principal engineer would not raise. Finding nothing new after an honest attack ` +
     `IS your report — do not pad the round.`
 }
 
@@ -2056,12 +2089,18 @@ async function verifyUntilGreen(wo, state, trail) {
 async function reviewLoop(wo, state, trail) {
   // The blocking severity is per order: criticals always block, and majors block a CONTRACT
   // order too — an ambiguity in a contract other orders build against is not a local
-  // blemish, it is a defect in every consumer's spec.
-  const blocks = (f) => f.severity === 'critical' || (wo.contract === true && f.severity === 'major')
+  // blemish, it is a defect in every consumer's spec. But a major blocks only when it names
+  // its harm: the scenario gate is deliberately asymmetric, because the two mistakes are not
+  // priced alike. A lazily-stated critical that blocks anyway costs one round; a taste
+  // finding wearing a major label on a contract order costs a full fix-verify-review round
+  // per occurrence, and in the field fresh reviewers minted one nearly every round.
+  const blocks = (f) => f.severity === 'critical' ||
+    (wo.contract === true && f.severity === 'major' && (f.failure_scenario || '').trim() !== '')
 
   let priorBlockers = []
   let unfixedLastRound = []
   let openBlockers = []
+  let churnedLastRound = false
   let round = 0
 
   while (true) {
@@ -2095,6 +2134,14 @@ async function reviewLoop(wo, state, trail) {
     trail.push({ round: trail.length + 1, kind: 'review', findings, fix_commits: [] })
     log(`${wo.id}: review round ${round} — ${blockers.length} blocking, ${findings.length - blockers.length} other, ${stillOpen.length} carried over unfixed.`)
 
+    const gatedMajors = wo.contract === true
+      ? findings.filter((f) => f.severity === 'major' && (f.failure_scenario || '').trim() === '')
+      : []
+    if (gatedMajors.length > 0) {
+      log(`${wo.id}: ${gatedMajors.length} major(s) carried no failure scenario and cannot ` +
+        `block (${gatedMajors.map((f) => f.id).join(', ')}) — reported for the human gate instead.`)
+    }
+
     // The only exit that says the work is done, and it is a count of open defects rather
     // than anyone's claim about them.
     if (open.length === 0) return null
@@ -2107,6 +2154,21 @@ async function reviewLoop(wo, state, trail) {
       log(`ESCALATION ${wo.id}: the same critical survived two consecutive fix rounds.`)
       return esc(wo, 'review_not_converging', open, trail, state)
     }
+
+    // §7.3(c): the churn exit — the mirror of `stuck`. Two consecutive rounds each ruled
+    // every prior blocker fixed and still minted new blocking findings on material earlier
+    // rounds accepted. The fixes are landing; the reviewer pool is not converging; another
+    // round buys another sample, not a resolution. In the field one contract order paid
+    // eleven rounds this way across two runs and ended escalated regardless — this trigger
+    // hands the same trail to the human after two.
+    const churned = round > 1 && stillOpen.length === 0 && !verdicts.some(unfixedVerdict) &&
+      blockers.length > 0 && blockers.every((f) => !priorBlockers.some((p) => p.id === f.id))
+
+    if (churned && churnedLastRound) {
+      log(`ESCALATION ${wo.id}: two consecutive rounds ruled all prior blockers fixed and still minted new ones.`)
+      return esc(wo, 'review_churn', open, trail, state)
+    }
+    churnedLastRound = churned
 
     const headBefore = state.head_sha
     const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, open,
@@ -2129,6 +2191,9 @@ async function reviewLoop(wo, state, trail) {
         trail, state)
     }
 
+    // The next reviewer's span starts where this round's reviewer stopped reading: fix
+    // commits (and any verify-fix commits after them) are its charter, not the whole series.
+    state.deltaBase = headBefore
     absorbFix(state, trail, fix)
 
     // Fixes are code, so they are verified before they are reviewed again.

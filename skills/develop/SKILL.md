@@ -210,25 +210,30 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
       a hole the contract explicitly closes:
 
       <!-- vfa:verbatim review-loop-exit -->
-      - Dispatch a fresh reviewer each round with the work order, the worktree path,
-        `base_sha..head_sha`, the coder's `concerns`, the advisory `series_findings`, and —
-        from round 2 on — the prior round's open blockers (id, claim, fix commits since).
-      - The blocking set is the round's criticals, plus its majors when the order is marked
-        `contract: true`.
-      - The open set is the round's blocking findings, plus every prior blocker ruled
-        `not_fixed`/`regressed` in `fix_verdicts` that the round did not re-report. Never
-        narrow this to the round's criticals alone — that exact narrowing once shipped an
-        order with a known-unfixed critical and `coverage.complete: true`.
-      - The order is approved when the open set is empty. That is a count you compute — the
-        reviewer has no approval to give, by design.
-      - Escalate (computed, never judged) when either (a) a fix round returns no commits, or
-        status `blocked`/`needs_context`, or (b) the same finding id is ruled
-        `not_fixed`/`regressed` in two consecutive rounds.
-      - Otherwise dispatch a same-worktree coder fix round carrying the open set (new focused
-        commits, no amends, no rebase), re-verify, and dispatch a fresh reviewer.
-      - No round counter ends this loop (IRON LAW §1). A budget error is caught and becomes an
-        escalation carrying resumable state (IRON LAW §6) — never a silent stop.
-      <!-- /vfa:verbatim -->
+- Dispatch a fresh reviewer each round with the work order, the worktree path, the span
+  under review, the coder's `concerns`, the advisory `series_findings`, and — from round
+  2 on — the prior round's open blockers (id, claim, fix commits since). Round 1 reviews
+  the whole series; later rounds rule on the open blockers and review the fix span alone —
+  the merged change is reviewed whole again at integration.
+- The blocking set is the round's criticals, plus its majors when the order is marked
+  `contract: true` and the finding carries a non-empty `failure_scenario` — a major that
+  cannot name what goes wrong for whom is advisory, not blocking.
+- The open set is the round's blocking findings, plus every prior blocker ruled
+  `not_fixed`/`regressed` in `fix_verdicts` that the round did not re-report. Never
+  narrow this to the round's criticals alone — that exact narrowing once shipped an
+  order with a known-unfixed critical and `coverage.complete: true`.
+- The order is approved when the open set is empty. That is a count you compute — the
+  reviewer has no approval to give, by design.
+- Escalate (computed, never judged) when (a) a fix round returns no commits, or status
+  `blocked`/`needs_context`, or (b) the same finding id is ruled `not_fixed`/`regressed`
+  in two consecutive rounds, or (c) two consecutive rounds each rule every prior blocker
+  fixed and still mint new blocking findings — the fixes are landing, the reviewer pool is
+  not converging, and another round buys another sample rather than a resolution.
+- Otherwise dispatch a same-worktree coder fix round carrying the open set (new focused
+  commits, no amends, no rebase), re-verify, and dispatch a fresh reviewer.
+- No round counter ends this loop (IRON LAW §1). A budget error is caught and becomes an
+  escalation carrying resumable state (IRON LAW §6) — never a silent stop.
+<!-- /vfa:verbatim -->
 
    d. **The integration branch.** Read `result.integration` before you touch anything:
 
