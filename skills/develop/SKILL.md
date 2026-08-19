@@ -81,7 +81,9 @@ user is the one who knows. What you must not do is silently plan the same change
   cache and only what died re-runs. This is the cheap one, and it is available only inside the
   conversation that launched the run.
 - **`resume_path`**, the durable one, otherwise. It crosses sessions and machines-with-the-same-
-  checkout. It pays for the loader agent and for nothing else — no survey, no planning.
+  checkout. It pays for the loader fan — one small index courier plus one courier per work
+  order, each verified against the plan's stored digests — and for nothing else: no survey,
+  no planning.
 
 Reach for the first when you can and the second when you cannot. The field incident used
 neither, because until now no skill said when to use which.

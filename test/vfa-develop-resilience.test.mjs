@@ -21,6 +21,35 @@ import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { manifestOf } from '../lib/plan-digest.mjs'
 
+/**
+ * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
+ * 'resume-index' answer (everything but the orders) and a 'load:' prefix responder that
+ * serves each order slice out of the same fixture, retry labels included.
+ */
+const resumeLoad = (v) => ({
+  'resume-index': {
+    stop_reason: v.stop_reason,
+    order_ids: v.plan ? (v.plan.work_orders || []).map((o) => o.id) : [],
+    shared_files: v.plan ? v.plan.shared_files : [],
+    partition_raw: v.plan ? v.plan.partition_raw : '',
+    blocking_gaps: v.plan ? v.plan.blocking_gaps : [],
+    plan_path: v.plan ? v.plan.plan_path : '',
+    plan_notes: v.plan ? (v.plan.notes || '') : '',
+    envelope: v.envelope || { change: '', roots: '', caller_notes: '', intelligence: '',
+                              base_branch: '', base_sha: '', programme: '', slice: '' },
+    manifest: v.manifest || [],
+    state: v.state || [],
+    notes: v.notes || '',
+  },
+  'load:': (prompt, opts) => {
+    const id = (opts.label || '').replace(/^load:/, '').replace(/#\d+$/, '')
+    const wo = v.plan && (v.plan.work_orders || []).find((o) => o.id === id)
+    return wo ? { stop_reason: 'loaded', orders: [wo], notes: '' }
+              : { stop_reason: 'not_found', orders: [], notes: 'no order ' + id }
+  },
+})
+
+
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
 const A40 = 'a'.repeat(40)
@@ -133,7 +162,7 @@ const resumed = (over) => runWorkflow(WF, {
   args: { ...ARGS, resume_path: RUN_DIR },
   workflow: surveyResult,
   agent: cast({
-    'resume-load': loaded(),
+    ...resumeLoad(loaded()),
     'integration-setup': setUp({ head_sha: M40 }),
     'merge:': merged(N40),
     ...over,
@@ -146,18 +175,25 @@ const promptFor = (prompts, label) => {
   return hit.prompt
 }
 
-// --- the loader tier (the 2026-08-19 transcription failure) --------------------------------
+// --- the loader fan (the 2026-08-19 transcription failure) ---------------------------------
 
-test('the resume loader is dispatched above the run-state frontmatter tier', async () => {
-  // The loader's whole job is re-emitting a 100KB+ plan byte-exact through a schema; in the
-  // field the frontmatter tier (haiku) paraphrased 13 of 14 orders and the digest gate
-  // halted the run. The read path carries the override; the write path must not.
+test('a resume fans the load: one index plus one slice per order, at the frontmatter tier', async () => {
+  // No dispatch carries the whole plan. The single loader this replaced was asked for a
+  // 118KB byte-exact copy and paraphrased 13 of 14 orders; each slice is bounded by its own
+  // order, so the frontmatter tier carries it — the sonnet override exists only as the
+  // per-slice retry, and a clean load never pays for it.
   const { prompts } = await resumed()
 
-  const loader = prompts.find((p) => p.opts.label === 'resume-load')
-  assert.ok(loader, 'a resume dispatches the loader')
-  assert.equal(loader.opts.model, 'sonnet',
-    'faithful transcription at length is a capability, not a diligence')
+  const idx = prompts.find((p) => p.opts.label === 'resume-index')
+  assert.ok(idx, 'a resume dispatches the index courier')
+  assert.equal(idx.opts.model, undefined,
+    'the index is everything EXCEPT the orders — small enough for the frontmatter tier')
+
+  const slices = prompts.filter((p) => (p.opts.label || '').startsWith('load:'))
+  assert.deepEqual(slices.map((p) => p.opts.label).sort(), ['load:W1', 'load:W2'],
+    'one slice courier per manifest row, no retries on a clean load')
+  assert.ok(slices.every((p) => p.opts.model === undefined),
+    'a first-pass slice runs at the frontmatter tier; sonnet is the retry, not the default')
 
   const recorder = prompts.find((p) => (p.opts.label || '').startsWith('record:'))
   assert.ok(recorder, 'a completed wave dispatches the recorder')
@@ -228,9 +264,9 @@ test('a resumed run adopts the tags its own plan recorded', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: surveyResult,
     agent: cast({
-      'resume-load': loaded({
+      ...resumeLoad(loaded({
         envelope: envelope({ programme: '2026-08-15-eva-plays-2', slice: 'walk' }),
-      }),
+      })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -247,9 +283,9 @@ test('a caller who re-tags a resumed run is obeyed, and never in silence', async
     args: { ...ARGS, resume_path: RUN_DIR, programme: 'something-else' },
     workflow: surveyResult,
     agent: cast({
-      'resume-load': loaded({
+      ...resumeLoad(loaded({
         envelope: envelope({ programme: '2026-08-15-eva-plays-2', slice: 'walk' }),
-      }),
+      })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -412,14 +448,14 @@ test('a broken scavenge degrades to rebuilding, and says so', async () => {
 
 test('the run state points the scavenge at the worktree it last saw', async () => {
   const { prompts } = await resumed({
-    'resume-load': loaded({
+    ...resumeLoad(loaded({
       state: [waveLine(), {
         kind: 'order-approved', wave: 2, merged: [], approved_unmerged: [], escalated: [],
         discovered: [], integration_base: '', integration_head: '',
         order: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2-old',
         head_sha: C40,
       }],
-    }),
+    })),
   })
 
   assert.match(promptFor(prompts, 'scavenge'), /C:\/wt\/w2-old/)
@@ -429,13 +465,13 @@ test('an order-approved line does not count as a merge', async () => {
   // The line says the order was APPROVED. Reading it as merged would skip the order entirely
   // and leave its commits sitting on a branch nothing ever integrates.
   const { result } = await resumed({
-    'resume-load': loaded({
+    ...resumeLoad(loaded({
       state: [waveLine(), {
         kind: 'order-approved', wave: 2, merged: [], approved_unmerged: [], escalated: [],
         discovered: [], integration_base: '', integration_head: '',
         order: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2', head_sha: C40,
       }],
-    }),
+    })),
     scavenge: scavengedW2(),
   })
 

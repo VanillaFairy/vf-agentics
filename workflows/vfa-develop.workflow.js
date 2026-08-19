@@ -26,11 +26,11 @@ export const meta = {
 // name a judgment, and the moment a schema offers one, the loop's exit condition migrates
 // out of JS and into a model's self-assessment. Every verdict in this file is computed below.
 
-const WORK_ORDERS = {
-  type: 'object', additionalProperties: false,
-  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'plan_path', 'notes'],
-  properties: {
-    work_orders: { type: 'array', items: {
+// One work order, as a shape of its own. WORK_ORDERS carries a plan of them; ORDER_SLICE
+// carries exactly one back from disk on a resume. Two hand-copied transcriptions of the
+// same schema drift, and this one has to match exactly or a resumed order implements
+// against a different contract than a fresh one.
+const WORK_ORDER_ITEM = {
       type: 'object', additionalProperties: false,
       required: ['id', 'title', 'role', 'locus', 'reads', 'acceptance', 'context', 'deps',
                  'contract'],
@@ -59,7 +59,14 @@ const WORK_ORDERS = {
         context: { type: 'string' },   // what the coder needs to know, self-contained
         deps: { type: 'array', items: { type: 'string' } },  // ids whose OUTPUT this order builds on; the partition waves it after them
         contract: { type: 'boolean' }, // other orders build against this order's definitions — majors block it downstream
-      } } },
+      },
+}
+
+const WORK_ORDERS = {
+  type: 'object', additionalProperties: false,
+  required: ['work_orders', 'shared_files', 'partition_raw', 'blocking_gaps', 'plan_path', 'notes'],
+  properties: {
+    work_orders: { type: 'array', items: WORK_ORDER_ITEM },
     shared_files: { type: 'array', items: { type: 'string' } },  // designated shared files for the independence test
     partition_raw: { type: 'string' }, // VERBATIM stdout of `node lib/independence.mjs <input>` — never retyped
     blocking_gaps: { type: 'array', items: { type: 'string' } },  // survey gaps the change itself leans on; non-empty withholds dispatch
@@ -72,26 +79,35 @@ const WORK_ORDERS = {
   },
 }
 
-// The loader's return. `plan` is WORK_ORDERS' own shape, reused rather than retyped: two
-// hand-copied transcriptions of the same schema drift, and this one has to match exactly or
-// a resumed run implements against a different contract than a fresh one.
-const RESUME_STATE = {
+// The resume load is a FAN, not a single transcription. On 2026-08-19 one loader was asked
+// to re-emit a 118KB plan byte-exact through a schema and paraphrased 13 of 14 orders — the
+// digest gate caught it, but the halt cost a diagnosis and a relaunch. The failure was
+// output length, not comprehension: the first order came back faithful and the rest drifted.
+// So no dispatch carries the whole plan anymore. RESUME_INDEX is everything EXCEPT the
+// orders — envelope, manifest, state, the plan's scalars, and the bare order id list — all
+// small enough for the frontmatter tier. Each order then travels alone through ORDER_SLICE,
+// bounded by the largest order rather than by the plan, verified per slice against its
+// manifest digest, and retried one tier up when its copy fails. The manifest is the fan-out
+// index: it already names every order the plan contained when it was written.
+const RESUME_INDEX = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'plan', 'envelope', 'manifest', 'state', 'notes'],
+  required: ['stop_reason', 'order_ids', 'shared_files', 'partition_raw', 'blocking_gaps',
+             'plan_path', 'plan_notes', 'envelope', 'manifest', 'state', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['loaded', 'unreadable'] },
-    plan: {
-      type: 'object', additionalProperties: false,
-      required: WORK_ORDERS.required,
-      properties: WORK_ORDERS.properties,
-    },
-    // The conditions the run was planned under — a SIBLING of `plan`, never a member of it.
-    // `plan` reuses WORK_ORDERS' closed property set, so a loader returning `roots` or
-    // `base_sha` inside it would fail validation outright, and one returning them nowhere
-    // would make recording them pointless. That is the same wall `plan_path` hit before it
-    // was added to WORK_ORDERS itself, and it is worth naming: the closure that makes the
-    // digest tripwire trustworthy is the closure that makes every new cross-stage fact
-    // invisible until it is contracted here.
+    // The ids of plan.json's work_orders, in file order, and NOTHING else of them. This is
+    // the one direction the manifest cannot check alone: an order present in the file but
+    // absent from the manifest would otherwise never be fetched and never be missed.
+    order_ids: { type: 'array', items: { type: 'string' } },
+    shared_files: { type: 'array', items: { type: 'string' } },
+    partition_raw: { type: 'string' },   // VERBATIM, exactly as plan.json stores it
+    blocking_gaps: { type: 'array', items: { type: 'string' } },
+    plan_path: { type: 'string' },
+    plan_notes: { type: 'string' },      // plan.json's own `notes`, whole
+    // The conditions the run was planned under — a SIBLING of the plan, never a member of
+    // it, so a loader returning `roots` or `base_sha` inside the plan's own closed shape
+    // would fail validation outright, and one returning them nowhere would make recording
+    // them pointless.
     //
     // Without this, a run resumed a week later re-derives its constraints from whatever the
     // caller still remembers. `caller_notes` is the acute case: it carries the settled
@@ -168,6 +184,20 @@ const RESUME_STATE = {
         worktree: { type: 'string' },
         head_sha: { type: 'string' },
       } } },
+    notes: { type: 'string' },
+  },
+}
+
+// One order back from disk. `orders` is a list for the same reason SCAVENGE's `found` is:
+// empty is a real answer — the id was not in the file — and a closed object shape cannot
+// say "present or absent" without a field whose absence nobody notices. On success it
+// carries exactly one element, and the caller treats any other count as a failed copy.
+const ORDER_SLICE = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'orders', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['loaded', 'not_found', 'unreadable'] },
+    orders: { type: 'array', items: WORK_ORDER_ITEM },
     notes: { type: 'string' },
   },
 }
@@ -1140,23 +1170,28 @@ function envelopeSection() {
   return base + tags
 }
 
-function loaderPrompt() {
-  return `Load a vf-agentics run's durable state. LOAD MODE.\n\n` +
+function indexPrompt() {
+  return `Load a vf-agentics run's durable state — everything EXCEPT the work orders. ` +
+    `INDEX MODE.\n\n` +
     `RUN DIRECTORY (absolute):\n${resumePath}\n\n` +
-    `Read plan.json and state.jsonl from that directory and return them.\n\n` +
-    `Return every work order WHOLE and CHARACTER FOR CHARACTER — id, title, every locus ` +
-    `path, every acceptance criterion, the full context string, deps, contract. Return the ` +
-    `stored manifest array as it is written. Return the state.jsonl entries parsed, in file ` +
-    `order, oldest first; a missing or empty state.jsonl means no wave completed, which is a ` +
-    `fact — return an empty list and say so in notes.\n\n` +
-    `Return the ENVELOPE separately from the plan: change, roots, caller_notes, ` +
-    `intelligence, base_branch, base_sha, programme and slice, exactly as plan.json records ` +
-    `them. These are the conditions this run was planned under — your caller adopts them, so ` +
-    `a resumed run implements under the same roots, the same intelligence tier and the same ` +
-    `settled evidence as the original. caller_notes especially: return it whole, however ` +
-    `long. A field an older plan file simply does not have comes back as an empty string; ` +
-    `never fill one in from this dispatch, and never guess a sha.\n\n` +
-    `Every state.jsonl line comes back carrying every field of the line shape, because there ` +
+    `Read plan.json and state.jsonl from that directory.\n\n` +
+    `From plan.json return: order_ids — the id of every entry in work_orders, in file ` +
+    `order, and NOTHING ELSE of the orders (each order travels separately, through a ` +
+    `dispatch built for it); shared_files, partition_raw (VERBATIM — it is parsed, and a ` +
+    `paraphrase dies at JSON.parse), blocking_gaps, and the plan's notes field whole as ` +
+    `plan_notes. Return the stored manifest array exactly as it is written — your caller ` +
+    `fans one courier per manifest row and verifies each against its digest, so a row you ` +
+    `dropped is an order that silently never loads.\n\n` +
+    `Return the ENVELOPE separately: change, roots, caller_notes, intelligence, ` +
+    `base_branch, base_sha, programme and slice, exactly as plan.json records them. These ` +
+    `are the conditions this run was planned under — your caller adopts them, so a resumed ` +
+    `run implements under the same roots, the same intelligence tier and the same settled ` +
+    `evidence as the original. caller_notes especially: return it whole, however long. A ` +
+    `field an older plan file simply does not have comes back as an empty string; never ` +
+    `fill one in from this dispatch, and never guess a sha.\n\n` +
+    `Return the state.jsonl entries parsed, in file order, oldest first; a missing or empty ` +
+    `state.jsonl means no wave completed, which is a fact — return an empty list and say so ` +
+    `in notes. Every line comes back carrying every field of the line shape, because there ` +
     `are two line types and one shape holds both. A line with a "kind" uses it. A line ` +
     `WITHOUT one is a wave line — every line written before this format existed was — so ` +
     `return kind "wave" for it, wave/merged/approved_unmerged/escalated/discovered/` +
@@ -1166,13 +1201,55 @@ function loaderPrompt() {
     `integration strings empty. This is a fixed mapping between two shapes, not a repair: ` +
     `never carry a value across from the other half.\n\n` +
     `Set plan_path to ${resumePath} — the directory you actually read.\n\n` +
-    `Your caller recomputes a content digest over every order and compares it to the stored ` +
-    `manifest. One reworded sentence stops the run. So do not tidy a path, do not shorten a ` +
-    `long context, do not drop a criterion that looks redundant, and do not repair a field ` +
-    `that looks wrong. You are a courier.\n\n` +
     `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
-    `with what you found in notes. Never invent a plan and never return a partial one as ` +
-    `loaded — a plan missing two orders looks exactly like a plan that had five.`
+    `with what you found in notes. Never invent an index and never return a partial one as ` +
+    `loaded — an id list missing two orders looks exactly like a plan that had five.`
+}
+
+function slicePrompt(id) {
+  return `Load ONE work order from a vf-agentics run's plan. SLICE MODE.\n\n` +
+    `RUN DIRECTORY (absolute):\n${resumePath}\n` +
+    `ORDER ID: ${id}\n\n` +
+    `Read plan.json in that directory, find the work order whose id is exactly "${id}", ` +
+    `and return it as the single element of orders — WHOLE and CHARACTER FOR CHARACTER: ` +
+    `id, title, role, every locus path, every read, every acceptance criterion, the full ` +
+    `context string, deps, contract.\n\n` +
+    `Your caller recomputes a content digest over what you return and compares it against ` +
+    `the manifest recorded when the plan was written; one reworded sentence discards your ` +
+    `copy. So do not tidy a path, do not shorten a long context, do not drop a criterion ` +
+    `that looks redundant, and do not repair a field that looks wrong. You are a courier ` +
+    `for one order — the whole-plan copy this dispatch replaced failed precisely by ` +
+    `carrying more than this.\n\n` +
+    `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
+    `with what you found in notes. If no order carries the id "${id}", return not_found ` +
+    `with an empty orders list, naming in notes the ids you did see. Never return a ` +
+    `nearest match.`
+}
+
+// One slice of the resume fan: dispatch a courier for one order and verify its copy against
+// that order's manifest row — planIntegrity over a list of one, so the whole plan and a
+// single slice pass through the same authority. Returns { wo, why }: a verified order, or
+// null with a note that already names the order. The TIER is the caller's choice, which is
+// the point — the first pass runs at the frontmatter default and a failed copy is re-fetched
+// one tier up, so fidelity failures cost a retry instead of a halt.
+async function fetchSlice(entry, label, tier) {
+  const res = await agent(slicePrompt(entry.id), {
+    agentType: 'vf-agentics:run-state', effort: 'low', schema: ORDER_SLICE,
+    phase: 'Plan', label, ...tier,
+  }).catch((e) => {
+    log(`WARNING: the slice courier for ${entry.id} failed: ${e && e.message}`)
+    return null
+  })
+
+  if (!res || res.stop_reason !== 'loaded' ||
+      !Array.isArray(res.orders) || res.orders.length !== 1) {
+    const why = res && res.notes ? res.notes : 'the courier returned no usable copy'
+    return { wo: null, why: entry.id + ': ' + why }
+  }
+
+  const flaws = planIntegrity(res.orders, [entry])
+  if (flaws.length > 0) return { wo: null, why: flaws.join('; ') }
+  return { wo: res.orders[0], why: '' }
 }
 
 function driftPrompt(anchor, branch) {
@@ -1549,7 +1626,7 @@ function appendState(entry, label) {
 }
 
 // One line shape, two line types. Every field appears on every line because the loader's
-// schema is closed over a total `required` set (see RESUME_STATE.state), and these two
+// schema is closed over a total `required` set (see RESUME_INDEX.state), and these two
 // builders are the only places the shape is written — so the emptiness is deliberate in one
 // place rather than forgotten in several.
 const waveLine = (parts) => ({
@@ -2233,24 +2310,42 @@ try {
     phase('Plan')
     log(`Resuming from ${resumePath}: survey and planning are skipped.`)
 
-    // The loader is the one dispatch in this pipeline whose entire job is faithful
-    // long-output transcription: a plan of 100KB+ re-emitted byte-exact through a schema.
-    // That is the job the frontmatter tier is worst at, and it failed in the field on
-    // 2026-08-19 — haiku copied 1 of 14 orders and paraphrased the rest, and the digest
-    // tripwire below halted the run. So the tier is raised HERE, at the read path alone:
-    // the write path (the wave recorder, same agent type) appends one small JSON line and
-    // stays at the frontmatter default. If a sonnet load ever trips the digest, raise this
-    // call site again — never the frontmatter.
-    const loaded = await agent(loaderPrompt(), {
-      agentType: 'vf-agentics:run-state', effort: 'low', schema: RESUME_STATE,
-      model: 'sonnet', phase: 'Plan', label: 'resume-load',
+    // The one halt shape every load failure exits through. Same coverage block whether the
+    // index was unreadable, the id sets disagree, or a slice defeated both courier tiers —
+    // the caller's contract is "nothing was dispatched, here is why, per order".
+    const corruptHalt = (notes, headline) => {
+      log(headline)
+      return developResult({
+        planPath: resumePath,
+        coverage: {
+          complete: false,
+          dropped: [],
+          incomplete: [],
+          failed_channels: ['run-state'],
+          unreached: notes.map((note) => 'plan integrity: ' + note)
+            .concat(['the plan read back from ' + resumePath + ' is not the plan that was ' +
+                     'written; nothing was dispatched. Read plan.json yourself, or re-plan.']),
+          resumable: { runId: RUN_ID, remaining: [] },
+        },
+      })
+    }
+
+    // Phase 1 of the fan: the index — envelope, manifest, state, plan scalars and the bare
+    // order id list. Everything here is small, so the frontmatter tier carries it. The
+    // orders themselves are deliberately NOT in this dispatch: the single loader this
+    // replaced was asked for a 118KB byte-exact copy and paraphrased 13 of 14 orders — the
+    // digest gate caught it, and the lesson is structural: no dispatch carries the whole
+    // plan, ever. Each order travels alone, bounded by its own size rather than the plan's.
+    const index = await agent(indexPrompt(), {
+      agentType: 'vf-agentics:run-state', effort: 'low', schema: RESUME_INDEX,
+      phase: 'Plan', label: 'resume-index',
     }).catch((e) => {
-      log(`WARNING: the run-state loader failed: ${e && e.message}`)
+      log(`WARNING: the run-state index failed: ${e && e.message}`)
       return null
     })
 
-    if (!loaded || loaded.stop_reason !== 'loaded' || !loaded.plan) {
-      const why = loaded && loaded.notes ? loaded.notes : 'the loader returned no readable plan'
+    if (!index || index.stop_reason !== 'loaded') {
+      const why = index && index.notes ? index.notes : 'the loader returned no readable plan'
       log(`The run directory could not be read: ${why}`)
       return developResult({
         planPath: resumePath,
@@ -2269,42 +2364,10 @@ try {
       })
     }
 
-    // The tripwire. A count-and-ids manifest would wave through the corruption that actually
-    // matters here — a paraphrased context, a rewritten locus — and that damage surfaces two
-    // stages downstream wearing an honest coder's name.
-    const corrupt = planIntegrity(loaded.plan.work_orders || [], loaded.manifest)
-
-    if (corrupt.length > 0) {
-      log(`HALT: the loaded plan does not match its manifest (${corrupt.length} order(s)).`)
-      return developResult({
-        planPath: resumePath,
-        coverage: {
-          complete: false,
-          dropped: [],
-          incomplete: [],
-          failed_channels: ['run-state'],
-          unreached: corrupt.map((note) => 'plan integrity: ' + note)
-            .concat(['the plan read back from ' + resumePath + ' is not the plan that was ' +
-                     'written; nothing was dispatched. Read plan.json yourself, or re-plan.']),
-          resumable: { runId: RUN_ID, remaining: [] },
-        },
-      })
-    }
-
-    // ------------------------------------------------- 1b. adopt the envelope
-    //
-    // The plan travels with the conditions it was written under, and on a resume those win.
-    // A caller re-invoking a week later has a change description and a path; it does not
-    // have the roots the plan was surveyed against, the intelligence tier it was planned
-    // at, or the settled evidence its design phase produced. Defaulting those to whatever
-    // this invocation happened to pass implements the same plan under different conditions
-    // and reports it as the same run.
-    //
-    // `change` is the exception, and deliberately: the workflow guards on it before the
-    // loader runs, so a caller must supply it regardless. That makes it free to compare —
-    // and the comparison catches resuming the wrong run, which otherwise implements feature
-    // A's plan while every log line says feature B.
-    const envelope = loaded.envelope || {}
+    // The change guard runs before the fan: the envelope is already in hand, and fetching
+    // every order of a plan that turns out to be feature B's is exactly the spend this
+    // comparison exists to withhold.
+    const envelope = index.envelope || {}
     const recordedChange = (envelope.change || '').trim()
 
     if (recordedChange && recordedChange !== change.trim()) {
@@ -2328,6 +2391,88 @@ try {
       })
     }
 
+    // The id sets, both directions, before any slice is fetched. The manifest drives the
+    // fan, so an order sitting in the file but missing from the manifest would otherwise
+    // never be fetched and never be missed — and the mirror case would surface later, less
+    // clearly, as a not_found slice.
+    const manifest = index.manifest || []
+    const manifestIds = new Set(manifest.map((entry) => entry.id))
+    const fileIds = new Set(index.order_ids || [])
+    const idNotes = []
+    for (const id of index.order_ids || []) {
+      if (!manifestIds.has(id)) {
+        idNotes.push(id + ': the loaded plan carries an order the manifest never covered')
+      }
+    }
+    for (const entry of manifest) {
+      if (!fileIds.has(entry.id)) {
+        idNotes.push(entry.id + ': the manifest covers an order the loaded plan does not carry')
+      }
+    }
+    if (idNotes.length > 0) {
+      return corruptHalt(idNotes,
+        `HALT: the loaded plan does not match its manifest (${idNotes.length} order(s)).`)
+    }
+
+    // Phase 2: the fan. One courier per manifest row, each copy verified here against its
+    // recorded digest — planIntegrity over a list of one, the same authority the whole plan
+    // used to pass through at once. A failed copy is retried once, one tier up, under a
+    // round-numbered label. This is what turns the digest gate from a tripwire into a
+    // ladder: a paraphrase costs one targeted re-fetch instead of halting the run, and the
+    // halt is reserved for a slice no tier could carry.
+    const slices = await pipeline(
+      manifest,
+      (entry) => fetchSlice(entry, 'load:' + entry.id, {}),
+      async (first, entry) => {
+        if (first && first.wo) return first
+        const why = first && first.why ? first.why : entry.id + ': the slice stage returned nothing'
+        log(`${entry.id}: the copy failed verification (${why}); retrying one tier up.`)
+        const second = await fetchSlice(entry, 'load:' + entry.id + '#2', { model: 'sonnet' })
+        return second.wo ? { ...second, healed: true } : second
+      },
+    )
+
+    const byId = new Map()
+    const failedSlices = []
+    slices.forEach((slice, i) => {
+      if (slice && slice.wo) byId.set(manifest[i].id, slice.wo)
+      else failedSlices.push((slice && slice.why) || manifest[i].id + ': the slice stage returned nothing')
+    })
+
+    if (failedSlices.length > 0) {
+      return corruptHalt(failedSlices,
+        `HALT: ${failedSlices.length} order(s) could not be carried intact by either courier tier.`)
+    }
+
+    const healed = slices.filter((slice) => slice && slice.healed).map((slice) => slice.wo.id)
+    if (healed.length > 0) {
+      log(`${healed.length} order(s) needed the second-tier courier: ${healed.join(', ')}.`)
+    }
+
+    // Belt and braces over the assembly itself. The per-slice checks make this pass by
+    // construction, so a note here means THIS script assembled wrongly — a different defect
+    // than a courier copying wrongly, exiting through the same honest halt.
+    const workOrders = manifest.map((entry) => byId.get(entry.id))
+    const assembled = planIntegrity(workOrders, manifest)
+    if (assembled.length > 0) {
+      return corruptHalt(assembled,
+        `HALT: the assembled plan does not match its manifest (${assembled.length} note(s)).`)
+    }
+
+    // ------------------------------------------------- 1b. adopt the envelope
+    //
+    // The plan travels with the conditions it was written under, and on a resume those win.
+    // A caller re-invoking a week later has a change description and a path; it does not
+    // have the roots the plan was surveyed against, the intelligence tier it was planned
+    // at, or the settled evidence its design phase produced. Defaulting those to whatever
+    // this invocation happened to pass implements the same plan under different conditions
+    // and reports it as the same run.
+    //
+    // `change` is the exception, and deliberately: the workflow guards on it before the
+    // loader runs, so a caller must supply it regardless. That makes it free to compare —
+    // and the comparison, made above the moment the index returned, catches resuming the
+    // wrong run before the fan spends anything on it.
+    //
     // Explicit caller values still win over the record — a human who passes something has
     // said something — but an override is logged, because silently disagreeing with the
     // plan on disk is how a resumed run stops being the run it resumed.
@@ -2375,9 +2520,16 @@ try {
       }
     }
 
-    planned = loaded.plan
-    planPath = loaded.plan.plan_path || resumePath
-    resumeState = loaded.state || []
+    planned = {
+      work_orders: workOrders,
+      shared_files: index.shared_files || [],
+      partition_raw: index.partition_raw || '',
+      blocking_gaps: index.blocking_gaps || [],
+      plan_path: index.plan_path || '',
+      notes: index.plan_notes || '',
+    }
+    planPath = planned.plan_path || resumePath
+    resumeState = index.state || []
     runstamp = runstampOf(planPath)
 
     for (const entry of resumeState) {

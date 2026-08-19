@@ -15,6 +15,35 @@ import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { manifestOf } from '../lib/plan-digest.mjs'
 
+/**
+ * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
+ * 'resume-index' answer (everything but the orders) and a 'load:' prefix responder that
+ * serves each order slice out of the same fixture, retry labels included.
+ */
+const resumeLoad = (v) => ({
+  'resume-index': {
+    stop_reason: v.stop_reason,
+    order_ids: v.plan ? (v.plan.work_orders || []).map((o) => o.id) : [],
+    shared_files: v.plan ? v.plan.shared_files : [],
+    partition_raw: v.plan ? v.plan.partition_raw : '',
+    blocking_gaps: v.plan ? v.plan.blocking_gaps : [],
+    plan_path: v.plan ? v.plan.plan_path : '',
+    plan_notes: v.plan ? (v.plan.notes || '') : '',
+    envelope: v.envelope || { change: '', roots: '', caller_notes: '', intelligence: '',
+                              base_branch: '', base_sha: '', programme: '', slice: '' },
+    manifest: v.manifest || [],
+    state: v.state || [],
+    notes: v.notes || '',
+  },
+  'load:': (prompt, opts) => {
+    const id = (opts.label || '').replace(/^load:/, '').replace(/#\d+$/, '')
+    const wo = v.plan && (v.plan.work_orders || []).find((o) => o.id === id)
+    return wo ? { stop_reason: 'loaded', orders: [wo], notes: '' }
+              : { stop_reason: 'not_found', orders: [], notes: 'no order ' + id }
+  },
+})
+
+
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
 const A40 = 'a'.repeat(40)
@@ -763,7 +792,7 @@ test('a resumed run skips the survey and the planner entirely', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => { surveyCalls += 1; return surveyResult() },
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -784,7 +813,7 @@ test('a resumed run reviews the whole change, not only the waves it ran', async 
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -801,7 +830,7 @@ test('a branch that moved between invocations is reported, and the tree wins', a
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       'integration-setup': setUp({ head_sha: C40 }),   // the state recorded M40
       'merge:': merged(N40),
     }),
@@ -817,8 +846,8 @@ test('an unreadable run directory dispatches nothing and says to re-plan', async
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: scriptedAgents({
-      'resume-load': { stop_reason: 'unreadable', plan: null, manifest: [], state: [],
-                       notes: 'plan.json is not there' },
+      ...resumeLoad({ stop_reason: 'unreadable', plan: null, manifest: [], state: [],
+                       notes: 'plan.json is not there' }),
     }),
   })
 
@@ -840,7 +869,7 @@ test('a manifest computed by lib/plan-digest.mjs is accepted by the in-script di
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -861,7 +890,7 @@ test('a paraphrased context halts the resume, naming the order', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: scriptedAgents({
-      'resume-load': loaded(asRead, { manifest: asWritten }),
+      ...resumeLoad(loaded(asRead, { manifest: asWritten })),
     }),
   })
 
@@ -879,7 +908,7 @@ test('a dropped acceptance criterion halts the resume with the shape of the dama
   const { result } = await runWorkflow(WF, {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
-    agent: scriptedAgents({ 'resume-load': loaded(asRead, { manifest: manifestOf(orders) }) }),
+    agent: scriptedAgents({ ...resumeLoad(loaded(asRead, { manifest: manifestOf(orders) }) )}),
   })
 
   assert.ok(result.coverage.unreached.some((u) =>
@@ -893,7 +922,7 @@ test('an order that vanished in transit halts the resume', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: scriptedAgents({
-      'resume-load': loaded([order('W1')], { manifest: manifestOf(orders) }),
+      ...resumeLoad(loaded([order('W1')], { manifest: manifestOf(orders) })),
     }),
   })
 
@@ -950,12 +979,12 @@ test('a resumed run adopts the notes and tier its plan was written under', async
     args: { change: 'add the thing', resume_path: RUN_DIR, plugin_root: 'C:/plugin' },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, {
+      ...resumeLoad(loaded(orders, {
         envelope: envelope({
           roots: 'C:/repo', caller_notes: 'rsync is absent; transport is scp',
           intelligence: 'max',
         }),
-      }),
+      })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -974,7 +1003,7 @@ test('an explicit caller value still wins over the record, and says so', async (
     args: { ...ARGS, roots: 'C:/elsewhere', resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, { envelope: envelope({ roots: 'C:/repo' }) }),
+      ...resumeLoad(loaded(orders, { envelope: envelope({ roots: 'C:/repo' }) })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -995,7 +1024,7 @@ test('a caller tier that disagrees with the record wins, and says so', async () 
     args: { ...ARGS, intelligence: 'normal', resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, { envelope: envelope({ intelligence: 'max' }) }),
+      ...resumeLoad(loaded(orders, { envelope: envelope({ intelligence: 'max' }) })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -1013,7 +1042,7 @@ test('a resume that supplies the tier it already recorded is not an override', a
     args: { ...ARGS, intelligence: 'max', resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, { envelope: envelope({ intelligence: 'max' }) }),
+      ...resumeLoad(loaded(orders, { envelope: envelope({ intelligence: 'max' }) })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -1029,7 +1058,7 @@ test('resuming under a different change halts before anything is dispatched', as
   const { result, prompts } = await runWorkflow(WF, {
     args: { ...ARGS, change: 'add a completely different thing', resume_path: RUN_DIR },
     workflow: () => surveyResult(),
-    agent: happyAgents({ 'resume-load': loaded(orders) }),
+    agent: happyAgents({ ...resumeLoad(loaded(orders) )}),
   })
 
   assert.equal(result.coverage.complete, false)
@@ -1047,7 +1076,7 @@ test('a plan file with no recorded envelope resumes rather than halting', async 
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, { envelope: envelope({ change: '', roots: '' }) }),
+      ...resumeLoad(loaded(orders, { envelope: envelope({ change: '', roots: '' }) })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -1203,11 +1232,11 @@ test('a wave records what it learned, and a resume inherits it', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, {
+      ...resumeLoad(loaded(orders, {
         state: [{ wave: 1, merged: ['W1'], approved_unmerged: [], escalated: [],
                   integration_base: A40, integration_head: M40,
                   discovered: ['the suite needs POSTGRES_URL set'] }],
-      }),
+      })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
     }),
@@ -1233,7 +1262,7 @@ test('a resume whose tree held still costs one observation and proceeds', async 
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       drift: drifted({ user_head: A40 }),   // exactly the anchor
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
@@ -1251,7 +1280,7 @@ test('drift that misses every pending locus proceeds without a gate', async () =
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       drift: drifted({ moved_files: ['docs/README.md', 'src/unrelated.js'] }),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
@@ -1268,7 +1297,7 @@ test('a pending order whose declared file moved holds the run at a gate', async 
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       drift: drifted({ moved_files: ['src/W2.js'] }),
     }),
   })
@@ -1287,7 +1316,7 @@ test('an order already merged is not re-examined for staleness', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       drift: drifted({ moved_files: ['src/W1.js'] }),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
@@ -1309,10 +1338,10 @@ test('the caller clears some orders and the rest stay withheld, named', async ()
     workflow: () => surveyResult(),
     agent: happyAgents({
       plan: wavedPlan(orders, [['W1'], ['W2', 'W5']]),
-      'resume-load': loaded(orders, {
+      ...resumeLoad(loaded(orders, {
         plan: { ...loadedPlan(orders),
                 partition_raw: JSON.stringify({ waves: [['W1'], ['W2', 'W5']], coupled: [] }) },
-      }),
+      })),
       drift: drifted({ moved_files: ['src/W2.js', 'src/W5.js'] }),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
@@ -1333,7 +1362,7 @@ test('an anchor git cannot resolve halts the whole resume', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       drift: drifted({ stop_reason: 'anchor_unreachable', user_head: '', moved_files: [],
                        notes: "fatal: ambiguous argument 'master': unknown revision" }),
     }),
@@ -1391,7 +1420,7 @@ test('a pending order whose read dependency moved is a stale suspect', async () 
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       // W2 writes src/W2.js, which nobody touched. It READS the token module, which moved.
       drift: drifted({ moved_files: ['src/auth/token.js'] }),
     }),
@@ -1414,10 +1443,10 @@ test('the checkpoint says whether an order owns the moved file or depends on it'
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders, {
+      ...resumeLoad(loaded(orders, {
         plan: { ...loadedPlan(orders),
                 partition_raw: JSON.stringify({ waves: [['W1'], ['W2', 'W3']], coupled: [] }) },
-      }),
+      })),
       drift: drifted({ moved_files: ['src/W2.js', 'src/auth/token.js'] }),
     }),
   })
@@ -1461,7 +1490,7 @@ test('an order that reads nothing behaves exactly as before', async () => {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded([order('W1'), order('W2', { deps: ['W1'] })]),
+      ...resumeLoad(loaded([order('W1'), order('W2', { deps: ['W1'] })])),
       drift: drifted({ moved_files: ['docs/README.md'] }),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
@@ -1478,7 +1507,7 @@ test('a read-drift suspect is cleared by the same per-order confirmation', async
     args: { ...ARGS, resume_path: RUN_DIR, confirmed_stale: ['W2'] },
     workflow: () => surveyResult(),
     agent: happyAgents({
-      'resume-load': loaded(orders),
+      ...resumeLoad(loaded(orders)),
       drift: drifted({ moved_files: ['src/auth/token.js'] }),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),

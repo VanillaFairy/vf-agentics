@@ -20,6 +20,35 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
+/**
+ * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
+ * 'resume-index' answer (everything but the orders) and a 'load:' prefix responder that
+ * serves each order slice out of the same fixture, retry labels included.
+ */
+const resumeLoad = (v) => ({
+  'resume-index': {
+    stop_reason: v.stop_reason,
+    order_ids: v.plan ? (v.plan.work_orders || []).map((o) => o.id) : [],
+    shared_files: v.plan ? v.plan.shared_files : [],
+    partition_raw: v.plan ? v.plan.partition_raw : '',
+    blocking_gaps: v.plan ? v.plan.blocking_gaps : [],
+    plan_path: v.plan ? v.plan.plan_path : '',
+    plan_notes: v.plan ? (v.plan.notes || '') : '',
+    envelope: v.envelope || { change: '', roots: '', caller_notes: '', intelligence: '',
+                              base_branch: '', base_sha: '', programme: '', slice: '' },
+    manifest: v.manifest || [],
+    state: v.state || [],
+    notes: v.notes || '',
+  },
+  'load:': (prompt, opts) => {
+    const id = (opts.label || '').replace(/^load:/, '').replace(/#\d+$/, '')
+    const wo = v.plan && (v.plan.work_orders || []).find((o) => o.id === id)
+    return wo ? { stop_reason: 'loaded', orders: [wo], notes: '' }
+              : { stop_reason: 'not_found', orders: [], notes: 'no order ' + id }
+  },
+})
+
+
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
 const A40 = 'a'.repeat(40)
@@ -149,7 +178,7 @@ test('a resume dispatches no guard — resume_path is already the answer', async
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: cast({
-      'resume-load': { stop_reason: 'unreadable', plan: null, manifest: [], state: [], notes: 'x' },
+      ...resumeLoad({ stop_reason: 'unreadable', plan: null, manifest: [], state: [], notes: 'x' }),
     }),
   })
 
