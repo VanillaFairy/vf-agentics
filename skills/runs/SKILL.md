@@ -12,6 +12,10 @@ run was for. This skill is how they find it again.
 
 It owns no judgment. It reads a CLI, shows a table, and hands the pick to `develop`.
 
+This listing IS the progress ledger. A hand-maintained progress file duplicates what this
+skill derives on every call, and the copy goes stale the moment a run moves — when a user
+keeps one, point them here rather than updating it for them.
+
 ## Step 1 — List
 
 ```bash
