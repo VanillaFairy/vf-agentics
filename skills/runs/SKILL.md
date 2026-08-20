@@ -48,7 +48,10 @@ show it as `planned` — that invites re-planning work which may already have me
 
 `approved_unmerged` is worth reading out loud when it is non-empty: those orders passed review
 and are sitting on their branches unmerged, which is the signature of a run interrupted
-mid-wave. A resume finds them and adopts them rather than rebuilding them.
+mid-wave. A resume merges them as they stand once git confirms each branch is still at the
+head its review closed over — no coder, no second review. `verified_unapproved` is the same
+story one stage earlier: green, not yet reviewed, and a resume takes them straight to review.
+Both are reasons to resume rather than re-plan, so say the numbers out loud.
 
 If there are no runs, say so plainly and stop. Do not offer to start one; that is `design`
 or `develop`, and the user asked a different question.

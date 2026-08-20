@@ -65,6 +65,38 @@ test('order-approved lines alone make a run in-flight, never planned', () => {
   assert.deepEqual(run.approved_unmerged, ['W1'])
 })
 
+test('order-verified lines alone make a run in-flight too', () => {
+  // One stage earlier than the case above, and the same wrong invitation: those orders are
+  // sitting green on their branches, and a resume takes them straight to review.
+  const state = [{ kind: 'order-verified', wave: 1, order: 'W1', branch: 'vfa/x-W1' }]
+  const run = deriveRun('20260816-143005', plan(), state, null)
+
+  assert.equal(run.status, 'in-flight')
+  assert.deepEqual(run.verified_unapproved, ['W1'])
+  assert.deepEqual(run.approved_unmerged, [],
+    'verified is not approved — reporting it as reviewed would claim a reviewer looked')
+})
+
+test('a verified order that later merged is not still reported as verified', () => {
+  const state = [
+    { kind: 'order-verified', wave: 1, order: 'W1', branch: 'vfa/x-W1' },
+    wave({ merged: ['W1'] }),
+  ]
+
+  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).verified_unapproved, [])
+})
+
+test('waves_recorded counts waves, not lines', () => {
+  // A resume that finds merges git holds and the log does not appends a corrective line
+  // against the wave those merges belonged to. Counting lines would report a wave that never
+  // ran.
+  const state = [wave({ merged: ['W1'] }), wave({ merged: ['W1', 'W2'] })]
+  const run = deriveRun('20260816-143005', plan(), state, null)
+
+  assert.equal(run.waves_recorded, 1)
+  assert.deepEqual(run.merged, ['W1', 'W2'])
+})
+
 test("git's unanswerable ancestry is not read as a no-but-known", () => {
   // Both land on `integrated`, which is the safe word. What must NOT happen is a crash or a
   // claim: null means the branch was deleted or the object is missing from this clone, and

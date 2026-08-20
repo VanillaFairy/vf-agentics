@@ -524,13 +524,13 @@ test('each approved order is recorded the moment its review closes', async () =>
   assert.ok(orderLines[0].prompt.includes('"head_sha":"' + B40 + '"'))
 })
 
-test('an order-approved line is written before the wave line it belongs to', async () => {
+test('the per-order lines are written before the wave line they belong to', async () => {
   const { prompts } = await run({ agent: happyAgents() })
 
   const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
 
-  assert.deepEqual(labels, ['record:W1', 'record:wave-1'],
-    'recording the order after the wave would record nothing an interruption could use')
+  assert.deepEqual(labels, ['record:verified:W1', 'record:W1', 'record:wave-1'],
+    'recording a stage after the wave would record nothing an interruption could use')
 })
 
 test('an escalated order is never recorded as approved', async () => {

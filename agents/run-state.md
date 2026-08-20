@@ -1,6 +1,6 @@
 ---
 name: run-state
-description: Reads and appends a vf-agentics run's durable state under .claude/vfa/runs/<runstamp>/ — serves a resume as the index courier or a single-order courier, or appends one wave's outcome. Use only from vfa-develop. Never reads or writes anything else, and never judges what it carries.
+description: Reads and appends a vf-agentics run's durable state under .claude/vfa/runs/<runstamp>/ — serves a resume as the index courier or a single-order courier, or appends one outcome line (a wave, a verified order, an approved order). Use only from vfa-develop. Never reads or writes anything else, and never judges what it carries.
 tools: Read, Write
 model: haiku
 ---
@@ -43,19 +43,28 @@ work orders:
   failure**: it means the run never completed a wave. Return an empty list and say so in
   `notes`.
 
-  **Two line types, one returned shape.** Every line you return carries every field, because
-  the shape your caller validates against is closed. Which half is real is said by `kind`:
+  **Three line types, one returned shape.** Every line you return carries every field, because
+  the shape your caller validates against is closed. Which part is real is said by `kind`:
 
   | `kind` | the fields that mean something |
   |---|---|
   | `wave` | `wave`, `merged`, `approved_unmerged`, `escalated`, `discovered`, `integration_base`, `integration_head` |
-  | `order-approved` | `wave`, `order`, `branch`, `worktree`, `head_sha` |
+  | `order-verified` | `wave`, `order`, `branch`, `worktree`, `head_sha`, `measured` |
+  | `order-approved` | `wave`, `order`, `branch`, `worktree`, `head_sha`, `measured` |
 
-  Fill the other half with empties — `''` for strings, `[]` for arrays, `0` for `wave` on an
-  order line that does not record one. **A line on disk with no `kind` at all is a `wave`
-  line**: every line written before this format existed was one, so saying that is reading the
-  file's history, not guessing at a value. What you must never do is carry a value across from
-  the other half to make a line look complete.
+  Fill the rest with empties — `''` for strings, `[]` for arrays, `0` for `wave` on an
+  order line that does not record one. Two defaults are readings of the file's own history
+  rather than guesses, and both are required of you:
+
+  - **A line with no `kind` at all is a `wave` line.** Every line written before that format
+    existed was one.
+  - **A line with no `measured` comes back with `[]`.** It was written before the field
+    existed, and `[]` says "nothing recorded" — which is what actually happened.
+
+  What you must never do is carry a value across from another part of the line to make it
+  look complete, or turn a missing `head_sha` into a plausible one. Your caller compares that
+  sha against the branch git actually holds and adopts a finished stage when they agree; a sha
+  you supplied would adopt a stage nobody finished.
 
 If `plan.json` is missing, unreadable, or not valid JSON, return
 `stop_reason: 'unreadable'` with what you found in `notes`, and return whatever you could
@@ -83,19 +92,20 @@ order's context lands under another order's name.
 ## Record mode
 
 You are given the absolute path of a run directory and one outcome object — a wave that
-finished, or an order that was just approved. Append it to `state.jsonl` as **a single line of
-JSON**, then a newline. The object is given to you complete; write it as handed, including its
-`kind`.
+finished, an order whose verification just came back green, or an order whose review just
+closed. Append it to `state.jsonl` as **a single line of JSON**, then a newline. The object is
+given to you complete; write it as handed, including its `kind`.
 
 Read the file first and write it back with your line added — the file is an append-only
 log and every earlier line is history. Losing one silently rewrites what the run did. If
 the file does not exist yet, create it with your line as its first.
 
 Record exactly what you were handed. You do not know which orders "should" have merged and
-you are not asked; a wave that merged nothing is recorded as a wave that merged nothing. An
-order-approved line arrives long before the wave it belongs to ends, and that is the point of
-it: a run interrupted mid-wave otherwise loses every order already implemented, verified and
-approved but not yet merged, and its retry rebuilds all of it.
+you are not asked; a wave that merged nothing is recorded as a wave that merged nothing. A
+per-order line arrives long before the wave it belongs to ends, and that is the point of it:
+each one marks a stage that a resume can pick up from instead of buying again. A run
+interrupted mid-wave otherwise loses every order already implemented, verified and approved
+but not yet merged, and its retry rebuilds all of it.
 
 If the write fails — the directory is gone, the path is not writable — return
 `stop_reason: 'unwritable'` with the real error in `notes`. Your caller treats that as a

@@ -47,15 +47,27 @@ the same change before planning a new one — and the workflow enforces the same
 mechanically: a fresh invocation whose change string matches a `planned` or `in-flight` run
 on disk halts at a checkpoint (`existing_run`) instead of planning a duplicate, because a
 skill instruction guards only the callers that read it and a silent harness-cache miss
-arrives as a fresh invocation. It records each order the moment its review closes
-rather than when its wave ends, and — because order branches are named deterministically —
-finds and **adopts** an interrupted invocation's commits rather than rebuilding them. Adopted
-work is never trusted: it goes through the same verifier and the same fresh reviewers.
+arrives as a fresh invocation. It records each order the moment a stage closes — verified,
+then approved — rather than when its wave ends, and because order branches are named
+deterministically it can go and look at what an interrupted invocation actually built.
+
+A resume then **salvages by stage**. It trusts a stage exactly as far as two independent
+records agree: the run said the stage closed, and git still holds the head it closed over.
+Where they agree the stage is adopted whole — an order approved and unchanged is merged as it
+stands, an order verified and unchanged goes straight to review, a merge git already holds is
+recorded rather than rebuilt. Where they disagree, everything past the last stage they agree
+on is redone. Rebuilding from scratch is the bottom of that ladder, not the top: an
+interrupted run re-buying its own finished work is the failure the ladder exists to prevent,
+and it is at its most expensive in exactly the situation where the budget already ran out
+once. Escalations are carried forward rather than silently retried — `retry_escalated` names
+the ids whose cause has been dealt with. Salvage is always reported: a run that says
+"implemented W4" about work it adopted rather than did is describing work it did not do.
 
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
-`2026-08-16-increment-4-contracts.md` and `2026-08-17-increment-5-contracts.md`. **Any change
-to the plan envelope's field list cites the registry in increment 5 §1** — nothing finds its
-copies for you.
+`2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md` and
+`2026-08-20-increment-6-contracts.md`. **Any change to the plan envelope's field list cites the
+registry in increment 5 §1, and any change to a `state.jsonl` line cites the registry in
+increment 6 §2** — nothing finds either set of copies for you.
 
 Run the checks with:
 

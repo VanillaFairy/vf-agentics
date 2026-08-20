@@ -83,7 +83,8 @@ user is the one who knows. What you must not do is silently plan the same change
 - **`resume_path`**, the durable one, otherwise. It crosses sessions and machines-with-the-same-
   checkout. It pays for the loader fan — one small index courier plus one courier per work
   order, each verified against the plan's stored digests — and for nothing else: no survey,
-  no planning.
+  no planning, and no re-doing of any stage the run recorded and git still corroborates
+  (step 3e's ladder).
 
 Reach for the first when you can and the second when you cannot. The field incident used
 neither, because until now no skill said when to use which.
@@ -169,6 +170,12 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
    a. **Escalations.** Present each (id, reason, unresolved criticals, trail tail) to the
       human. These are decisions, not information — do not resolve them yourself.
 
+      `reason: 'carried_forward'` is the one that is not a fresh decision: an earlier
+      invocation escalated that order and this one declined to re-buy it. Say so, name the
+      wave it came from, and offer `retry_escalated` rather than presenting it as a failure
+      this run observed. Its trail is empty because the original findings were never written
+      to disk — do not fill that silence with a guess at what went wrong.
+
    a-bis. **Role-bearing orders.** The planner may split a behaviour into the
       red-green-refactor cycle: a `red` order landing failing tests, a `green` order making
       them pass, and optionally a `refactor` order restructuring afterwards. Each is verified
@@ -242,7 +249,10 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
         a wave were declared pairwise disjoint, so a conflict there is a **planner defect**:
         surface it with the conflicting paths, never resolve it silently.
       - `approved_unmerged` — orders that passed review and never made it in, because the
-        merge run stopped before them. They still have branches; nothing was lost.
+        merge run stopped before them. They still have branches; nothing was lost, and a
+        resumed run merges them as they stand once git confirms the branch is still at the
+        reviewed head. **Do not merge one by hand** to "help": that makes it read as landed
+        while skipping the wave verification that measures the combination.
       - `wave_verify` — the build and suite facts at the merged head, per wave. A `failed`
         entry is a defect in the *combination* that no single order's own verification could
         have caught.
@@ -295,18 +305,40 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
       iteration's escalations, blocked, coupled and still-deferred ids join the running
       totals, so the final report covers every order from every pass.
 
-      **It also scavenges.** Order branches are named `vfa/<runstamp>-<order-id>`, which is
-      what makes an interrupted invocation's work findable rather than merely present: before
-      dispatching a coder for any pending order, a resumed run asks git whether that branch
-      already exists with commits on it. Where it does, those commits are **adopted, not
-      re-implemented, and not trusted** — they go through the same verifier and the same fresh
-      reviewers a coder's output would, and an ordinary fix round finishes them if the review
-      finds them wanting. Report adoption when it happens; a run that says "implemented W4"
-      about commits it found rather than wrote is describing work it did not do.
+      **It also salvages, by stage.** Order branches are named `vfa/<runstamp>-<order-id>`,
+      which is what makes an interrupted invocation's work findable rather than merely present.
+      Before dispatching anything, a resumed run pairs what the run recorded against what git
+      holds, and takes each order as far as the two agree:
 
-      The run state now records an order the moment its **review closes**, not when its wave
-      ends. That is the difference between a limit landing mid-wave costing one order and
-      costing all of them.
+      | what the record and git agree on | what the resume does |
+      |---|---|
+      | the branch is already in the integration branch | records the merge; nothing is rebuilt |
+      | approved, and the branch is still at the reviewed head | merges it as it stands — no coder, no verifier, no second review |
+      | verified green, and the branch is still at the verified head | adopts the commits and goes straight to review |
+      | commits on the branch, no stage recorded | adopts them, then verifies and reviews in full |
+      | nothing on the branch | dispatches a coder |
+
+      A stage is adopted only where **both** sources say so: the run recorded that it closed,
+      and git still holds the head it closed over. A branch that moved since is a branch nobody
+      finished, so everything past the last agreed stage is redone. Rebuilding from scratch is
+      the bottom of that ladder, not the top.
+
+      Report salvage whenever it happens, and say which kind. A run that says "implemented W4"
+      about work it adopted rather than did is describing work it did not do — the result marks
+      those entries `review.salvaged`, with `rounds: 0`, precisely so the two are tellable
+      apart.
+
+      The run state records each stage the moment it closes — a line when verification comes
+      back green, another when the review closes — not when the wave ends. That is the
+      difference between a limit landing mid-wave costing one order and costing all of them.
+
+      **Escalations carry forward.** An order an earlier invocation escalated is not silently
+      dispatched again: it comes back in `escalations` with `reason: 'carried_forward'`, and
+      its consumers block behind it as usual. Re-invoke with
+      `retry_escalated: [<ids>]` for the ones whose cause has been dealt with — those get the
+      full ladder, so whatever partial work sits on their branches is still salvaged. The
+      findings behind the original escalation were never durable, only the ids: point the human
+      at the earlier invocation's report rather than inventing a cause.
 
       If `result.plan_path` is empty the run was never persisted and there is nothing to
       resume from; say so, and treat a re-run as a fresh plan.

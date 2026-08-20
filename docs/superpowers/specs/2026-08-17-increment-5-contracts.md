@@ -414,6 +414,12 @@ re-running only what died. Otherwise the durable `resume_path` — cross-session
 loader and for neither the survey nor the plan. Until now no skill said when to use which; the
 field incident used neither.
 
+> **Superseded in part by `2026-08-20-increment-6-contracts.md`.** §7.3's line-shape table and
+> §7.4's "never trust" rule are both extended there: the log gains an `order-verified` kind and
+> a `measured` field, and a recorded, sha-anchored stage is adopted rather than redone. The
+> registry for the line shape now lives in increment 6 §2. What survives here unchanged is the
+> reasoning for one total shape, the serialized writes, and the `kind`-defaulting rule.
+
 **7.3 Order-grain durable state.** `state.jsonl` gains a second line type, `order-approved`,
 appended the moment an order's review closes rather than when its wave ends. A limit landing
 mid-wave — the longest single stretch in the pipeline — used to lose every order already

@@ -148,20 +148,22 @@ const RESUME_INDEX = {
         acceptance_n: { type: 'integer' },
         digest: { type: 'string' },   // FNV-1a over the canonical order, from lib/plan-digest.mjs
       } } },
-    // Two line types in one append-only log, and one TOTAL shape carrying both. The schema is
-    // `additionalProperties: false` over a closed `required`, so a union is not expressible
-    // here; the alternative — making half the fields optional — would mean a wave line missing
-    // `merged` and an order line legitimately without one are the same value, which is the
-    // absence nobody notices. So every line carries every field, and `kind` says which half is
-    // load-bearing. A line written before this contract carries no `kind`; it comes back as
-    // `wave`, which is not a guess — every line ever written before this version was one.
+    // Three line types in one append-only log, and one TOTAL shape carrying all of them. The
+    // schema is `additionalProperties: false` over a closed `required`, so a union is not
+    // expressible here; the alternative — making most of the fields optional — would mean a
+    // wave line missing `merged` and an order line legitimately without one are the same
+    // value, which is the absence nobody notices. So every line carries every field, and
+    // `kind` says which part is load-bearing. A line written before this contract carries no
+    // `kind`; it comes back as `wave`, which is not a guess — every line ever written before
+    // that version was one. A line written before `measured` existed comes back with `[]`,
+    // which reads as "nothing was recorded", not as "nothing was measured".
     state: { type: 'array', items: {
       type: 'object', additionalProperties: false,
       required: ['kind', 'wave', 'merged', 'approved_unmerged', 'escalated',
                  'integration_base', 'integration_head', 'discovered',
-                 'order', 'branch', 'worktree', 'head_sha'],
+                 'order', 'branch', 'worktree', 'head_sha', 'measured'],
       properties: {
-        kind: { type: 'string', enum: ['wave', 'order-approved'] },
+        kind: { type: 'string', enum: ['wave', 'order-approved', 'order-verified'] },
         wave: { type: 'integer' },
         merged: { type: 'array', items: { type: 'string' } },
         approved_unmerged: { type: 'array', items: { type: 'string' } },
@@ -174,15 +176,27 @@ const RESUME_INDEX = {
         // waves that ran after the interruption.
         integration_base: { type: 'string' },
         integration_head: { type: 'string' },
-        // The `order-approved` half: one line per order the moment its review closed, written
-        // long before the wave it belongs to ends. A usage limit lands in the middle of a
-        // wave — the longest single stretch this pipeline has — and without these lines every
-        // order already implemented, verified and approved but not yet merged is invisible to
-        // the resume, which re-implements all of it. '' on a wave line.
+        // The per-order half, shared by `order-approved` and `order-verified`: one line per
+        // order at the moment that stage closed, written long before the wave it belongs to
+        // ends. A usage limit lands in the middle of a wave — the longest single stretch this
+        // pipeline has — and without these lines every order already implemented, verified and
+        // approved but not yet merged is invisible to the resume, which re-implements all of
+        // it. '' on a wave line.
+        //
+        // `head_sha` is what makes the line usable rather than merely informative: a resume
+        // compares it against the branch git actually holds, and adopts the stage only when
+        // they agree. A line is a claim about a stage that closed; the sha is what ties the
+        // claim to the commits it closed over.
         order: { type: 'string' },
         branch: { type: 'string' },
         worktree: { type: 'string' },
         head_sha: { type: 'string' },
+        // What the verifier mechanically measured when this order went green — 'build',
+        // 'suite', 'discriminator:<n>'. Recorded so an order salvaged at its verified or
+        // approved stage can report what was measured without re-measuring it, and so an
+        // empty measurement stays visible as the vacuous verification it was. `[]` on a wave
+        // line, and on every line written before this field existed.
+        measured: { type: 'array', items: { type: 'string' } },
       } } },
     notes: { type: 'string' },
   },
@@ -283,13 +297,20 @@ const SCAVENGE = {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
     found: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['id', 'branch', 'worktree', 'base_sha', 'head_sha', 'commits'],
+      required: ['id', 'branch', 'worktree', 'base_sha', 'head_sha', 'commits', 'already_merged'],
       properties: {
         id: { type: 'string' },
         branch: { type: 'string' },
         worktree: { type: 'string' },   // absolute, and it must be enterable — observed
         base_sha: { type: 'string' },   // the fork point, observed with git merge-base
         head_sha: { type: 'string' },
+        // Whether this branch's head is already an ancestor of the integration branch —
+        // observed with git merge-base --is-ancestor, never inferred. The merge itself is
+        // durable in git the instant it happens, while the state line recording it is written
+        // only when the whole wave ends: an invocation that died in between left a merge that
+        // no record mentions, and without this question a resume rebuilds and re-merges work
+        // the integration branch already carries.
+        already_merged: { type: 'boolean' },
         commits: { type: 'array', items: {
           type: 'object', additionalProperties: false,
           required: ['sha', 'subject'],
@@ -693,6 +714,14 @@ const planOnly = input.plan_only === true
 // cannot say it. Absent (not an array) means the human has not looked yet, which is a
 // different state from having looked and cleared nothing.
 const confirmedStale = Array.isArray(input.confirmed_stale) ? input.confirmed_stale : null
+
+// Which previously escalated orders the caller wants tried again. A resumed run carries an
+// earlier invocation's escalations forward rather than silently re-buying them: an order that
+// failed verification repeatedly, or whose coder reported itself blocked, fails the same way
+// on a second pass unless something changed — and re-dispatching it costs a full coder, a
+// verifier and a review loop to rediscover a verdict already on disk. Naming an id here says
+// something did change. Absent (not an array) means every carried escalation stands.
+const retryEscalated = Array.isArray(input.retry_escalated) ? input.retry_escalated : []
 
 // Supplying this IS the confirmation that a second run for the same change is deliberate —
 // there is nothing else it could mean. Read only at the existing-run guard below. Without it,
@@ -1348,16 +1377,28 @@ function scavengePrompt(candidates) {
     `2. git merge-base <branch> ${integration.branch}   — the fork point. Report it as ` +
     `base_sha. It is the baseline the discriminator will be measured against, so it must be ` +
     `observed rather than assumed.\n` +
-    `3. git log --reverse --format=%H%x09%s <base_sha>..<branch>   — the commits. A branch ` +
-    `that resolves with NO commits ahead of the fork point holds nothing to adopt: leave it ` +
-    `out too.\n` +
-    `4. Make it enterable. git worktree list — if that branch already has a worktree, use ` +
+    `3. git merge-base --is-ancestor <branch> ${integration.branch}   — report already_merged ` +
+    `from the exit status: 0 means this branch is ALREADY IN the integration branch, anything ` +
+    `else means it is not. Read it from the exit code and nothing else. A branch that is ` +
+    `already merged goes into found WITH already_merged true even when step 4 finds no ` +
+    `commits ahead of the fork point — that combination is the signature of a merge that ` +
+    `landed in git while the invocation died before recording it, and it is precisely what ` +
+    `your caller needs to hear about.\n` +
+    `4. git log --reverse --format=%H%x09%s <base_sha>..<branch>   — the commits. A branch ` +
+    `that resolves with NO commits ahead of the fork point and is not already merged holds ` +
+    `nothing to adopt: leave it out too.\n` +
+    `5. Make it enterable. git worktree list — if that branch already has a worktree, use ` +
     `that path. If it does not, create one:\n\n` +
     `   git worktree add .claude/worktrees/vfa-<the branch's last path segment> <branch>\n\n` +
     `   Report the ABSOLUTE path. Do not delete, do not force, and do not check the branch ` +
     `out anywhere else — everything downstream is dispatched into the path you report, and a ` +
     `wrong one sends a fix round at the wrong tree.\n` +
-    `5. Report head_sha as git rev-parse <branch>, read back rather than expected.\n\n` +
+    `6. Report head_sha as git rev-parse <branch>, read back rather than expected. Your ` +
+    `caller compares it against what this run recorded for that order, so an expected value ` +
+    `here is a stage adopted on a claim rather than on the commits it closed over.\n\n` +
+    `An already-merged branch that has no worktree and needs none is the one case where you ` +
+    `may report an empty worktree: say so in notes. Nothing is dispatched into it — its work ` +
+    `is already in the integration branch.\n\n` +
     `Report only what you OBSERVED. An order you could not resolve, could not enter, or ` +
     `could not read commits for is left out of found, with the reason in notes — your caller ` +
     `treats an absent entry as "there is nothing here to adopt" and dispatches a coder, which ` +
@@ -1589,7 +1630,7 @@ function waveVerifyPrompt(waveNumber) {
 }
 
 function recorderPrompt(runDir, entry) {
-  return `RECORD MODE. Append one wave outcome to this run's state log.\n\n` +
+  return `RECORD MODE. Append one outcome line to this run's state log.\n\n` +
     `RUN DIRECTORY (absolute):\n${runDir}\n\n` +
     `Append EXACTLY this object to state.jsonl as a single line of JSON followed by a ` +
     `newline, preserving every line already in the file:\n\n` +
@@ -1600,11 +1641,12 @@ function recorderPrompt(runDir, entry) {
     `have merged, and a wave that merged nothing is recorded as a wave that merged nothing.`
 }
 
-// state.jsonl is one append-only file, and two things write to it now: a wave line at the end
-// of each wave, and an order-approved line the moment each order's review closes. Order lines
-// are written from INSIDE the pipeline, so two can come due at the same instant — and the
-// recorder appends by reading the file and writing it back, which is a lost-update race the
-// moment two of them run at once.
+// state.jsonl is one append-only file, and three things write to it now: a wave line at the
+// end of each wave, an order-verified line the moment each order's verification comes back
+// green, and an order-approved line the moment its review closes. Order lines are written from
+// INSIDE the pipeline, so two can come due at the same instant — and the recorder appends by
+// reading the file and writing it back, which is a lost-update race the moment two of them run
+// at once.
 //
 // So the writes are serialized here rather than hoped about. A promise chain is the whole
 // mechanism. Determinism belongs in JS (IRON LAW §8), and "the log is missing the line for W4"
@@ -1631,8 +1673,8 @@ function appendState(entry, label) {
   return next
 }
 
-// One line shape, two line types. Every field appears on every line because the loader's
-// schema is closed over a total `required` set (see RESUME_INDEX.state), and these two
+// One line shape, three line types. Every field appears on every line because the loader's
+// schema is closed over a total `required` set (see RESUME_INDEX.state), and these three
 // builders are the only places the shape is written — so the emptiness is deliberate in one
 // place rather than forgotten in several.
 const waveLine = (parts) => ({
@@ -1644,11 +1686,15 @@ const waveLine = (parts) => ({
   discovered: parts.discovered,
   integration_base: parts.integration_base,
   integration_head: parts.integration_head,
-  order: '', branch: '', worktree: '', head_sha: '',
+  order: '', branch: '', worktree: '', head_sha: '', measured: [],
 })
 
-const orderLine = (wave, state) => ({
-  kind: 'order-approved',
+// The per-order builders. One per stage that can close on its own, because a resume trusts a
+// stage exactly as far as the record reaches: an order recorded verified is re-reviewed but
+// not re-verified, an order recorded approved is merged as it stands. Both carry the head the
+// stage closed over, which is what a resume checks git against before believing either.
+const orderStageLine = (kind, wave, state) => ({
+  kind,
   wave,
   merged: [], approved_unmerged: [], escalated: [], discovered: [],
   integration_base: '', integration_head: '',
@@ -1656,7 +1702,11 @@ const orderLine = (wave, state) => ({
   branch: state.branch,
   worktree: state.worktree,
   head_sha: state.head_sha,
+  measured: (state.measured || []).slice(),
 })
+
+const orderLine = (wave, state) => orderStageLine('order-approved', wave, state)
+const orderVerifiedLine = (wave, state) => orderStageLine('order-verified', wave, state)
 
 function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
   const followUp = priorBlockers.length > 0
@@ -1814,6 +1864,10 @@ function newState(wo) {
     id: wo.id, worktree: '', branch: '', base_sha: '', head_sha: '',
     commits: [], fixCommits: [], concerns: [], discovered: [], advisories: [],
     measured: [],
+    // True only when a resume adopted this order's verification from the run's own record.
+    // It gates one skip and nothing else, and it is on the state rather than a lookup at the
+    // skip site so the decision travels with the order it was made about.
+    verifiedOnResume: false,
   }
 }
 
@@ -2229,11 +2283,13 @@ async function implement(wo) {
   const trail = []
 
   // IRON LAW §3, applied to the work rather than to the plan: an interrupted invocation's
-  // commits are RESUMED, never redone. They are also never trusted — nothing below is skipped
-  // for them. The series goes through the same verifier and the same fresh reviewers a coder's
-  // output would, and an ordinary fix round finishes it if the review finds it wanting.
+  // commits are RESUMED, never redone. What is skipped for them is decided by the record, not
+  // by optimism — a stage is adopted only where the run says it closed AND git still holds the
+  // head it closed over. Beyond that stage nothing is skipped: the series goes through the same
+  // verifier and the same fresh reviewers a coder's output would, and an ordinary fix round
+  // finishes it if the review finds it wanting.
   //
-  // Nothing is trusted because it was found; nothing is discarded because it was interrupted.
+  // Nothing is discarded because it was interrupted; nothing is believed on its own say-so.
   const found = scavenged.get(wo.id)
 
   if (found) {
@@ -2245,6 +2301,21 @@ async function implement(wo) {
     // No concerns and no discoveries: the coder that would have reported them never returned.
     // Empty here is honest — it says nothing was told to us, which is different from being
     // told there was nothing.
+
+    // Rung 3: verification closed green over exactly these commits and the branch has not
+    // moved since. Re-running it would re-measure an unchanged tree to reach the verdict
+    // already on disk. The review still runs in full — verification and review answer
+    // different questions, and only one of them was recorded as answered.
+    const verified = verifiedOnDisk.get(wo.id)
+
+    if (verified && verified.head_sha === found.head_sha) {
+      state.verifiedOnResume = true
+      state.measured = verified.measured || []
+      log(`${wo.id}: adopting ${found.commits.length} commit(s) on ${found.branch}, verified ` +
+        `green by an earlier invocation at this exact head; it goes straight to review.`)
+      return { wo, state, trail, escalation: null }
+    }
+
     log(`${wo.id}: adopting ${found.commits.length} commit(s) an interrupted invocation left ` +
       `on ${found.branch}; they are verified and reviewed as if fresh.`)
     return { wo, state, trail, escalation: null }
@@ -2298,8 +2369,18 @@ async function verifyAndReview(carried, wo, waveNumber) {
   if (held.escalation) return held
 
   try {
-    const stalled = await verifyUntilGreen(wo, held.state, held.trail)
-    if (stalled) return { wo, state: held.state, trail: held.trail, escalation: stalled }
+    if (held.state.verifiedOnResume) {
+      log(`${wo.id}: verification skipped — an earlier invocation recorded it green at this head.`)
+    } else {
+      const stalled = await verifyUntilGreen(wo, held.state, held.trail)
+      if (stalled) return { wo, state: held.state, trail: held.trail, escalation: stalled }
+
+      // Green, and recorded the instant it is green rather than when the review that follows
+      // closes. The review loop is the longest stretch inside an order, and an interruption
+      // there used to cost the verification too — re-measuring an unchanged tree to reach a
+      // verdict that had already been reached.
+      await appendState(orderVerifiedLine(waveNumber, held.state), `record:verified:${wo.id}`)
+    }
 
     const escalation = await reviewLoop(wo, held.state, held.trail)
 
@@ -2343,11 +2424,26 @@ let planPath = ''
 // makes an interrupted run's work findable rather than merely present.
 let runstamp = ''
 // What an earlier invocation left on disk and in git, by order id. Populated on a resume:
-// `approvedOnDisk` from the run's own order-approved state lines, `scavenged` from branches
-// that actually exist. An order in `scavenged` is not re-implemented — it is adopted and then
-// verified and reviewed exactly as fresh work would be.
+// `approvedOnDisk` and `verifiedOnDisk` from the run's own per-order state lines, `scavenged`
+// from branches that actually exist.
+//
+// Together they are the salvage ladder. A resume trusts a stage exactly as far as two
+// independent records agree: the run said the stage closed, and git still holds the head it
+// closed over. Where they agree the stage is adopted whole; where they do not, everything
+// beyond the last stage they agree on is redone. Rebuilding an order from scratch is the
+// bottom of the ladder, not the top — an interrupted run that re-buys its own finished work
+// is the failure this ladder exists to prevent, and it is expensive in exactly the situation
+// where the budget already ran out once.
 const approvedOnDisk = new Map()
+const verifiedOnDisk = new Map()
 const scavenged = new Map()
+// Ids adopted at their approved stage: reviewed by an earlier invocation, unchanged in git,
+// and therefore merged as they stand rather than re-verified and re-reviewed.
+const salvagedApproved = new Map()
+// Escalations an earlier invocation reported, carried forward rather than silently retried.
+const escalatedPrior = new Map()
+// Ids git says are already in the integration branch though no state line records the merge.
+const reconciled = []
 const implemented = []
 const escalations = []
 const failedChannels = []
@@ -2597,24 +2693,75 @@ try {
     resumeState = index.state || []
     runstamp = runstampOf(planPath)
 
+    // ONE PASS, IN LOG ORDER. What is known about an order is whatever its LAST line said,
+    // and the only thing that can establish "last" is the order the append-only log is in.
+    //
+    // Resolving this by kind precedence instead is wrong in both directions, and not subtly:
+    // an `order-verified` line is written BEFORE the review loop opens, so every review-stage
+    // escalation is later than a verified line rather than earlier, and treating verified as
+    // the deeper record would cancel exactly the escalations this run most needs to carry. The
+    // reverse case is just as real — an order approved in one invocation can be re-dispatched
+    // and escalate in the next, once its branch has moved.
     for (const entry of resumeState) {
-      // A line with no `kind` predates the two-type log and is a wave line — every line
+      // A line with no `kind` predates the multi-type log and is a wave line — every line
       // written before that format existed was one. The loader is asked to say so explicitly;
       // this default covers a loader that did not.
-      if ((entry.kind || 'wave') === 'order-approved') {
-        // Approved, and — unless a later wave line names it merged — never merged. This is
-        // the half of the run the wave-grained log could not see.
-        if (entry.order) {
-          approvedOnDisk.set(entry.order, {
-            branch: entry.branch || '',
-            worktree: entry.worktree || '',
-            head_sha: entry.head_sha || '',
-          })
+      const kind = entry.kind || 'wave'
+
+      if (kind === 'order-approved' || kind === 'order-verified') {
+        // A stage that closed, and — unless a later line says otherwise — a stage that never
+        // got further. This is the part of the run the wave-grained log could not see at all.
+        if (!entry.order) continue
+
+        const stage = {
+          branch: entry.branch || '',
+          worktree: entry.worktree || '',
+          head_sha: entry.head_sha || '',
+          measured: entry.measured || [],
         }
+
+        // The two stages are exclusive and this line is the newer word on which one the order
+        // reached, whichever direction that moves it. A success recorded after an escalation
+        // supersedes it: the retry that produced this line is what the escalation was waiting
+        // for, and carrying it anyway would strand finished work.
+        if (kind === 'order-approved') {
+          approvedOnDisk.set(entry.order, stage)
+          verifiedOnDisk.delete(entry.order)
+        } else {
+          verifiedOnDisk.set(entry.order, stage)
+          approvedOnDisk.delete(entry.order)
+        }
+        escalatedPrior.delete(entry.order)
         continue
       }
 
-      for (const id of entry.merged || []) landed.add(id)
+      for (const id of entry.merged || []) {
+        landed.add(id)
+        approvedOnDisk.delete(id)
+        verifiedOnDisk.delete(id)
+        escalatedPrior.delete(id)
+      }
+      // Carried forward, not re-bought. An order escalates because something about it
+      // defeated a coder, a verifier or a review loop, and a resume that quietly dispatches
+      // it again pays the full price of rediscovering a verdict that is already on disk.
+      // `retry_escalated` is how a caller says the reason is gone.
+      //
+      // A wave line's `escalated` is cumulative within its invocation, so wave 4's line
+      // re-lists what escalated in wave 2, and every later invocation re-lists it again. The
+      // FIRST line naming an id is therefore the wave it actually escalated in — last-wins
+      // would report a wave the order was never in, and the number would drift further with
+      // every resume. A success line between two such lines clears the id, so a genuine
+      // re-escalation records its own wave rather than inheriting the old one.
+      //
+      // The stage maps are deliberately NOT cleared here. An escalation does not unmake the
+      // verification that preceded it, and `retry_escalated` needs that record to salvage
+      // from; every gate below consults `escalatedPrior` first, so the record stays inert
+      // until a caller asks for the retry.
+      for (const id of entry.escalated || []) {
+        if (id && !landed.has(id) && !escalatedPrior.has(id)) {
+          escalatedPrior.set(id, entry.wave || 0)
+        }
+      }
       // A resumed run inherits what its own earlier waves learned. Without this the
       // accumulator is per-invocation, and the wave that runs after an interruption is the
       // one wave in the run that knows nothing.
@@ -2625,12 +2772,33 @@ try {
       if (entry.integration_head) integration.head_sha = entry.integration_head
     }
 
-    const unmergedApproved = [...approvedOnDisk.keys()].filter((id) => !landed.has(id))
+    // The caller's override, applied last because it outranks the log rather than joining it.
+    for (const id of retryEscalated) escalatedPrior.delete(id)
+
+    // Both lists exclude carried escalations. The stage records for those orders are real and
+    // are kept for a retry, but nothing is going to act on them this invocation — and saying
+    // "W2 goes straight to review" four lines before "W2 is not dispatched again" tells a
+    // human two different things about the same order, on the ordinary path.
+    const unmergedApproved = [...approvedOnDisk.keys()].filter((id) => !escalatedPrior.has(id))
+    const unmergedVerified = [...verifiedOnDisk.keys()].filter((id) => !escalatedPrior.has(id))
 
     log(`Resumed: ${landed.size} order(s) already merged; integration head ${integration.head_sha || '(none recorded)'}.`)
     if (unmergedApproved.length > 0) {
       log(`The run state records ${unmergedApproved.join(', ')} as approved but not merged — ` +
-        `their work will be looked for before any coder is dispatched for them.`)
+        `where git still holds the reviewed head, they are merged as they stand rather than ` +
+        `rebuilt.`)
+    }
+    if (unmergedVerified.length > 0) {
+      log(`The run state records ${unmergedVerified.join(', ')} as verified but not yet ` +
+        `approved — where git still holds the verified head, they go straight to review.`)
+    }
+    if (escalatedPrior.size > 0) {
+      log(`Carried forward as escalated by an earlier invocation: ${[...escalatedPrior.keys()].join(', ')}. ` +
+        `They are NOT dispatched again — re-invoke with retry_escalated naming the ids whose ` +
+        `cause has been dealt with.`)
+    }
+    if (retryEscalated.length > 0) {
+      log(`Retrying at the caller's request: ${retryEscalated.join(', ')}.`)
     }
   } else {
     phase('Survey')
@@ -3147,7 +3315,14 @@ try {
     // The base survives a resume through the run state; on a fresh run it is wherever the
     // integration branch starts. Without it, a resumed run's integration review would cover
     // only the waves that ran after the interruption and would look exactly as thorough.
-    integration.base_sha = integration.base_sha || setup.head_sha
+    //
+    // The middle term is for the run that died before it wrote any wave line and yet merged
+    // something — mid-wave-1, the longest unrecorded stretch there is. The observed head is
+    // then WRONG rather than merely unknown: it already contains those merges, so taking it as
+    // the base would define the change as starting after part of the change. The envelope's
+    // base_sha is what the integration branch was actually cut from, which is the answer.
+    integration.base_sha = integration.base_sha ||
+      (resumePath ? envelopeBase.sha : '') || setup.head_sha
 
     if (recordedHead && recordedHead !== setup.head_sha) {
       log(`WARNING: the run state recorded ${recordedHead} as the integration head; the branch is actually at ${setup.head_sha}.`)
@@ -3177,13 +3352,17 @@ try {
     // approved: a run can die between a coder's last commit and the review that would have
     // approved it, and those commits are exactly as findable and exactly as worth adopting.
     // The state file narrows what we EXPECT to find; git decides what is actually there.
+    //
+    // Carried-forward escalations are left out. Their branches may well hold commits, but
+    // nothing is going to be dispatched at them this invocation, and a worktree created for
+    // an order nobody will enter is litter.
     if (resumePath && runstamp) {
       const candidates = waves.flat()
-        .filter((id) => !landed.has(id) && !staleWithheldIds.includes(id))
+        .filter((id) => !landed.has(id) && !staleWithheldIds.includes(id) && !escalatedPrior.has(id))
         .map((id) => ({
           id,
           branch: orderBranch(id),
-          worktree: (approvedOnDisk.get(id) || {}).worktree || '',
+          worktree: (approvedOnDisk.get(id) || verifiedOnDisk.get(id) || {}).worktree || '',
         }))
 
       if (candidates.length > 0) {
@@ -3203,6 +3382,44 @@ try {
           if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
         } else {
           for (const entry of found.found || []) {
+            if (!orderById.has(entry.id)) continue
+
+            // Rung 1: git says this branch is already in the integration branch, and the run
+            // says its review closed over exactly the head git is pointing at. The merge
+            // happened; only the record of it is missing, because the invocation that made it
+            // died before its wave ended. Nothing needs a worktree, a verifier or a reviewer —
+            // the work is in the branch every later wave is built on.
+            //
+            // The approval record is not decoration here, it is the second witness, and
+            // ancestry alone cannot stand without it: a coder starts by cutting its branch AT
+            // the integration head, so a branch created for an order whose coder then died
+            // before its first commit is an ancestor of the integration branch too. That
+            // branch and a genuinely merged one report identically — same ancestry, no commits
+            // ahead of the fork point — and marking the empty one merged would land an order
+            // nobody implemented and write it into the log for every future resume to believe.
+            //
+            // Every merged order has this record: the approval line is written the instant the
+            // review closes, which is strictly before the merge that follows it. An order
+            // whose approval line was lost too falls to the rungs below and is rebuilt, which
+            // costs tokens rather than correctness.
+            const approvedRecord = approvedOnDisk.get(entry.id)
+
+            if (entry.already_merged === true && entry.branch) {
+              if (approvedRecord && approvedRecord.head_sha === entry.head_sha) {
+                landed.add(entry.id)
+                if (!integration.merged.includes(entry.id)) integration.merged.push(entry.id)
+                reconciled.push(entry.id)
+                continue
+              }
+
+              // Loudly, because the two readings are far apart: either an approval record was
+              // lost, or this is a branch nobody ever committed to. Both are answered by
+              // implementing the order, and only one of them costs anything.
+              log(`Scavenge: ${entry.id}'s branch is already in the integration branch, but the ` +
+                `run state records no review closing over ${entry.head_sha || '(no head)'} — ` +
+                `it is implemented rather than assumed merged.`)
+            }
+
             // An entry naming no worktree, no base, or no commit cannot be verified or
             // reviewed, and adopting it would put a fix round in an unknown directory. It is
             // dropped, loudly, and its order is implemented from scratch.
@@ -3213,17 +3430,139 @@ try {
               log(`Scavenge: ignoring the report for ${entry.id} — it names no usable worktree, base and commit series.`)
               continue
             }
-            if (!orderById.has(entry.id)) continue
 
             scavenged.set(entry.id, entry)
+
+            // Rungs 2 and 3. The record says a stage closed; git says the branch still holds
+            // exactly the head it closed over. Two independent sources agreeing is what makes
+            // adopting the verdict defensible — and a mismatch is not a problem, it just means
+            // the branch moved after the stage closed, so the stage is redone over what is
+            // there now. The comparison happens here rather than in an agent because it is
+            // deterministic (IRON LAW §8).
+            if (approvedRecord && approvedRecord.head_sha === entry.head_sha) {
+              salvagedApproved.set(entry.id, {
+                ...entry,
+                measured: approvedRecord.measured || [],
+              })
+            }
           }
 
-          log(scavenged.size > 0
-            ? `Scavenged ${[...scavenged.keys()].join(', ')} — adopted, and verified and reviewed as if fresh.`
-            : `Scavenge found nothing on disk; every pending order is implemented from scratch.`)
+          const adopted = [...scavenged.keys()].filter((id) => !salvagedApproved.has(id))
+
+          if (reconciled.length > 0) {
+            log(`Already in the integration branch, merged by an earlier invocation that died ` +
+              `before recording it: ${reconciled.join(', ')}. Recorded now.`)
+          }
+          if (salvagedApproved.size > 0) {
+            log(`Approved by an earlier invocation and unchanged in git: ${[...salvagedApproved.keys()].join(', ')}. ` +
+              `They are merged as they stand — no coder, no verifier, no second review.`)
+          }
+          if (adopted.length > 0) {
+            log(`Scavenged ${adopted.join(', ')} — adopted, and carried on from the last stage ` +
+              `the run recorded for each.`)
+          }
+          if (reconciled.length === 0 && scavenged.size === 0) {
+            log(`Scavenge found nothing on disk; every pending order is implemented from scratch.`)
+          }
         }
       }
     }
+  }
+
+  // ------------------------------------- 3c-ter. account for what was salvaged
+  //
+  // Two loose ends the ladder leaves, both of which are about the record rather than the work.
+
+  // Declared here rather than at the wave loop because the reconciled head below can stop the
+  // line before the first wave is dispatched: a merged head that fails verification is exactly
+  // as disqualifying whether this invocation produced it or found it.
+  let lineStopped = ''
+
+  // A merge git holds and no line mentions gets its line now. Without it, `runs` keeps
+  // reporting those orders as unreached forever, and a later resume asks git the same
+  // question again — the derived status is only as good as the log it derives from.
+  //
+  // The wave number is the last one recorded: the merge happened during that wave, and
+  // inventing a new number would claim a wave ran that never did. lib/run-status.mjs counts
+  // DISTINCT wave numbers for exactly this reason.
+  if (reconciled.length > 0 && planPath) {
+    const lastWave = resumeState.reduce((n, e) => Math.max(n, (e.kind || 'wave') === 'wave' ? (e.wave || 0) : 0), 0)
+
+    const recorded = await appendState(waveLine({
+      wave: lastWave || 1,
+      merged: integration.merged.slice(),
+      approved_unmerged: integration.approved_unmerged.slice(),
+      escalated: [...escalatedPrior.keys()],
+      integration_base: integration.base_sha,
+      integration_head: integration.head_sha,
+      discovered: [...knowledge],
+    }), 'record:reconcile')
+
+    // IRON LAW §5, and the same treatment the wave loop's own write gets. A resume can finish
+    // with every wave already accounted for, in which case this is the ONLY line the
+    // invocation writes — and losing it silently would leave a run reporting itself complete
+    // while its log still says those orders never landed.
+    if (!recorded || recorded.stop_reason !== 'recorded') {
+      const why = recorded && recorded.notes ? recorded.notes : 'the recorder returned no result'
+      log(`WARNING: the reconciled merges were not written to the run state: ${why}`)
+      if (!failedChannels.includes('run-state')) failedChannels.push('run-state')
+      extraUnreached.push('merges this run found already in git (' + reconciled.join(', ') +
+        ') were not written to ' + planPath + '/state.jsonl (' + why + '), so the run still ' +
+        'reads as not having landed them and the next resume must find them again')
+    }
+
+    // Those merges were never verified together by anyone who wrote a record: the invocation
+    // that made them died somewhere between the merge and the wave verification that would
+    // have measured them. Every later wave is built on this head, so it is measured once here
+    // rather than inherited on trust — the same reasoning as step 4b, one invocation later.
+    const wv = await agent(waveVerifyPrompt(lastWave || 1), {
+      agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
+      phase: 'Integrate', label: 'wave-verify:reconciled',
+    }).catch((e) => {
+      log(`WARNING: verification of the reconciled integration head failed to run: ${e && e.message}`)
+      return null
+    })
+
+    if (!wv) {
+      integration.wave_verify.push({ wave: lastWave || 1, build: 'unobserved', suite: 'unobserved' })
+      log(`WARNING: the reconciled integration head was not verified; the waves below build on it unmeasured.`)
+    } else {
+      integration.wave_verify.push({ wave: lastWave || 1, build: wv.build, suite: wv.suite })
+      if (!waveVerifyOk(wv, excusedRedFiles())) {
+        lineStopped = 'the integration head merged by an earlier invocation failed verification' +
+          ' (build ' + wv.build + ', suite ' + wv.suite + ')'
+        log(`LINE STOPPED: ${lineStopped}.`)
+      } else {
+        log(`The reconciled integration head verified: build ${wv.build}, suite ${wv.suite}.`)
+      }
+    }
+  }
+
+  // An earlier invocation's escalations become this invocation's escalations, carried rather
+  // than re-derived. The findings that produced them were never durable — only the ids were —
+  // so the carried entry says exactly that instead of inventing a cause. Their consumers block
+  // behind them through the ordinary dep gate, which names them as the root.
+  for (const [id, wave] of escalatedPrior) {
+    const wo = orderById.get(id)
+    if (!wo) continue
+    // Withheld as stale outranks everything, this included. Such an order is already reported
+    // as withheld, and reporting it a second time as an escalation would hand the human
+    // `retry_escalated` — a lever that cannot move it, because the staleness gate filters it
+    // out regardless. The lever that works is `confirmed_stale`.
+    if (staleWithheldIds.includes(id)) continue
+
+    escalations.push({
+      id,
+      reason: 'carried_forward',
+      unresolved: [runtimeFinding(id + '-carried',
+        'an earlier invocation of this run escalated this order in wave ' + wave,
+        'the findings themselves were not recorded — the run state carries ids, not trails. ' +
+        'Read that invocation\'s report, or re-invoke with retry_escalated: ["' + id + '"] to ' +
+        'dispatch it again once the cause has been dealt with')],
+      trail: [],
+      branch: orderBranch(id),
+      worktree: '',
+    })
   }
 
   // -------------------------------------------------------- 4. the wave loop
@@ -3232,12 +3571,14 @@ try {
   // the justified kind: wave k+1 branches from the head that wave k's merges produced, so it
   // cannot start until they have happened AND been verified.
 
-  let lineStopped = ''
-
   for (let w = 0; w < waves.length; w++) {
     const waveNumber = w + 1
     const waveIds = waves[w]
-    const pending = waveIds.filter((id) => !landed.has(id) && !staleWithheldIds.includes(id))
+    // A carried-forward escalation is accounted for — it already sits in `escalations` — so it
+    // is not pending. Leaving it in would send it round the dispatch path this invocation
+    // deliberately declined to buy.
+    const pending = waveIds.filter((id) =>
+      !landed.has(id) && !staleWithheldIds.includes(id) && !escalatedPrior.has(id))
 
     if (pending.length === 0) {
       // Either a resumed run whose state records this wave as merged, or — rarer — a wave
@@ -3264,13 +3605,21 @@ try {
     // cause is carried forward so the human is pointed at the escalation, not at a chain.
     const rootCause = new Map(blocked.map((b) => [b.id, b.blocked_by]))
     const runnable = []
+    // Rung 2 of the ladder: approved by an earlier invocation, unchanged in git. They skip the
+    // pipeline entirely and join the merge phase below — the coder wrote them, a verifier
+    // measured them green and a fresh reviewer closed on them, and the branch still holds
+    // exactly the commits all three saw. What still runs over them is wave verification at the
+    // merged head, which is the check that asks the one question their own review could not:
+    // whether they break something once combined.
+    const salvagedHere = []
 
     for (const id of pending) {
       const wo = orderById.get(id)
       const missing = (wo.deps || []).filter((dep) => !landed.has(dep))
 
       if (missing.length === 0) {
-        runnable.push(wo)
+        if (salvagedApproved.has(id)) salvagedHere.push(wo)
+        else runnable.push(wo)
         continue
       }
 
@@ -3280,7 +3629,7 @@ try {
       log(`BLOCKED ${id}: ${missing.join(', ')} did not land (root: ${cause}).`)
     }
 
-    if (runnable.length === 0) {
+    if (runnable.length === 0 && salvagedHere.length === 0) {
       log(`Wave ${waveNumber}: every pending order is blocked; nothing to dispatch.`)
       continue
     }
@@ -3290,10 +3639,15 @@ try {
     // because another order failed would be exactly that, while never building on unreviewed
     // work.
     phase('Implement')
-    log(`Wave ${waveNumber}: dispatching ${runnable.length} order(s).`)
+    if (salvagedHere.length > 0) {
+      log(`Wave ${waveNumber}: ${salvagedHere.map((wo) => wo.id).join(', ')} salvaged at their ` +
+        `approved stage; they go straight to the merge.`)
+    }
+    if (runnable.length > 0) log(`Wave ${waveNumber}: dispatching ${runnable.length} order(s).`)
 
-    const chains = await pipeline(runnable, implement,
-      (carried, wo) => verifyAndReview(carried, wo, waveNumber))
+    const chains = runnable.length > 0
+      ? await pipeline(runnable, implement, (carried, wo) => verifyAndReview(carried, wo, waveNumber))
+      : []
 
     // Matched by id rather than by position: an order that lost its chain entirely is still
     // an order that did not land, and it is reported instead of vanishing.
@@ -3303,6 +3657,37 @@ try {
     }
 
     const approved = []
+
+    // Salvaged orders enter the merge queue ahead of this wave's fresh work, in plan order.
+    // `rounds: 0` and `salvaged: true` are the honest reading of what happened here: this
+    // invocation reviewed nothing, and an entry that looked like a freshly reviewed one would
+    // be a partial result wearing a complete one's label (IRON LAW §4). The measurement is the
+    // one the earlier invocation recorded, carried rather than reasserted — and empty where
+    // that invocation predates the field, which reads as "not recorded", not as "not measured".
+    for (const wo of salvagedHere) {
+      const salvage = salvagedApproved.get(wo.id)
+
+      const entry = {
+        id: wo.id,
+        wave: waveNumber,
+        branch: salvage.branch,
+        worktree: salvage.worktree,
+        base_sha: salvage.base_sha,
+        head_sha: salvage.head_sha,
+        commits: salvage.commits || [],
+        review: {
+          rounds: 0,
+          measured: salvage.measured || [],
+          open_majors: [],
+          trail: [],
+          salvaged: true,
+        },
+        discovered: [],
+      }
+
+      implemented.push(entry)
+      approved.push(entry)
+    }
 
     for (const wo of runnable) {
       const chain = byOrder.get(wo.id) || lostChain(wo)
@@ -3517,11 +3902,36 @@ try {
   // mechanical half of the assurance never ran. That fact keeps `complete` false — and its
   // id goes into `remaining` too, because a halt that names nothing to resume is IRON LAW
   // §6's loud stop without its resumable half.
+  //
+  // A salvaged order reaches the same emptiness by one of two roads, and this side cannot tell
+  // which: an empty `measured` means either that nothing was mechanically measurable, or that
+  // the line was written before measurements were recorded at all. The loader normalizes a
+  // missing field to `[]` — correctly, since `[]` is what was recorded — and that normalizing
+  // is what makes the two indistinguishable here. So the note says both rather than picking
+  // one, because picking one would assert an assurance nobody can read back. `complete` is
+  // false either way, which is the part that matters.
   for (const entry of implemented) {
     if (entry.review.measured.length > 0) continue
-    extraUnreached.push(entry.id + ': implemented and review-approved, but nothing was ' +
-      'mechanically measurable — no build, no suite, no discriminating test')
+
+    extraUnreached.push(entry.review.salvaged
+      ? entry.id + ': salvaged at its approved stage, and the run state records no measurement ' +
+        'for it — either nothing was mechanically measurable, or it was approved before ' +
+        'measurements were recorded. The review that approved it is real; nothing readable ' +
+        'supports a claim that anything was mechanically checked'
+      : entry.id + ': implemented and review-approved, but nothing was ' +
+        'mechanically measurable — no build, no suite, no discriminating test')
     extraRemaining.push(entry.id)
+  }
+
+  // Salvage is reported, never absorbed. A run that says "implemented W4" about work it
+  // adopted rather than did is describing work it did not do.
+  const salvagedIds = implemented.filter((e) => e.review.salvaged).map((e) => e.id)
+  if (salvagedIds.length > 0) {
+    log(`SALVAGED at their approved stage (reviewed by an earlier invocation, unchanged in ` +
+      `git, merged as they stand): ${salvagedIds.join(', ')}.`)
+  }
+  if (reconciled.length > 0) {
+    log(`RECONCILED (already merged in git, recorded by this invocation): ${reconciled.join(', ')}.`)
   }
 
   if (partitionNote) extraUnreached.push(partitionNote)
@@ -3533,9 +3943,10 @@ try {
 
   for (const id of integration.approved_unmerged) {
     extraUnreached.push(id + ': approved but never merged — the merge run stopped before it. ' +
-      'Its branch is in `implemented` and still holds the reviewed series; a resumed run ' +
-      'implements it again from the current integration head rather than trusting a branch ' +
-      'nobody re-verified, so merge it by hand first if that work is worth keeping')
+      'Its branch is in `implemented` and still holds the reviewed series, and the run state ' +
+      'records the approval, so a resumed run merges it as it stands once git confirms the ' +
+      'branch is still at the reviewed head. Do NOT merge it by hand: a hand merge makes it ' +
+      'read as landed while skipping the wave verification that measures the combination')
     extraRemaining.push(id)
   }
 

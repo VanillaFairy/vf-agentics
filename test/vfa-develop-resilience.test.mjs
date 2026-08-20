@@ -296,12 +296,12 @@ test('a caller who re-tags a resumed run is obeyed, and never in silence', async
 
 // --- order-grain state (§9.3) --------------------------------------------------------------
 
-test('an approved order is recorded before the wave it belongs to closes', async () => {
+test('each stage is recorded as it closes, before the wave it belongs to', async () => {
   const { prompts } = await fresh({})
   const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
 
-  assert.deepEqual(labels, ['record:W1', 'record:wave-1'],
-    'recording the order after the wave records nothing an interruption could use')
+  assert.deepEqual(labels, ['record:verified:W1', 'record:W1', 'record:wave-1'],
+    'recording a stage after the wave records nothing an interruption could use')
 })
 
 test('the order line carries what the coder actually reported', async () => {
@@ -336,7 +336,17 @@ test('a wave line still names its type explicitly', async () => {
 const FOUND_W2 = {
   id: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2',
   base_sha: M40, head_sha: C40, commits: [{ sha: C40, subject: 'feat: w2' }],
+  already_merged: false,
 }
+
+/** A per-order stage line for W2, at whatever head the caller says the stage closed over. */
+const stageLine = (kind, over = {}) => ({
+  kind, wave: 2, merged: [], approved_unmerged: [], escalated: [], discovered: [],
+  integration_base: '', integration_head: '',
+  order: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2', head_sha: C40,
+  measured: ['build', 'suite'],
+  ...over,
+})
 
 const scavengedW2 = (found = [FOUND_W2]) => ({
   stop_reason: 'completed', found, notes: 'one branch resolved with commits',
@@ -465,15 +475,383 @@ test('an order-approved line does not count as a merge', async () => {
   // The line says the order was APPROVED. Reading it as merged would skip the order entirely
   // and leave its commits sitting on a branch nothing ever integrates.
   const { result } = await resumed({
-    ...resumeLoad(loaded({
-      state: [waveLine(), {
-        kind: 'order-approved', wave: 2, merged: [], approved_unmerged: [], escalated: [],
-        discovered: [], integration_base: '', integration_head: '',
-        order: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2', head_sha: C40,
-      }],
-    })),
+    ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-approved')] })),
     scavenge: scavengedW2(),
   })
 
   assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+// --- the salvage ladder (increment 6 §1) ---------------------------------------------------
+//
+// A stage is adopted where two independent records agree: the run's own log says it closed,
+// and git still holds the head it closed over. Every test below is one rung, and the pair of
+// head-match/head-mismatch cases is the point — trusting the log alone would adopt a verdict
+// nobody reached over the commits that are actually there.
+
+/** Resume with a per-order stage line for W2 and a scavenge report to pair it against. */
+const withStage = (kind, over = {}, found = [FOUND_W2]) => resumed({
+  ...resumeLoad(loaded({ state: [waveLine(), stageLine(kind, over)] })),
+  scavenge: scavengedW2(found),
+})
+
+test('an order approved by an earlier invocation, unchanged in git, is merged as it stands', async () => {
+  const { result, prompts } = await withStage('order-approved')
+
+  const labels = prompts.map((p) => p.opts.label || '')
+  assert.ok(!labels.includes('code:W2'), 'the coder wrote it once already')
+  assert.ok(!labels.includes('verify:W2'), 'a verifier measured it green over these exact commits')
+  assert.ok(!labels.some((l) => l.startsWith('review:W2')), 'and a fresh reviewer closed on them')
+  assert.ok(labels.includes('merge:W2'), 'what was missing is the merge, and only the merge')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a salvaged order is never reported as work this invocation did', async () => {
+  // IRON LAW §4. An entry indistinguishable from a freshly reviewed one is a partial result
+  // wearing a complete one's label — this invocation reviewed nothing.
+  const { result } = await withStage('order-approved')
+  const entry = result.implemented.find((e) => e.id === 'W2')
+
+  assert.equal(entry.review.salvaged, true)
+  assert.equal(entry.review.rounds, 0)
+  assert.deepEqual(entry.review.trail, [])
+  assert.deepEqual(entry.review.measured, ['build', 'suite'],
+    'the measurement the earlier invocation recorded, carried rather than reasserted')
+})
+
+test('an approval whose branch has moved since is redone, not trusted', async () => {
+  // The record says a review closed over C40 and git says the branch is at B40. Something
+  // happened to that branch after the review; the review covered commits that are no longer
+  // what is there.
+  const { prompts } = await withStage('order-approved', {},
+    [{ ...FOUND_W2, head_sha: B40 }])
+
+  const labels = prompts.map((p) => p.opts.label || '')
+  assert.ok(!labels.includes('code:W2'), 'the commits are still adopted — nothing is discarded')
+  assert.ok(labels.includes('verify:W2'), 'but the stage the record claims is redone over what is there')
+  assert.ok(labels.some((l) => l.startsWith('review:W2')))
+})
+
+test('an order verified green and unchanged in git goes straight to review', async () => {
+  const { result, prompts } = await withStage('order-verified')
+
+  const labels = prompts.map((p) => p.opts.label || '')
+  assert.ok(!labels.includes('code:W2'))
+  assert.ok(!labels.includes('verify:W2'),
+    're-measuring an unchanged tree reaches the verdict already on disk')
+  assert.ok(labels.some((l) => l.startsWith('review:W2')),
+    'verified is not approved: the review is a different question and was never answered')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a verification whose branch has moved since is re-measured', async () => {
+  const { prompts } = await withStage('order-verified', {},
+    [{ ...FOUND_W2, head_sha: B40 }])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a verified order is recorded the moment it is green, before the review opens', async () => {
+  const { prompts } = await resumed({ scavenge: scavengedW2() })
+  const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
+
+  assert.deepEqual(labels, ['record:verified:W2', 'record:W2', 'record:wave-2'])
+  assert.ok(promptFor(prompts, 'record:verified:W2').includes('"kind":"order-verified"'))
+  assert.ok(promptFor(prompts, 'record:verified:W2').includes('"measured":["build","suite","discriminator:1"]'),
+    'what was measured travels with the stage, so a salvage need not re-measure to report it')
+})
+
+/**
+ * The rung-1 world: W2's review closed (so its approval line is on disk, written before the
+ * merge that follows it) and git says the branch is already in. Only the wave line that would
+ * have recorded the merge is missing — the invocation died between the two.
+ */
+const reconcilable = (over = {}) => resumed({
+  ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-approved')] })),
+  scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+  ...over,
+})
+
+test('a merge git already holds is recorded rather than made again', async () => {
+  // The merge is durable the instant it happens; the line recording it is written when the
+  // wave ends. An invocation that died in between left a merge no record mentions.
+  const { result, prompts } = await reconcilable()
+
+  const labels = prompts.map((p) => p.opts.label || '')
+  assert.ok(!labels.includes('code:W2'))
+  assert.ok(!labels.includes('verify:W2'))
+  assert.ok(!labels.includes('merge:W2'), 'merging what the branch already carries is a no-op at best')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('ancestry alone never lands an order — the approval record is the second witness', async () => {
+  // A coder cuts its branch AT the integration head before its first commit, so a branch made
+  // for an order whose coder then died is an ancestor of the integration branch too, with no
+  // commits ahead of the fork point — reporting identically to a genuinely merged one. Landing
+  // that would mark an order nobody implemented as done, and write it into the log for every
+  // later resume to believe.
+  const { result, prompts } = await resumed({
+    scavenge: scavengedW2([{
+      ...FOUND_W2, already_merged: true, head_sha: M40, base_sha: M40, commits: [], worktree: '',
+    }]),
+  })
+
+  assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
+    'no record of a review closing over that head means no reason to believe it was merged')
+  assert.ok(!prompts.some((p) => p.opts.label === 'record:reconcile'),
+    'and nothing is written down about a merge nobody can evidence')
+  assert.deepEqual(result.integration.merged, ['W2'], 'it is implemented and merged, not assumed')
+})
+
+test('a reconciliation whose record cannot be written is a named gap, not a silent one', async () => {
+  // This can be the only line an invocation writes. Losing it silently leaves a run reporting
+  // itself finished while its own log still says those orders never landed.
+  const { result } = await resumed({
+    ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-approved')] })),
+    scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+    'record:': (prompt, opts) => ((opts.label || '') === 'record:reconcile'
+      ? { stop_reason: 'unwritable', path: '', notes: 'the share went read-only' }
+      : { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' }),
+  })
+
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.failed_channels.includes('run-state'))
+  assert.ok(result.coverage.unreached.some((u) => /W2.*not written to/s.test(u)))
+})
+
+test('a run that merged before it recorded anything keeps the base it was cut from', async () => {
+  // The worst-recorded case there is: died mid-wave-1, so no wave line exists and yet a merge
+  // happened. The observed integration head already contains that merge, so taking it as the
+  // base would define the change as starting after part of the change — and the integration
+  // review would cover the remainder while looking exactly as thorough (IRON LAW §4).
+  const { result, prompts } = await resumed({
+    // The real 2026-08-19 shape: an order line and no wave line at all.
+    ...resumeLoad(loaded({ state: [stageLine('order-approved', { wave: 1 })] })),
+    scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+  })
+
+  assert.equal(result.integration.base_sha, A40, 'the envelope records what it was cut from')
+  assert.ok(promptFor(prompts, 'review:integration').includes(A40 + '..'),
+    'so the whole change is what gets reviewed, not the part that ran after the interruption')
+  assert.ok(promptFor(prompts, 'record:reconcile').includes('"integration_base":"' + A40 + '"'),
+    'and the correction is written down, so the next resume does not ask again')
+})
+
+test('a reconciled merge gets its line and its verification before any wave runs', async () => {
+  const { prompts } = await reconcilable()
+
+  const line = promptFor(prompts, 'record:reconcile')
+  assert.ok(line.includes('"kind":"wave"'))
+  assert.ok(line.includes('"wave":1'), 'the wave those merges belonged to, not an invented one')
+  assert.ok(line.includes('"merged":["W2"]'))
+
+  // Nobody who wrote a record ever measured that head, and every later wave builds on it.
+  assert.ok(prompts.some((p) => p.opts.label === 'wave-verify:reconciled'))
+})
+
+test('a reconciled head that fails verification stops the line before a wave is dispatched', async () => {
+  const THREE = [order('W1'), order('W2', { deps: ['W1'] }), order('W3', { deps: ['W2'] })]
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeLoad(loaded({
+        plan: {
+          work_orders: THREE, shared_files: [],
+          partition_raw: JSON.stringify({ waves: [['W1'], ['W2'], ['W3']], coupled: [] }),
+          blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+        },
+        manifest: manifestOf(THREE),
+        state: [waveLine(), stageLine('order-approved')],
+      })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+      'wave-verify:': verified({ suite: 'failed', discriminator: [], notes: 'the merged head' }),
+    }),
+  })
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W3'),
+    'a merged head that fails verification is as disqualifying found as it is when produced')
+  assert.ok(result.deferred.includes('W3'))
+})
+
+test('a line written before `kind` existed is still read as the wave line it was', async () => {
+  const { without, ...old } = { ...waveLine(), without: null }
+  delete old.kind
+
+  const { result, prompts } = await resumed({
+    ...resumeLoad(loaded({ state: [old] })),
+    scavenge: scavengedW2(),
+  })
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W1'),
+    'W1 merged in that line; reading it as anything else would rebuild it')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('an approval recorded before `measured` existed still salvages, and says what is missing', async () => {
+  const old = stageLine('order-approved')
+  delete old.measured
+
+  const { result } = await resumed({
+    ...resumeLoad(loaded({ state: [waveLine(), old] })),
+    scavenge: scavengedW2(),
+  })
+
+  const entry = result.implemented.find((e) => e.id === 'W2')
+  assert.equal(entry.review.salvaged, true)
+  assert.deepEqual(entry.review.measured, [])
+
+  // "The measurement was not written down" and "nothing was measurable" are different facts,
+  // and the loader normalizes a missing field to `[]` — correctly, since `[]` is what was
+  // recorded — so this side cannot tell them apart. The note says both rather than picking
+  // one, because picking one asserts an assurance nobody can read back.
+  assert.equal(result.coverage.complete, false)
+  const note = result.coverage.unreached.find((u) => /^W2: salvaged/.test(u))
+  assert.ok(note, 'the emptiness is named, never absorbed')
+  assert.match(note, /either nothing was mechanically measurable, or/)
+  assert.match(note, /nothing readable supports a claim/)
+})
+
+// --- carried-forward escalations (increment 6 §5) ------------------------------------------
+
+/** A wave line that also records W2 as escalated. */
+const escalatedLine = () => ({ ...waveLine(), escalated: ['W2'] })
+
+test('an order an earlier invocation escalated is carried, not silently re-bought', async () => {
+  const { result, prompts } = await resumed({
+    ...resumeLoad(loaded({ state: [escalatedLine()] })),
+  })
+
+  const labels = prompts.map((p) => p.opts.label || '')
+  assert.ok(!labels.includes('code:W2'), 'it fails the same way unless something changed')
+  assert.ok(!labels.includes('scavenge'),
+    'and a worktree made for an order nobody will enter is litter')
+
+  const esc = result.escalations.find((e) => e.id === 'W2')
+  assert.ok(esc, 'it is reported, never dropped — IRON LAW §7')
+  assert.equal(esc.reason, 'carried_forward')
+  assert.deepEqual(esc.trail, [], 'the original findings were never durable; only the ids were')
+  assert.match(esc.unresolved[0].evidence, /retry_escalated/,
+    'the report says how to ask for the retry it declined to buy')
+})
+
+test('retry_escalated re-dispatches exactly what it names', async () => {
+  const { result, prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR, retry_escalated: ['W2'] },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeLoad(loaded({ state: [escalatedLine()] })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+      scavenge: scavengedW2(),
+    }),
+  })
+
+  assert.ok(!result.escalations.some((e) => e.reason === 'carried_forward'))
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'a retry re-enters the ladder, so partial work on the branch is still salvaged')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a verified line written BEFORE an escalation does not cancel it', async () => {
+  // The order of the log is the whole of the evidence. `order-verified` is written before the
+  // review loop opens, so every review-stage escalation is LATER than a verified line — and
+  // reading verified as the deeper record would cancel exactly the escalations most worth
+  // carrying, silently re-buying the order the ladder exists to stop re-buying.
+  const { result, prompts } = await resumed({
+    ...resumeLoad(loaded({ state: [stageLine('order-verified'), escalatedLine()] })),
+  })
+
+  const esc = result.escalations.find((e) => e.id === 'W2')
+  assert.ok(esc, 'the escalation is the later word and it stands')
+  assert.equal(esc.reason, 'carried_forward')
+  assert.ok(!prompts.some((p) => (p.opts.label || '').startsWith('review:W2')))
+})
+
+test('a carried escalation is not also announced as work about to be resumed', async () => {
+  // The stage record is real and is kept, because `retry_escalated` salvages from it. But
+  // nothing acts on it this invocation, and saying "W2 goes straight to review" four lines
+  // before "W2 is not dispatched again" tells a human two different things about one order.
+  const { logs } = await resumed({
+    ...resumeLoad(loaded({ state: [stageLine('order-verified'), escalatedLine()] })),
+  })
+
+  assert.ok(!logs.some((l) => /W2.*straight to review/.test(l)),
+    'the run must not promise a dispatch every gate below refuses')
+  assert.ok(logs.some((l) => /Carried forward as escalated.*W2/.test(l)))
+})
+
+test('a carried escalation names the wave it escalated in, not the last wave that ran', async () => {
+  // A wave line's `escalated` is cumulative, so wave 3's line re-lists what escalated in
+  // wave 2 — and every later resume re-lists it again. Last-wins would report a wave the
+  // order was never in, and the number would drift further with each resume.
+  const { result } = await resumed({
+    ...resumeLoad(loaded({
+      state: [
+        { ...waveLine(), wave: 2, escalated: ['W2'] },
+        { ...waveLine(), wave: 3, escalated: ['W2'] },
+      ],
+    })),
+  })
+
+  const esc = result.escalations.find((e) => e.id === 'W2')
+  assert.match(esc.unresolved[0].claim, /in wave 2$/,
+    'the first line naming it is the wave it actually escalated in')
+})
+
+test('a stale-withheld order is not also reported as a carried escalation', async () => {
+  // It is already reported as withheld. Reporting it again as an escalation hands the human
+  // `retry_escalated`, which cannot move it — the staleness gate filters it out regardless.
+  const { result } = await runWorkflow(WF, {
+    // The human looked and cleared nothing, which is a ruling — and a different state from
+    // not having looked, which would withhold the whole run at a checkpoint instead.
+    args: { ...ARGS, resume_path: RUN_DIR, confirmed_stale: [] },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeLoad(loaded({ state: [escalatedLine()] })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      drift: { stop_reason: 'completed', user_head: B40, moved_files: ['src/W2.js'],
+               notes: 'the tree moved' },
+    }),
+  })
+
+  assert.ok(!result.escalations.some((e) => e.id === 'W2'),
+    'one gap, one report, and the lever named must be the one that works')
+  assert.ok(result.coverage.unreached.some((u) => /W2.*withheld as stale/s.test(u)))
+})
+
+test('an escalation a later line supersedes is not carried forward', async () => {
+  // The log is append-only, so it records failures that were later fixed. An order can
+  // escalate in one wave and be approved on the retry.
+  const { result } = await resumed({
+    ...resumeLoad(loaded({ state: [escalatedLine(), stageLine('order-approved')] })),
+    scavenge: scavengedW2(),
+  })
+
+  assert.equal(result.escalations.length, 0, 'reading the escalation as standing strands finished work')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a carried escalation still blocks the orders that depend on it', async () => {
+  const THREE = [order('W1'), order('W2', { deps: ['W1'] }), order('W3', { deps: ['W2'] })]
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeLoad(loaded({
+        plan: {
+          work_orders: THREE, shared_files: [],
+          partition_raw: JSON.stringify({ waves: [['W1'], ['W2'], ['W3']], coupled: [] }),
+          blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+        },
+        manifest: manifestOf(THREE),
+        state: [escalatedLine()],
+      })),
+      'integration-setup': setUp({ head_sha: M40 }),
+    }),
+  })
+
+  assert.deepEqual(result.blocked, [{ id: 'W3', blocked_by: 'W2' }],
+    'a consumer of work that never landed has nothing to build against, carried or fresh')
 })

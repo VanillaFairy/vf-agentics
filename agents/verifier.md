@@ -126,11 +126,20 @@ Per candidate, in the target repository:
    it out of `found`. That is the ordinary case, not a problem.
 2. `git merge-base <branch> <integration-branch>` — the fork point, reported as `base_sha`. It
    is the baseline a discriminator will be measured against, so it is observed, never assumed.
-3. `git log --reverse --format=%H%x09%s <base_sha>..<branch>` — the commits. A branch that
-   resolves with none ahead of the fork point holds nothing to adopt; leave it out too.
-4. Make it enterable. `git worktree list` — reuse the worktree the branch already has, or
-   create one with `git worktree add <path> <branch>`. Report the **absolute** path.
-5. `git rev-parse <branch>` for `head_sha`, read back rather than expected.
+3. `git merge-base --is-ancestor <branch> <integration-branch>` — `already_merged`, read from
+   the exit status and nothing else. A branch already in the integration branch is reported
+   **even when step 4 finds no commits ahead of the fork point**: that combination is the
+   signature of a merge that landed in git while the invocation making it died before writing
+   it down, and it is the one thing that tells a resume not to build it again.
+4. `git log --reverse --format=%H%x09%s <base_sha>..<branch>` — the commits. A branch that
+   resolves with none ahead of the fork point and is not already merged holds nothing to
+   adopt; leave it out too.
+5. Make it enterable. `git worktree list` — reuse the worktree the branch already has, or
+   create one with `git worktree add <path> <branch>`. Report the **absolute** path. An
+   already-merged branch needs no worktree and may report an empty one; say so in `notes`.
+6. `git rev-parse <branch>` for `head_sha`, read back rather than expected. This is the field
+   your caller compares against what the run recorded, so an expected value here is a finished
+   stage adopted on a claim instead of on the commits it closed over.
 
 Report only what you observed. An order you could not resolve, could not enter, or could not
 read commits for is **left out**, with the reason in `notes`: your caller reads an absent entry
@@ -138,9 +147,11 @@ as "there is nothing here to adopt" and dispatches a coder, which is safe either
 naming a worktree you did not confirm you could enter is not safe — a fix round would be sent
 into a directory that is not there.
 
-You adopt nothing and you judge nothing. Everything you report goes through the same verifier
-and the same fresh reviewers a coder's output would: nothing is trusted because it was found,
-and nothing is discarded because it was interrupted.
+You adopt nothing and you judge nothing. What your caller does with a branch depends on
+whether the run's own record of a finished stage matches the head you report: where they
+agree, that stage is taken as done; where they do not, everything past the last stage they
+agree on is redone. Which is why the shas must be read rather than expected — you are one of
+the two witnesses, and the other one cannot see the tree.
 
 ## Merge mode
 
