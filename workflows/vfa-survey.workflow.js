@@ -31,44 +31,58 @@ export const meta = {
 // is exactly how a truncated search gets read as a clean result, and it also poisons the
 // resume loop: the next round is handed things already established as absent and pays to
 // re-search them.
+// Every coverage field is ALWAYS present — an empty string is the correct value for "nothing
+// to carry", and each description says so outright. The earlier wording ("must be non-empty
+// whenever stop_reason is not exhausted") read to an exhausted agent as "must be non-empty",
+// so it omitted the field it had nothing for, tripped required-field validation, re-submitted
+// the same shape until the platform killed it, and a finished search was dropped whole.
 const coverageFields = (searchedDescription) => ({
   searched: {
     type: 'array',
     items: { type: 'string' },
     description: searchedDescription +
-      ' This is the evidence trail behind stop_reason. Without it your completeness claim is ' +
-      'an unverifiable self-report, and nobody can resume where you stopped.',
+      ' Always include this field. It is the evidence trail behind stop_reason: without it ' +
+      'your completeness claim is an unverifiable self-report, and nobody can resume where ' +
+      'you stopped.',
   },
   stop_reason: {
     type: 'string',
     enum: ['exhausted', 'unfinished', 'stuck'],
     description:
-      '"exhausted" — every candidate your searches turned up has been triaged and you can ' +
-      'name the surface that covers the request. "unfinished" — one pass could not cover ' +
-      'the surface; you are handing back an honest partial and the caller will resume you ' +
-      'until the search is done. "stuck" — you could not find a way forward. Cost, effort ' +
-      'already spent, and the size of your report are never reasons to stop: never stop ' +
-      'because the work feels large. Only "exhausted" counts as a complete result, so ' +
-      'claim it only when it is true. The other two are not failures: the caller will ' +
-      'resume you.',
+      'Always include this field. "exhausted" — every candidate your searches turned up has ' +
+      'been triaged and you can name the surface that covers the request. "unfinished" — ' +
+      'one pass could not cover the surface; you are handing back an honest partial and the ' +
+      'caller will resume you until the search is done. "stuck" — you could not find a way ' +
+      'forward. Cost, effort already spent, and the size of your report are never reasons ' +
+      'to stop: never stop because the work feels large. Only "exhausted" counts as a ' +
+      'complete result, so claim it only when it is true. The other two are not failures: ' +
+      'the caller will resume you.',
   },
   no_match: {
     type: 'string',
     description:
       'What you searched for and genuinely did not find. This is a finding, not a gap — it ' +
-      'tells the caller the thing is absent. Empty only if everything you looked for was there.',
+      'tells the caller the thing is absent. Send an empty string — never omit the field — ' +
+      'when everything you looked for was there.',
   },
   not_reached: {
     type: 'string',
     description:
       'What you never searched at all, named specifically enough for someone else to pick it ' +
-      'up without redoing your work. Must be non-empty whenever stop_reason is not ' +
-      '"exhausted": a search you do not describe cannot be resumed and will be recorded as a ' +
-      'dead end instead. Never merge this with no_match.',
+      'up without redoing your work. Send an empty string when stop_reason is "exhausted"; ' +
+      'otherwise it must name what remains — a search you do not describe cannot be resumed ' +
+      'and will be recorded as a dead end instead. Never merge this with no_match.',
   },
 })
 
-const COVERAGE_FIELDS = ['searched', 'stop_reason', 'no_match', 'not_reached']
+// Only the payload field goes in `required`. The coverage fields are demanded by their
+// descriptions and normalized in JS after the call — never by the validator: a required
+// field whose semantics are conditional is a deadlock, observed in the field. An agent
+// with nothing to put in it omits it, validation rejects the whole report, the agent
+// re-submits the same shape until the platform kills it, and evidence already gathered is
+// dropped — the exact trade this file's header forbids for minItems-style bounds. Absence
+// is normalized in the safe direction: a missing stop_reason never reads as "exhausted",
+// so sloppiness degrades toward incomplete, never toward false completeness.
 
 const PLAN = {
   type: 'object',
@@ -113,7 +127,7 @@ const PLAN = {
 const HITS = {
   type: 'object',
   additionalProperties: false,
-  required: ['hits'].concat(COVERAGE_FIELDS),
+  required: ['hits'],
   properties: {
     hits: {
       type: 'array',
@@ -141,7 +155,7 @@ const HITS = {
 const evidenceSchema = (findingsDescription, searchedDescription) => ({
   type: 'object',
   additionalProperties: false,
-  required: ['findings'].concat(COVERAGE_FIELDS),
+  required: ['findings'],
   properties: {
     findings: { type: 'string', description: findingsDescription },
     ...coverageFields(searchedDescription),
@@ -332,8 +346,9 @@ async function resumeToExhaustion({ key, prompt, launch, absorb }) {
     // task and would return "exhausted" having done nothing. Treat it as the dead end it is
     // rather than paying for a round that launders it into completeness.
     if (!(found.not_reached || '').trim()) {
-      log(`${key}: stop_reason "${found.stop_reason}" with nothing named as unreached — treating as a dead end.`)
-      return { exhausted: false, notReached: `search stopped as "${found.stop_reason}" without naming what was missed` }
+      const reason = found.stop_reason || 'unstated'
+      log(`${key}: stop_reason "${reason}" with nothing named as unreached — treating as a dead end.`)
+      return { exhausted: false, notReached: `search stopped as "${reason}" without naming what was missed` }
     }
 
     if (!progressed) {
@@ -341,7 +356,7 @@ async function resumeToExhaustion({ key, prompt, launch, absorb }) {
       return { exhausted: false, notReached: found.not_reached }
     }
 
-    log(`${key}: unfinished after round ${round} (${found.stop_reason}), resuming.`)
+    log(`${key}: unfinished after round ${round} (${found.stop_reason || 'unstated'}), resuming.`)
   }
 }
 

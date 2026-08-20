@@ -212,6 +212,54 @@ test('a scout that stops without naming what it missed is a dead end, not a resu
   assert.equal(result.coverage.complete, false)
 })
 
+// ------------------------------------------------------ omitted coverage fields
+//
+// The schema requires only the payload field; the coverage fields are normalized here in
+// JS. The failure this guards: an exhausted scout read "must be non-empty when not
+// exhausted" as "must be non-empty", omitted the field it had nothing for, and the
+// validator rejected the same finished search five times until the agent died with all
+// its evidence. Absence must degrade toward incomplete, never toward false completeness —
+// and never toward a dropped result.
+
+test('an exhausted report missing the empty coverage fields is complete, not dropped', async () => {
+  const { result } = await run({
+    plan: PLAN(),
+    'scout:': { hits: [{ path: 'src/x.js', line: 1, note: 'the thing' }], stop_reason: 'exhausted' },
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(result.verdicts.length, 1)
+  assert.deepEqual(result.coverage.incomplete, [])
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a report with no stop_reason at all reads as incomplete, never as exhausted', async () => {
+  const { result } = await run({
+    plan: PLAN(),
+    'scout:': { hits: [{ path: 'src/x.js', line: 1, note: 'the thing' }] },
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(result.verdicts.length, 1, 'the evidence gathered is kept and analyzed')
+  assert.deepEqual(result.coverage.incomplete, ['a'])
+  assert.equal(result.coverage.complete, false)
+})
+
+test('a channel that returns only findings keeps its evidence and reads as incomplete', async () => {
+  const { result } = await run({
+    plan: PLAN({ history_needed: true, history_question: 'when did X change' }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+    history: { findings: 'the vendor moved the API in 2024' },
+  })
+
+  assert.deepEqual(result.coverage.failed_channels, [])
+  assert.ok(result.coverage.incomplete.includes('history'))
+  assert.equal(result.coverage.complete, false)
+  assert.match(result.history, /the vendor moved the API in 2024/)
+  assert.match(result.history, /COVERAGE LIMIT \(unfinished\)/)
+})
+
 // ------------------------------------------------------ evidence-channel coverage
 
 test('a channel that cannot finish makes coverage incomplete, after the resume is spent', async () => {

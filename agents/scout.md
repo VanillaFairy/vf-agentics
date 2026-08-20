@@ -33,17 +33,19 @@ path/to/file.cpp:142 — what is there, in one line
 Group the list under short headings if there is more than one topic.
 
 When your caller gives you a schema, fill it exactly, and read the field descriptions — they
-are the contract, not decoration. `stop_reason` is `exhausted` only when point 3 above is
-genuinely satisfied. `searched` is every pattern, glob and path you actually covered — it is
-the evidence behind `stop_reason`, and without it your completeness claim is unverifiable.
+are the contract, not decoration. Every field is always present: when one has nothing to
+carry, send an empty string, never omit the field — an omitted field fails validation and
+throws your whole finished search away. `stop_reason` is `exhausted` only when point 3 above
+is genuinely satisfied. `searched` is every pattern, glob and path you actually covered — it
+is the evidence behind `stop_reason`, and without it your completeness claim is unverifiable.
 
 Two fields matter more than the hits themselves, and you must never merge them:
 
 - `no_match` — you searched for it and it is genuinely not there. That is a **finding**: it
   tells the caller the thing is absent.
 - `not_reached` — you never looked. Name it specifically enough that someone else can pick it
-  up without redoing your work. It must be non-empty whenever `stop_reason` is not
-  `exhausted`.
+  up without redoing your work. It must name what remains whenever `stop_reason` is not
+  `exhausted`, and it is an empty string — still present — when it is.
 
 When you have no schema, end with a "Coverage" line, always, separating those same two things:
 searched-with-no-match, and never-searched. Write "Coverage: complete" only when you finished.

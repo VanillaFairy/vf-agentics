@@ -43,25 +43,31 @@ export const meta = {
 // `no_match` and `not_reached` stay apart on purpose, and here the distinction is the whole
 // point of the workflow: "I searched npm and nothing there does this" is a FINDING that
 // supports building. "I never searched npm" is a HOLE that supports nothing at all.
+// Every coverage field is ALWAYS present — an empty string is the correct value for "nothing
+// to carry", and each description says so outright. Conditional-sounding wording ("must be
+// non-empty whenever...") read to an exhausted agent as "must be non-empty", so it omitted
+// the field it had nothing for, tripped required-field validation, re-submitted the same
+// shape until the platform killed it, and a finished search was dropped whole.
 const coverageFields = (searchedDescription) => ({
   searched: {
     type: 'array',
     items: { type: 'string' },
     description: searchedDescription +
-      ' This is the evidence trail behind stop_reason. Without it your completeness claim is ' +
-      'an unverifiable self-report, and nobody can resume where you stopped.',
+      ' Always include this field. It is the evidence trail behind stop_reason: without it ' +
+      'your completeness claim is an unverifiable self-report, and nobody can resume where ' +
+      'you stopped.',
   },
   stop_reason: {
     type: 'string',
     enum: ['exhausted', 'unfinished', 'stuck'],
     description:
-      '"exhausted" — you covered the surface you were asked to cover and can name it. ' +
-      '"unfinished" — one pass could not cover the surface; you are handing back an honest ' +
-      'partial and the caller will resume you until the search is done. "stuck" — you ' +
-      'could not find a way forward. Cost, effort already spent, and the size of your ' +
-      'report are never reasons to stop: never stop because the work feels large. Only ' +
-      '"exhausted" counts as complete, so claim it only when it is true. The other two are ' +
-      'not failures: the caller will resume you.',
+      'Always include this field. "exhausted" — you covered the surface you were asked to ' +
+      'cover and can name it. "unfinished" — one pass could not cover the surface; you are ' +
+      'handing back an honest partial and the caller will resume you until the search is ' +
+      'done. "stuck" — you could not find a way forward. Cost, effort already spent, and ' +
+      'the size of your report are never reasons to stop: never stop because the work ' +
+      'feels large. Only "exhausted" counts as complete, so claim it only when it is true. ' +
+      'The other two are not failures: the caller will resume you.',
   },
   no_match: {
     type: 'string',
@@ -69,19 +75,24 @@ const coverageFields = (searchedDescription) => ({
       'What you looked for and genuinely did not find. This is a FINDING, not a gap — here ' +
       'it is often the finding that decides the question, because it is what says nothing ' +
       'off the shelf does this. Name the surface it is true of ("no maintained Rust crate ' +
-      'on crates.io"), never just "nothing found".',
+      'on crates.io"), never just "nothing found". Send an empty string — never omit the ' +
+      'field — when everything you looked for was there.',
   },
   not_reached: {
     type: 'string',
     description:
       'What you never searched at all, named specifically enough for someone else to pick ' +
-      'it up without redoing your work. Must be non-empty whenever stop_reason is not ' +
-      '"exhausted". Never merge this with no_match: an unsearched ecosystem reported as an ' +
-      'empty one is how a team ends up rebuilding something that already exists.',
+      'it up without redoing your work. Send an empty string when stop_reason is ' +
+      '"exhausted"; otherwise it must name what remains. Never merge this with no_match: ' +
+      'an unsearched ecosystem reported as an empty one is how a team ends up rebuilding ' +
+      'something that already exists.',
   },
 })
 
-const COVERAGE_FIELDS = ['searched', 'stop_reason', 'no_match', 'not_reached']
+// Only the payload field goes in `required`: the coverage fields are demanded by their
+// descriptions and normalized in JS after the call, because a required field with
+// conditional semantics is a validation deadlock that drops a finished search whole —
+// see the same note in vfa-survey, where it was observed in the field.
 
 const FRAME = {
   type: 'object',
@@ -149,7 +160,7 @@ const FRAME = {
 const CANDIDATES = {
   type: 'object',
   additionalProperties: false,
-  required: ['candidates'].concat(COVERAGE_FIELDS),
+  required: ['candidates'],
   properties: {
     candidates: {
       type: 'array',
@@ -200,7 +211,7 @@ const CANDIDATES = {
 const PRESENT = {
   type: 'object',
   additionalProperties: false,
-  required: ['hits'].concat(COVERAGE_FIELDS),
+  required: ['hits'],
   properties: {
     hits: {
       type: 'array',
@@ -495,8 +506,9 @@ async function searchUntilComplete(angle) {
     // task and would return "exhausted" having done nothing. Treat it as the dead end it is
     // rather than paying for a round that launders it into completeness.
     if (!(found.not_reached || '').trim()) {
-      log(`${angle.key}: stop_reason "${found.stop_reason}" with nothing named as unreached — treating as a dead end.`)
-      return incomplete(`search stopped as "${found.stop_reason}" without naming what was missed`)
+      const reason = found.stop_reason || 'unstated'
+      log(`${angle.key}: stop_reason "${reason}" with nothing named as unreached — treating as a dead end.`)
+      return incomplete(`search stopped as "${reason}" without naming what was missed`)
     }
 
     if (seen.size === before) {
@@ -504,7 +516,7 @@ async function searchUntilComplete(angle) {
       return incomplete(found.not_reached)
     }
 
-    log(`${angle.key}: unfinished after round ${round} (${found.stop_reason}), resuming.`)
+    log(`${angle.key}: unfinished after round ${round} (${found.stop_reason || 'unstated'}), resuming.`)
   }
 }
 
