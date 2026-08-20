@@ -516,10 +516,28 @@ function parseJournal(raw) {
   const arr = (v) => (Array.isArray(v) ? v.filter((e) => e && typeof e === 'object') : [])
   const str = (v) => (typeof v === 'string' ? v : '')
   const has = (o, k, test) => Object.prototype.hasOwnProperty.call(o, k) && test(o[k])
-  // A well-formed array is one every element of which survived that filter. Dropping an
-  // element silently would turn a line that named three failures into one that named two, and
-  // "two failures, all inside the locus" is a pass where three would not have been.
-  const whole = (v) => Array.isArray(v) && v.every((e) => e && typeof e === 'object')
+
+  // A well-formed array is one whose every element carries the FIELDS the predicates read —
+  // not merely one whose every element is an object. Checking objecthood alone was the first
+  // version of this and it protected the wrong thing: the crash it prevented was real, but
+  // every field a predicate reaches for is missing in the PERMISSIVE direction.
+  //
+  //   a series finding with no `blocking`   -> undefined is falsy -> the series reads CLEAN
+  //   a discriminator with no `passes_now`  -> !undefined is true -> the test reads validly red
+  //
+  // So a line recording a blocking finding, minus the one key that says it blocks, comes back
+  // green and skips the verification that had actually failed. The live VERIFY schema marks
+  // both of those fields `required`; the journal has no schema, and this is where that gap is
+  // closed. Same rule as the fields above: what is missing must not be read as what is empty.
+  const field = (e, k, type) =>
+    Object.prototype.hasOwnProperty.call(e, k) && typeof e[k] === type
+  const elements = (spec) => (v) => Array.isArray(v) &&
+    v.every((e) => e && typeof e === 'object' &&
+      spec.every(([k, type]) => field(e, k, type)))
+
+  const wholeFindings = elements([['blocking', 'boolean']])
+  const wholeDiscriminator = elements([['failed_on_base', 'boolean'], ['passes_now', 'boolean']])
+  const wholeFailures = elements([['file', 'string']])
 
   for (const line of lines) {
     let parsed = null
@@ -556,9 +574,9 @@ function parseJournal(raw) {
       recorded: has(parsed, 'stop_reason', (v) => typeof v === 'string') &&
         has(parsed, 'build', (v) => OUTCOME.has(v)) &&
         has(parsed, 'suite', (v) => OUTCOME.has(v)) &&
-        has(parsed, 'failing_tests', whole) &&
-        has(parsed, 'discriminator', whole) &&
-        has(parsed, 'series_findings', whole),
+        has(parsed, 'failing_tests', wholeFailures) &&
+        has(parsed, 'discriminator', wholeDiscriminator) &&
+        has(parsed, 'series_findings', wholeFindings),
     })
   }
 
@@ -2921,6 +2939,10 @@ try {
           worktree: entry.worktree || '',
           head_sha: entry.head_sha || '',
           measured: entry.measured || [],
+          // Which file this came out of, kept because it decides what can be SAID about it
+          // later. Two records in this same file are ordered by their position in it; one
+          // here and one in the journal are not ordered at all.
+          source: 'state',
         }
 
         // The two stages are exclusive and this line is the newer word on which one the order
@@ -3266,6 +3288,7 @@ try {
     // journal of unreadable lines is otherwise indistinguishable from an empty one, and the
     // run silently re-buys every measurement while looking like it never had any.
     let incomplete = 0
+    let unusable = 0
 
     if (journal.torn > 0) {
       // Expected, not alarming: several agents append here and a kill can land mid-write. It
@@ -3276,7 +3299,17 @@ try {
     }
 
     for (const entry of journal.entries) {
-      if (!entry.order) continue
+      // Every way out of this loop that is not "read it" increments something. A line naming
+      // no order, a kind nobody understands, an id this plan does not carry — each parsed, so
+      // none is torn, and each used to leave through its own `continue` counted by nothing.
+      // That is the defect the incomplete counter was added to fix, sitting on the branches
+      // beside it: a journal nothing could use is otherwise indistinguishable from no journal.
+      if (!entry.order ||
+          (entry.kind !== 'merge-observed' && entry.kind !== 'verify-observed') ||
+          !orderById.has(entry.order)) {
+        unusable += 1
+        continue
+      }
 
       // A merge the merging agent recorded itself. It does not land the order on its own —
       // git is still asked whether the branch is really in, at the scavenge below — but it is
@@ -3290,10 +3323,7 @@ try {
         continue
       }
 
-      if (entry.kind !== 'verify-observed') continue
-
       const wo = orderById.get(entry.order)
-      if (!wo) continue
 
       if (!entry.recorded) incomplete += 1
 
@@ -3314,6 +3344,7 @@ try {
           worktree: entry.worktree || '',
           head_sha: entry.head_sha || '',
           measured: measuredOf(entry),
+          source: 'journal',
         })
       } else {
         verifiedOnDisk.delete(entry.order)
@@ -3323,6 +3354,10 @@ try {
     if (incomplete > 0) {
       log(`${incomplete} journalled measurement(s) did not record everything a verdict is ` +
         `computed from and were not read as one; those orders are measured again.`)
+    }
+    if (unusable > 0) {
+      log(`${unusable} journal line(s) named no order this plan carries, or a kind this ` +
+        `version does not read, and were skipped.`)
     }
 
     // A stage the workflow already recorded as closed outranks a measurement of it: an
@@ -3849,6 +3884,37 @@ try {
     // out regardless. The lever that works is `confirmed_stale`.
     if (staleWithheldIds.includes(id)) continue
 
+    // A green measurement for an order this run also escalated — and what can be SAID about
+    // it depends entirely on which file it came out of.
+    //
+    // From state.jsonl the ordering is known, and known to point one way: a success line
+    // there clears an earlier escalation as it is replayed, so an escalation that survived
+    // into this loop is necessarily the LATER word. Nothing is ambiguous; the measurement is
+    // real and was superseded.
+    //
+    // From the journal there is no ordering to have. The escalation is in one append-only
+    // file and the measurement in another, and increment 6 §1's rule has nothing to apply
+    // across them. Both readings are live: a retry that measured green and died before its
+    // review is stranded work, and a green measurement followed by a review that would not
+    // converge is an escalation that must stand. Guessing "cleared" is the worse guess — it
+    // re-buys a full review of an order that already defeated one — so the escalation stands
+    // and the human is handed the fact plus the lever.
+    //
+    // Telling the second story about the first case is what this distinction exists to stop:
+    // it would push a human toward `retry_escalated` on the one input where the log already
+    // answered the question.
+    const green = verifiedOnDisk.get(id)
+    const greenNote = !green || !green.head_sha ? ''
+      : green.source === 'journal'
+        ? '. NOTE: a verification of this order was recorded green at ' + green.head_sha +
+          ', in the journal rather than the run state, so whether it came before or after ' +
+          'this escalation cannot be read — the two files share no ordering. If a retry ' +
+          'measured it green and was interrupted before its review, this is finished work ' +
+          'waiting on that lever'
+        : '. NOTE: a verification of this order was recorded green at ' + green.head_sha +
+          ' BEFORE this escalation — the run state orders the two, and the escalation is the ' +
+          'later word. The measurement is real and was superseded by whatever followed it'
+
     escalations.push({
       id,
       reason: 'carried_forward',
@@ -3856,7 +3922,7 @@ try {
         'an earlier invocation of this run escalated this order in wave ' + wave,
         'the findings themselves were not recorded — the run state carries ids, not trails. ' +
         'Read that invocation\'s report, or re-invoke with retry_escalated: ["' + id + '"] to ' +
-        'dispatch it again once the cause has been dealt with')],
+        'dispatch it again once the cause has been dealt with' + greenNote)],
       trail: [],
       branch: orderBranch(id),
       worktree: '',

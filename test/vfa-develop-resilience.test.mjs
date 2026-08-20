@@ -349,17 +349,30 @@ test('every heredoc a prompt hands an agent can actually terminate', async () =>
   // for it and writes the delimiter line into the file as content. That turns every append
   // into a junk line, and the torn-line counter that exists to say "an append was
   // interrupted" then says it on every run, about nothing.
+  //
+  // Asserted as "a terminator exists AND it sits at column 0", not merely "no indented one":
+  // the second passes a prompt that opens a heredoc and never closes it, which is the same
+  // runaway with none of the evidence.
   const { prompts } = await fresh({})
+  let seen = 0
 
   for (const p of prompts) {
-    const opened = /<<'([A-Z]+)'/.exec(p.prompt)
-    if (!opened) continue
+    const lines = p.prompt.split('\n')
 
-    const delim = opened[1]
-    const closing = p.prompt.split('\n').filter((l) => l.trim() === delim && l !== delim)
-    assert.deepEqual(closing, [],
-      `${p.opts.label}: the ${delim} terminator is indented and can never match`)
+    for (const delim of (p.prompt.match(/<<'([A-Za-z0-9_]+)'/g) || [])
+      .map((m) => m.slice(3, -1))) {
+      seen += 1
+      const matchable = lines.filter((l) => l === delim)
+      const indented = lines.filter((l) => l.trim() === delim && l !== delim)
+
+      assert.deepEqual(indented, [],
+        `${p.opts.label}: the ${delim} terminator is indented and can never match`)
+      assert.ok(matchable.length > 0,
+        `${p.opts.label}: opens a ${delim} heredoc and never terminates it`)
+    }
   }
+
+  assert.ok(seen >= 3, `expected the verify, merge and record heredocs; saw ${seen}`)
 })
 
 test('the recorder is told to append, never to read and write back', async () => {
@@ -895,6 +908,48 @@ test('a journalled merge is still not enough on its own — git is the other wit
   assert.deepEqual(result.integration.merged, ['W2'], 'it goes through the pipeline instead')
 })
 
+test('a red order derives its own verdict from the journal, by its own rule', async () => {
+  // Every journal test above uses role 'none', which exercises exactly one of the three role
+  // predicates. A red order inverts the discriminator — its tests are SUPPOSED to fail — so
+  // the same journalled facts mean opposite things depending on the order they describe, and
+  // the derivation has to be the role-aware one rather than a general "looks green".
+  const RED = [order('W1'), order('W2', { deps: ['W1'], role: 'red' })]
+  const redPlan = {
+    work_orders: RED, shared_files: [],
+    partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
+    blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+  }
+
+  const redRun = (over) => runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeLoad(loaded({ plan: redPlan, manifest: manifestOf(RED), ...over })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+      scavenge: scavengedW2(),
+    }),
+  })
+
+  // Red and correct: the test it landed fails now and failed on the base, the suite is red,
+  // and every failure sits in its own locus.
+  const red = await redRun({
+    journal_raw: journalLine({
+      suite: 'failed',
+      failing_tests: [{ file: 'src/W2.js', id: 'boom' }],
+      discriminator: [{ test_id: 'test/w2.test.js', failed_on_base: true, passes_now: false }],
+    }) + '\n',
+  })
+  assert.ok(!red.prompts.some((p) => p.opts.label === 'verify:W2'),
+    'a red order measured red at this head is measured; re-running reaches the same answer')
+
+  // Hollow: the test passes now, so it pins behaviour that already existed. Green for a plain
+  // order, and a failure for a red one — the same line, the opposite verdict.
+  const hollow = await redRun({ journal_raw: journalLine() + '\n' })
+  assert.ok(hollow.prompts.some((p) => p.opts.label === 'verify:W2'),
+    'what reads green for role none must not read green for role red')
+})
+
 test('a torn journal line is skipped and said out loud', async () => {
   // Several agents append here and a kill can land mid-write, so a half-written last line is
   // an expected shape of the file. Silently shorter is the reading that must not happen: it
@@ -940,6 +995,85 @@ test('a null inside a journal array cannot end the run either', async () => {
     assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
       `and ${field} holding something unreadable buys a measurement, never a pass`)
   }
+})
+
+test('a finding missing the key that says it blocks is not a green measurement', async () => {
+  // The permissive direction, and the reason element-objecthood was never enough: `blocking`
+  // absent is `undefined`, which is falsy, so `.some(f => f.blocking)` reads the series as
+  // CLEAN. A line recording a blocking commit-series finding, minus that one key, came back
+  // green and skipped the verification that had actually failed. `seriesClean` sits inside
+  // `verifiable`, the first conjunct of every role's verdict, so this reached every order.
+  const { prompts } = await journalled([
+    journalLine({
+      series_findings: [{ sha: C40, check: 'commit-series', message: 'behaviour changed' }],
+    }),
+  ])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a discriminator missing passes_now is not a green measurement for a RED order', async () => {
+  // The other permissive field, and it is only permissive for one role — which is why it
+  // needs its own order. `redVerifyOk` asks `!d.passes_now`, so a missing key is `!undefined`
+  // = true and the test reads validly red. `plainVerifyOk` asks `d.passes_now` and a missing
+  // key fails it, so a `role: none` fixture cannot tell this clause from its absence: it
+  // dispatches a verification either way, and passes against the unfixed code.
+  const RED = [order('W1'), order('W2', { deps: ['W1'], role: 'red' })]
+
+  const { prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeLoad(loaded({
+        plan: {
+          work_orders: RED, shared_files: [],
+          partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
+          blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+        },
+        manifest: manifestOf(RED),
+        journal_raw: journalLine({
+          suite: 'failed',
+          failing_tests: [{ file: 'src/W2.js', id: 'boom' }],
+          discriminator: [{ test_id: 'test/w2.test.js', failed_on_base: true }],
+        }) + '\n',
+      })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+      scavenge: scavengedW2(),
+    }),
+  })
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'a red order whose discriminator never said whether the test passes has measured nothing')
+})
+
+test('a failure with no file is not a green measurement', async () => {
+  const { prompts } = await journalled([journalLine({ failing_tests: [{ id: 'boom' }] })])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a blocking finding recorded in full still stops the line reading green', async () => {
+  // The counterweight: with `blocking` actually present and true, seriesClean is false, so
+  // the measurement is red and the order is verified again. This is the case the one above
+  // was silently turning into a pass.
+  const { prompts } = await journalled([
+    journalLine({
+      series_findings: [{ sha: C40, check: 'commit-series', message: 'x', blocking: true }],
+    }),
+  ])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a journal line naming an order this plan does not carry is counted, not vanished', async () => {
+  const { logs, prompts } = await journalled([
+    journalLine(), journalLine({ order: 'W9' }), journalLine({ order: '' }),
+  ])
+
+  assert.ok(logs.some((l) => /2 journal line\(s\) named no order this plan carries/.test(l)))
+  assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'),
+    'and the line that WAS usable is still used')
 })
 
 test('an unreadable element is dropped from the line, not from the count', async () => {
@@ -1031,6 +1165,54 @@ test('retry_escalated re-dispatches exactly what it names', async () => {
   assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
     'a retry re-enters the ladder, so partial work on the branch is still salvaged')
   assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+const carried = async (over) => {
+  const { result } = await resumed({ ...resumeLoad(loaded(over)) })
+  return result.escalations.find((e) => e.id === 'W2')
+}
+
+test('a JOURNALLED green beside an escalation is reported as genuinely unordered', async () => {
+  // The escalation is in state.jsonl, the measurement in journal.jsonl, and the two files
+  // share no ordering — so "a success clears an earlier escalation" has nothing to apply.
+  // Guessing "cleared" re-buys a review of an order that already defeated one; guessing
+  // "stands" silently strands finished work. The escalation stands and the human is told.
+  const esc = await carried({ state: [escalatedLine()], journal_raw: journalLine() + '\n' })
+
+  assert.equal(esc.reason, 'carried_forward')
+  assert.match(esc.unresolved[0].evidence, /recorded green at/)
+  assert.match(esc.unresolved[0].evidence, /share no ordering/)
+  assert.match(esc.unresolved[0].evidence, /retry_escalated/, 'and the lever is still named')
+})
+
+test('a STATE-LINE green beside an escalation is ordered, and said to be', async () => {
+  // Here the ordering is known and known to point one way: a success line in state.jsonl
+  // clears an earlier escalation as it replays, so an escalation that survived is necessarily
+  // the later word. Telling the unordered story about this input would push a human toward
+  // retry_escalated on the one case where the log already answered the question.
+  const esc = await carried({ state: [stageLine('order-verified'), escalatedLine()] })
+
+  assert.match(esc.unresolved[0].evidence, /BEFORE this escalation/)
+  assert.ok(!/share no ordering/.test(esc.unresolved[0].evidence))
+})
+
+test('a green with no head recorded says nothing about one', async () => {
+  // Otherwise the note renders "recorded green at , and whether…".
+  const esc = await carried({
+    state: [escalatedLine()],
+    journal_raw: journalLine({ head_sha: '' }) + '\n',
+  })
+
+  assert.ok(!/recorded green at/.test(esc.unresolved[0].evidence))
+})
+
+test('a carried escalation with no measurement behind it says nothing about one', async () => {
+  const { result } = await resumed({
+    ...resumeLoad(loaded({ state: [escalatedLine()] })),
+  })
+
+  assert.ok(!/recorded green at/.test(
+    result.escalations.find((e) => e.id === 'W2').unresolved[0].evidence))
 })
 
 test('a verified line written BEFORE an escalation does not cancel it', async () => {

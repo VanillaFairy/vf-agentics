@@ -87,21 +87,83 @@ Both halves are load-bearing, and both are the same mistake in different clothes
 
 An incomplete line is therefore worth exactly what an absent one is worth: a re-measurement.
 
-**Elements, not only containers.** `Array.isArray([null])` is `true`, and every role predicate
-reaches into these elements — `series_findings` through `seriesClean`, which is the *first*
-conjunct of every verdict and therefore reachable for every order in a plan. So the parser
-drops non-object elements, an array holding one is not `recorded`, and the predicates guard
-their elements as well. Each guard leans the same way: an element that cannot be read costs a
-re-measurement rather than buying a pass — an unreadable finding counts as blocking, an
-unplaceable failure counts as outside the locus.
+**Elements, and the fields inside them.** `Array.isArray([null])` is `true`, and every role
+predicate reaches into these elements — `series_findings` through `seriesClean`, which is the
+*first* conjunct of every verdict and therefore reachable for every order in a plan. So the
+parser drops non-object elements and an array holding one is not `recorded`.
+
+That is only half of it, and the half that was written first protected the wrong thing.
+Checking objecthood stops the crash; it does nothing about the **fields the predicates read**,
+and two of those are missing in the *permissive* direction:
+
+| what is missing | what the predicate computes | what it means | for |
+|---|---|---|---|
+| a `series_findings` element's `blocking` | `undefined` is falsy | the series reads **clean** | every role |
+| a `discriminator` element's `passes_now` | `!undefined` is `true` | the test reads **validly red** | `role: red` only |
+
+So a line recording a blocking commit-series finding, minus the one key that says it blocks,
+came back green and skipped the verification that had actually failed — and `seriesClean` sits
+inside `verifiable`, the first conjunct of every role's verdict, so that one reached every
+order in a plan.
+
+The other two required fields were already conservative and are required for uniformity rather
+than for safety: a missing `failed_on_base` fails the `&&` in both `plainVerifyOk` and
+`redVerifyOk`, and a missing `file` makes `failuresOutside` count the failure as outside every
+fence, which it says in as many words. One gate over one field list beats a per-role gate that
+can drift out of step with the predicates it guards.
+
+The live `VERIFY` schema marks all of these `required`; the journal has no schema, and
+`recorded` is where that gap closes. It validates each array's elements against the fields its
+consumers read — `blocking` on findings, `failed_on_base` and `passes_now` on the
+discriminator, `file` on failures — by type, not merely by presence.
+
+**`passes_now` needs a red order to test at all.** For `role: none`, `plainVerifyOk` asks
+`d.passes_now` and a missing key fails it, so a plain-order fixture dispatches a verification
+with or without the clause and cannot tell the fix from its absence. The first test written for
+it was exactly that, and passed against the unfixed code. Deleting the clause now fails a
+`role: red` case built for it.
+
+The predicates keep their own element guards as defence in depth, each leaning the same way:
+an element that cannot be read costs a re-measurement rather than buying a pass — an unreadable
+finding counts as blocking, an unplaceable failure counts as outside the locus.
 
 Dropping an element silently would be its own defect: a line that named three failures becoming
 one that named two turns "all failures inside the locus" into a pass where three would not have
 been. Hence a dropped element makes the whole line unrecorded rather than shortening it.
 
-**Incomplete lines are counted and logged**, exactly as torn ones are, and for the same stated
-reason: a journal of unreadable lines is otherwise indistinguishable from an empty one, and the
-run re-buys every measurement while looking like it never had any to begin with.
+**Every line the replay does not use is counted and logged** — torn, incomplete, or unusable
+(naming no order, an order this plan does not carry, or a kind this version does not read).
+Same reason in all three cases: a journal nothing could use is otherwise indistinguishable from
+no journal, and the run re-buys every measurement while looking like it never had any.
+
+### What the journal cannot settle: escalations
+
+Increment 6 §1 rules that a recorded success clears an earlier escalation, and the state replay
+applies it in log order. That rule does **not** cross into the journal, and cannot: the
+escalation lives in `state.jsonl`, the measurement in `journal.jsonl`, and the two append-only
+files share no ordering. A green measurement and a carried escalation for the same order are
+genuinely ambiguous — a retry that measured green and died before its review is stranded work,
+and a green measurement followed by a review that would not converge is an escalation that must
+stand.
+
+The escalation stands, and the measurement is reported inside it. Guessing "cleared" is the
+worse guess: it re-buys a full review of an order that already defeated one, which is what
+increment 6 §5 declined to do by default. Guessing "stands" silently would strand finished work
+without saying so, which is IRON LAW §7's "I couldn't" about work that succeeded. So the human
+gets both facts and the `retry_escalated` lever.
+
+**But only the journal is unordered, and the report must not say otherwise.** A green
+measurement can also come from a retired `order-verified` **state** line, where the ordering is
+not merely readable but already read: a success line there clears an earlier escalation as the
+replay passes it, so an escalation that survived into the report is necessarily the later word.
+Those entries carry their `source`, and each gets its own sentence — "recorded green BEFORE
+this escalation, and superseded" for a state line, the genuine ambiguity for a journalled one.
+Telling the ambiguous story about the ordered case would push a human toward `retry_escalated`
+on the one input where the log had already answered the question, which is the same class of
+defect as guessing: a report that is wrong about what it knows.
+
+Recording a shared ordering — a per-line sequence or timestamp across both files — would settle
+the journal case properly. It is not done here, and the reason is scope rather than principle.
 
 ---
 
@@ -198,6 +260,15 @@ refuse. The reported `integration_head` falls back to the last journalled merge 
 reason: a run killed before any wave ended has a real head, and `''` sends a human looking for
 nothing, on the run most worth looking at.
 
+**A journalled merge counts as a merge and never as a finished line.** `statusOf` takes a
+fourth fact, `unconfirmedMerges`, and a run holding any merge that no wave line confirms stays
+`in-flight` however many orders have landed. A wave line is appended *after* the wave
+verification that measures the merged head, so its absence says that verification never ran —
+and `integrated` is read as a run that finished its line by a human *and* by the workflow's
+duplicate-run guard, which only halts on `planned` or `in-flight`. Promoting on an unverified
+merge would wave a re-invocation of a half-finished run straight past the guard built to stop
+exactly that, and buy the whole change a second time. The unconfirmed ids travel in `notes`.
+
 ---
 
 ## 7. The residual risk, named
@@ -232,7 +303,23 @@ counting as green; a vacuous-but-*stated* measurement still counting; every here
 prompt having a terminator that can match; the recorder's DISPATCH — not only its charter —
 telling it to append; and `measured_unapproved` actually reading the journal.
 
-Two shapes from those passes are worth remembering.
+A third pass, over the committed result, found four more: a `recorded` gate that checked
+elements were objects and not that they carried the fields the verdict turns on (above); a
+journalled merge promoting a run to `integrated` and thereby disabling the duplicate-run guard;
+carried escalations saying nothing about a green measurement sitting beside them; and journal
+lines dropped by three `continue`s that no counter reached. It also found that the `[null]`
+test's stated mechanism was wrong — it exercised the `recorded` gate, not the element guards
+its comment described — and that no journal test used a `red` or `refactor` order, so two of
+the three role predicates were never run against journal data at all.
+
+A fourth pass, over those fixes, found four more again: a carried-escalation note calling an
+ordering unreadable when it came from the state log and was therefore already read; the
+`passes_now` clause tested only against a role for which it is unreachable, so deleting it left
+the suite green; a rationale that claimed all four required element fields were permissive when
+only two are; and a merge line naming an unknown order still leaving the replay uncounted. Each
+of the four fixes is now mutation-checked — deleting the clause fails a test.
+
+Four shapes from those passes are worth remembering.
 
 **Two authoritative instructions disagreeing is itself the defect.** The charter said "append";
 the dispatch prompt still said "read the file first and write it back". The prompt is what the
@@ -240,8 +327,22 @@ agent is holding, so the durability guarantee was decoration.
 
 **A fix aimed at one door leaves the others open.** Guarding the array containers stopped the
 missing-array crash and did nothing about a `null` inside one — same TypeError, same top-level
-catch, same resume ending before it dispatched anything, reached by a different route. The
-second pass found it precisely because it re-attacked the fix rather than the original defect.
+catch, same resume ending before it dispatched anything, reached by a different route. Guarding
+the elements then stopped the crash and did nothing about the fields inside them, which is
+where the verdict actually lives. Each pass found the next door only because it re-attacked the
+fix rather than the original defect.
+
+**A test can pin a defect as firmly as it pins a fix.** `a journalled merge of every waved order
+is integrated` asserted the promotion that disabled the duplicate-run guard. It was written
+from the implementation rather than from the criteria, so it passed, stayed green through two
+review rounds, and would have held the defect in place against anyone who noticed it.
+
+**A test that cannot fail is not coverage, whatever its name says.** The `passes_now` clause was
+first tested against a `role: none` order, for which the missing key is already conservative —
+so the test passed against the unfixed code, and deleting the clause left all 704 tests green
+while reopening the hole the fix leads with. The check that catches this is mechanical: delete
+the clause, run the suite, and require a failure. Every element-field clause here has now been
+put through it, and so has `unconfirmedMerges` and the provenance split above.
 
 `test/run-status.test.mjs`: journalled merges counting as merged with and without wave lines,
 the two sources unioning, a journal alone making a run in-flight, and the head fallback.

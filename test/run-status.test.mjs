@@ -181,11 +181,41 @@ test('a journal alone makes a run in-flight, never planned', () => {
     'an agent got far enough to have something to record, so there is something to resume')
 })
 
-test('a journalled merge of every waved order is integrated, and lands on ancestry', () => {
+test('journalled merges alone never promote a run past in-flight', () => {
+  // Every waved order merged, and not one wave line confirms it. A wave line is appended
+  // AFTER the wave verification that measures the merged head, so its absence says that
+  // verification never ran — and `integrated` is read as a run that finished its line, by a
+  // human and by the workflow's duplicate-run guard, which only stops `planned` and
+  // `in-flight`. Promoting here would wave a re-invocation of a half-finished run straight
+  // past the guard that exists to stop exactly that.
   const journal = [mergeObserved('W1'), mergeObserved('W2'), mergeObserved('W3')]
 
-  assert.equal(deriveRun('20260816-143005', plan(), [], false, [], journal).status, 'integrated')
-  assert.equal(deriveRun('20260816-143005', plan(), [], true, [], journal).status, 'landed')
+  for (const ancestry of [false, true, null]) {
+    const run = deriveRun('20260816-143005', plan(), [], ancestry, [], journal)
+    assert.equal(run.status, 'in-flight', 'ancestry ' + ancestry)
+    assert.deepEqual(run.merged, ['W1', 'W2', 'W3'], 'they did merge, and are reported so')
+    assert.deepEqual(run.unreached, [])
+  }
+
+  assert.match(deriveRun('20260816-143005', plan(), [], null, [], journal).notes.join(' '),
+    /never closed/, 'and the reason is said, not just the word')
+})
+
+test('a wave line confirming those same merges does promote it', () => {
+  // The other side: once a wave line names them, the verification behind it ran.
+  const state = [wave({ merged: ['W1', 'W2', 'W3'] })]
+  const journal = [mergeObserved('W1'), mergeObserved('W2'), mergeObserved('W3')]
+
+  assert.equal(deriveRun('20260816-143005', plan(), state, false, [], journal).status, 'integrated')
+  assert.equal(deriveRun('20260816-143005', plan(), state, true, [], journal).status, 'landed')
+})
+
+test('one unconfirmed merge among confirmed ones still holds the run', () => {
+  const state = [wave({ merged: ['W1', 'W2'] })]
+  const run = deriveRun('20260816-143005', plan(), state, true, [], [mergeObserved('W3')])
+
+  assert.equal(run.status, 'in-flight')
+  assert.deepEqual(run.merged, ['W1', 'W2', 'W3'])
 })
 
 test("git's unanswerable ancestry is not read as a no-but-known", () => {

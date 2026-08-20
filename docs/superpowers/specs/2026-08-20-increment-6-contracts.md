@@ -279,7 +279,9 @@ it**; a stale-withheld order not doubling as a carried escalation; a carried esc
 dispatched nor scavenged, blocking its dependents; `retry_escalated` re-dispatching only what it
 names; a carried escalation not also announced as work about to be resumed, and naming the wave
 it escalated in rather than the last wave that ran; both backward-compatibility defaults;
-stage-line ordering (`record:verified:<id>` before `record:<id>` before `record:wave-n`).
+stage-line ordering (`record:<id>` before `record:wave-n` — this increment also asserted a
+`record:verified:<id>` ahead of both, and increment 7 retired that dispatch in favour of the
+verifier journalling its own measurements).
 `test/run-status.test.mjs` covers `hasState` over verified-only state, `measured_unapproved`
 clearing on merge, and distinct-wave counting with a corrective line present.
 
