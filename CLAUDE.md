@@ -58,6 +58,9 @@ merging agent its merges — while `state.jsonl` holds what the *workflow* decid
 wave outcomes, written by a recorder that now truly appends rather than rewriting. No agent
 journals a verdict: verdicts are re-derived from the recorded facts on resume, by the same
 functions that derived them the first time, which is what makes agent-written durability safe.
+Both files share one monotonic `seq`, minted here and copied by the writer — a counter rather
+than a clock, because an agent that can read a clock can invent one, and a fabricated
+timestamp orders two records confidently and wrongly.
 
 A resume then **salvages by stage**. It trusts a stage exactly as far as two independent
 records agree: the run said the stage closed, and git still holds the head it closed over.
@@ -73,10 +76,11 @@ the ids whose cause has been dealt with. Salvage is always reported: a run that 
 
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
-`2026-08-20-increment-6-contracts.md` and `2026-08-20-increment-7-contracts.md`. **Any change
-to the plan envelope's field list cites the registry in increment 5 §1, any change to a
-`state.jsonl` line cites increment 6 §2, and any change to a `journal.jsonl` line cites
-increment 7 §4** — nothing finds any of those copies for you.
+`2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md` and
+`2026-08-21-increment-8-contracts.md`. **Any change to the plan envelope's field list cites the
+registry in increment 5 §1, any change to a `state.jsonl` line cites increment 6 §2, any change
+to a `journal.jsonl` line cites increment 7 §4, and any change to `seq` cites increment 8 §3** —
+nothing finds any of those copies for you.
 
 Run the checks with:
 

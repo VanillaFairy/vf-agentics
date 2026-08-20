@@ -162,8 +162,11 @@ Telling the ambiguous story about the ordered case would push a human toward `re
 on the one input where the log had already answered the question, which is the same class of
 defect as guessing: a report that is wrong about what it knows.
 
-Recording a shared ordering — a per-line sequence or timestamp across both files — would settle
-the journal case properly. It is not done here, and the reason is scope rather than principle.
+> **Settled in `2026-08-21-increment-8-contracts.md`.** Both files now carry one monotonic
+> `seq`, so a measurement strictly later than an escalation supersedes it and increment 6 §1's
+> rule finally reaches across them. What survives from this section is the fallback: two records
+> that tie — both written before the counter existed — are still genuinely unordered, and are
+> still reported rather than guessed at.
 
 ---
 

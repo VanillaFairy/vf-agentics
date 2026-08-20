@@ -121,7 +121,7 @@ const envelope = (over = {}) => ({
 
 /** One wave line: W1 merged, W2 still to come. The ordinary resumed world. */
 const waveLine = () => ({
-  kind: 'wave', wave: 1, merged: ['W1'], approved_unmerged: [], escalated: [], discovered: [],
+  kind: 'wave', seq: 0, wave: 1, merged: ['W1'], approved_unmerged: [], escalated: [], discovered: [],
   integration_base: A40, integration_head: M40, order: '', branch: '', worktree: '',
   head_sha: '',
 })
@@ -331,6 +331,10 @@ test('what the verifier journals is facts, never a verdict', async () => {
                        '"discriminator"', '"series_findings"']) {
     assert.ok(verify.includes(field), `the journal line carries ${field}`)
   }
+  // The ordering, minted here and handed over as a literal. Without it every journalled
+  // measurement parses back at seq 0, no green ever supersedes a stamped escalation, and the
+  // whole ordering feature is inert while lint, tests and the contract all read as satisfied.
+  assert.match(verify, /"seq":\d+/, 'the line carries a minted ordering, not a placeholder')
   assert.ok(!/"verified"|"green"|"passed_overall"/.test(verify),
     'no agent in this pipeline certifies its own work')
 })
@@ -339,6 +343,7 @@ test('a merge is journalled by the agent that made it, and only when it complete
   const merge = promptFor((await fresh({})).prompts, 'merge:W1')
 
   assert.match(merge, /"kind":"merge-observed"/)
+  assert.match(merge, /"seq":\d+/)
   assert.match(merge, /the sha you read back/, 'the observed sha, never the expected one')
   assert.match(merge, /ONLY after a merge that actually completed/)
 })
@@ -424,7 +429,7 @@ const FOUND_W2 = {
 
 /** A per-order stage line for W2, at whatever head the caller says the stage closed over. */
 const stageLine = (kind, over = {}) => ({
-  kind, wave: 2, merged: [], approved_unmerged: [], escalated: [], discovered: [],
+  kind, seq: 0, wave: 2, merged: [], approved_unmerged: [], escalated: [], discovered: [],
   integration_base: '', integration_head: '',
   order: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2', head_sha: C40,
   measured: ['build', 'suite'],
@@ -816,7 +821,7 @@ test('an approval recorded before `measured` existed still salvages, and says wh
 
 /** One journal line for W2, as the file holds it: a string, not a parsed object. */
 const journalLine = (over = {}) => JSON.stringify({
-  kind: 'verify-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
+  kind: 'verify-observed', seq: 0, order: 'W2', branch: 'vfa/20260816-143005-W2',
   worktree: 'C:/wt/w2', base_sha: M40, head_sha: C40,
   stop_reason: 'completed', build: 'passed', suite: 'passed', failing_tests: [],
   discriminator: [{ test_id: 'test/w2.test.js', failed_on_base: true, passes_now: true }],
@@ -1172,17 +1177,122 @@ const carried = async (over) => {
   return result.escalations.find((e) => e.id === 'W2')
 }
 
-test('a JOURNALLED green beside an escalation is reported as genuinely unordered', async () => {
-  // The escalation is in state.jsonl, the measurement in journal.jsonl, and the two files
-  // share no ordering — so "a success clears an earlier escalation" has nothing to apply.
-  // Guessing "cleared" re-buys a review of an order that already defeated one; guessing
-  // "stands" silently strands finished work. The escalation stands and the human is told.
-  const esc = await carried({ state: [escalatedLine()], journal_raw: journalLine() + '\n' })
+test('a journalled green AFTER an escalation supersedes it — the counter orders them', async () => {
+  // The case the shared counter exists for: a retry measured the order green and died before
+  // its review. Both files carry one run-wide sequence now, so "a later success clears an
+  // earlier escalation" — increment 6 §1's rule, previously applicable only within
+  // state.jsonl — finally reaches across them, and this is a comparison rather than a guess.
+  const { result, prompts } = await resumed({
+    ...resumeLoad(loaded({
+      state: [{ ...escalatedLine(), seq: 4 }],
+      journal_raw: journalLine({ seq: 9 }) + '\n',
+    })),
+    scavenge: scavengedW2(),
+  })
+
+  assert.equal(result.escalations.length, 0, 'the escalation is superseded, not carried')
+  assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'),
+    'and the measurement it was superseded by is itself adopted')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a journalled green BEFORE an escalation stands, and is REPORTED as ordered', async () => {
+  // The other direction, and the one that must not be guessed: a green measurement followed
+  // by a review that would not converge is an escalation that stands.
+  //
+  // The counter separates these two, so the report must say so. Calling a pair the log orders
+  // "unordered" pushes a human toward retry_escalated on an input where the log already
+  // answered — the same class of error as guessing, and the one increment 7 §5 names.
+  const esc = await carried({
+    state: [{ ...escalatedLine(), seq: 9 }],
+    journal_raw: journalLine({ seq: 4 }) + '\n',
+  })
 
   assert.equal(esc.reason, 'carried_forward')
-  assert.match(esc.unresolved[0].evidence, /recorded green at/)
-  assert.match(esc.unresolved[0].evidence, /share no ordering/)
-  assert.match(esc.unresolved[0].evidence, /retry_escalated/, 'and the lever is still named')
+  assert.match(esc.unresolved[0].evidence, /BEFORE this escalation/)
+  assert.ok(!/carries an ordering/.test(esc.unresolved[0].evidence))
+})
+
+test('an order escalated, retried and escalated AGAIN stays escalated', async () => {
+  // The seq kept for an escalation is the LAST line naming it, not the first — the wave number
+  // is first-wins and the ordering is not, and hanging both on one aggregation is a real
+  // defect. Here the retry's green (3) sits between the first escalation (2) and the second
+  // (4). Compared against the first, it looks later and clears a verdict the run had just
+  // reached for the second time — on this resume and every one after it, since each resume
+  // re-lists the escalation at a higher number still and compares against the same stale one.
+  const esc = await carried({
+    state: [
+      { ...escalatedLine(), seq: 2 },
+      { ...escalatedLine(), seq: 4 },
+    ],
+    journal_raw: journalLine({ seq: 3 }) + '\n',
+  })
+
+  assert.ok(esc, 'the last word on disk is the escalation, and it stands')
+  assert.equal(esc.reason, 'carried_forward')
+})
+
+test('two records from before the counter existed stay honestly unordered', async () => {
+  // Both at 0 is a genuine tie: neither preceded the other as far as anything on disk can
+  // say. Reporting the ambiguity is right here; inventing an order would not be.
+  const { result } = await resumed({
+    ...resumeLoad(loaded({
+      state: [{ ...escalatedLine(), seq: 0 }],
+      journal_raw: journalLine({ seq: 0 }) + '\n',
+    })),
+  })
+
+  const esc = result.escalations.find((e) => e.id === 'W2')
+  assert.ok(esc, 'the escalation stands')
+  assert.match(esc.unresolved[0].evidence, /neither it nor this escalation carries an ordering/)
+})
+
+test('an unstamped escalation really does precede a stamped measurement', async () => {
+  // 0 against a number is not a tie. A line carrying no seq was written by a version that
+  // minted none, and a version only moves forward for a run directory, so the stamped line is
+  // genuinely later — comparing them reads the log rather than guessing at it. Treating this
+  // as ambiguous would strand an upgrade's first successful retry.
+  const { result } = await resumed({
+    ...resumeLoad(loaded({
+      state: [{ ...escalatedLine(), seq: 0 }],
+      journal_raw: journalLine({ seq: 7 }) + '\n',
+    })),
+    scavenge: scavengedW2(),
+  })
+
+  assert.equal(result.escalations.length, 0)
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('the counter resumes where the run left it, never at zero', async () => {
+  // Restarting at zero would mint numbers the run has already used, so a comparison across an
+  // interruption would read the newer record as the older one — worse than having no ordering,
+  // because it looks like one.
+  // Both terms of the seed are exercised, because either one alone passes the other's case.
+  // The state maximum leading is the ORDINARY arrangement — a wave line is the last thing an
+  // invocation writes — so a fixture with only the journal ahead would let the state half be
+  // deleted while the suite stayed green.
+  for (const [stateSeq, journalSeq] of [[41, 57], [57, 41]]) {
+    const highest = Math.max(stateSeq, journalSeq)
+
+    const { prompts } = await resumed({
+      ...resumeLoad(loaded({
+        state: [{ ...waveLine(), seq: stateSeq }],
+        journal_raw: journalLine({ seq: journalSeq }) + '\n',
+      })),
+      scavenge: scavengedW2(),
+    })
+
+    const stamps = prompts
+      .map((p) => /"seq":(\d+)/.exec(p.prompt))
+      .filter(Boolean)
+      .map((m) => Number(m[1]))
+
+    assert.ok(stamps.length > 0, 'this run stamps something')
+    assert.ok(Math.min(...stamps) > highest,
+      `state ${stateSeq}, journal ${journalSeq}: every new stamp must clear the highest ` +
+      `already on disk; saw ${stamps.join(', ')}`)
+  }
 })
 
 test('a STATE-LINE green beside an escalation is ordered, and said to be', async () => {
@@ -1193,7 +1303,7 @@ test('a STATE-LINE green beside an escalation is ordered, and said to be', async
   const esc = await carried({ state: [stageLine('order-verified'), escalatedLine()] })
 
   assert.match(esc.unresolved[0].evidence, /BEFORE this escalation/)
-  assert.ok(!/share no ordering/.test(esc.unresolved[0].evidence))
+  assert.ok(!/carries an ordering/.test(esc.unresolved[0].evidence))
 })
 
 test('a green with no head recorded says nothing about one', async () => {

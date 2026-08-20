@@ -93,6 +93,11 @@ Two rules follow from it, and they are the whole discipline:
 - **Write it once, after observing, with the values you actually saw.** A line written ahead
   of the measurement, or carrying what you expected, is worse than no line: a missing line
   costs a re-measurement, and a wrong one skips a measurement that needed doing.
+- **Copy the `seq` exactly as your dispatch gives it.** It is the run's own ordering, minted by
+  your caller, and it is what lets what you saw be placed against what the run decided. Do not
+  renumber it, do not increment it, and never substitute a clock reading — a number you chose
+  orders two records confidently and wrongly, which is worse than the "cannot tell" it would
+  replace. That is also why you are handed one rather than asked for a timestamp.
 
 Append with the heredoc your dispatch shows, never `echo` or a redirected quoted string — the
 values carry paths and test names, and one apostrophe in a test name leaves a shell waiting for

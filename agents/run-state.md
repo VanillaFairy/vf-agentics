@@ -57,6 +57,13 @@ work orders:
   **Three line types, one returned shape.** Every line you return carries every field, because
   the shape your caller validates against is closed. Which part is real is said by `kind`:
 
+  Every line also carries **`seq`**, this run's own ordering. It is shared with
+  `journal.jsonl`, which is what lets a decision recorded in one file be placed against an
+  observation recorded in the other. Return it exactly as the file has it, and return **`0`**
+  for a line that does not carry one — that is not a default standing in for a missing value,
+  it is true: such a line was written before the counter existed, so it does precede every
+  stamped one. Never renumber, never fill one in.
+
   | `kind` | the fields that mean something |
   |---|---|
   | `wave` | `wave`, `merged`, `approved_unmerged`, `escalated`, `discovered`, `integration_base`, `integration_head` |
@@ -69,13 +76,15 @@ work orders:
   work its own predecessor had finished.
 
   Fill the rest with empties — `''` for strings, `[]` for arrays, `0` for `wave` on an
-  order line that does not record one. Two defaults are readings of the file's own history
-  rather than guesses, and both are required of you:
+  order line that does not record one. Three defaults are readings of the file's own history
+  rather than guesses, and all three are required of you:
 
   - **A line with no `kind` at all is a `wave` line.** Every line written before that format
     existed was one.
   - **A line with no `measured` comes back with `[]`.** It was written before the field
     existed, and `[]` says "nothing recorded" — which is what actually happened.
+  - **A line with no `seq` comes back with `0`.** Same reasoning: it was written before the
+    counter existed, so it really does precede every stamped line.
 
   What you must never do is carry a value across from another part of the line to make it
   look complete, or turn a missing `head_sha` into a plausible one. Your caller compares that
@@ -132,6 +141,9 @@ Never rewrite, never reorder, never tidy. Every earlier line is this run's histo
 ORDER of the lines is itself evidence: your caller reads a later success as superseding an
 earlier failure, so a log you reordered is a log that says something different from what
 happened.
+
+The object you are handed carries its own `seq`. Write it as it stands: it is minted by your
+caller and it is what orders this line against the rest of the run, journal included.
 
 Record exactly what you were handed. You do not know which orders "should" have merged and
 you are not asked; a wave that merged nothing is recorded as a wave that merged nothing. A

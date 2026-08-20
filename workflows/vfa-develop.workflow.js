@@ -159,11 +159,16 @@ const RESUME_INDEX = {
     // which reads as "nothing was recorded", not as "nothing was measured".
     state: { type: 'array', items: {
       type: 'object', additionalProperties: false,
-      required: ['kind', 'wave', 'merged', 'approved_unmerged', 'escalated',
+      required: ['kind', 'seq', 'wave', 'merged', 'approved_unmerged', 'escalated',
                  'integration_base', 'integration_head', 'discovered',
                  'order', 'branch', 'worktree', 'head_sha', 'measured'],
       properties: {
         kind: { type: 'string', enum: ['wave', 'order-approved', 'order-verified'] },
+        // Where this line falls in the run's single ordering, shared with journal.jsonl so a
+        // decision recorded here can be placed against an observation recorded there. `0` for
+        // a line written before the counter existed, which is not a guess: such a line does
+        // predate every stamped one.
+        seq: { type: 'integer' },
         wave: { type: 'integer' },
         merged: { type: 'array', items: { type: 'string' } },
         approved_unmerged: { type: 'array', items: { type: 'string' } },
@@ -555,6 +560,10 @@ function parseJournal(raw) {
 
     entries.push({
       kind: str(parsed.kind),
+      // `0` for a line written before the counter existed — true rather than defaulted: such
+      // a line does predate every stamped one. Anything non-numeric is treated the same way,
+      // which loses an ordering rather than inventing one.
+      seq: Number.isInteger(parsed.seq) ? parsed.seq : 0,
       order: str(parsed.order),
       branch: str(parsed.branch),
       worktree: str(parsed.worktree),
@@ -1529,6 +1538,11 @@ function journalSection(what, fields) {
     `paths and test names, and one apostrophe in a test name turns a quoted append into a ` +
     `shell that hangs waiting for a closing quote. Append; never rewrite the file. Every ` +
     `earlier line is another agent's observation and several of us write here.\n\n` +
+    `The "seq" number is already filled in. Copy it exactly as it stands — it is this run's ` +
+    `own ordering, minted by your caller, and it is what lets a record written here be placed ` +
+    `against one written elsewhere. Do not renumber it, do not increment it, and never ` +
+    `substitute a clock reading: a number you chose orders two records confidently and ` +
+    `wrongly, which is worse than the "cannot tell" it would replace.\n\n` +
     `Write it ONCE, after you have finished observing and with the values you actually ` +
     `observed. This line is why an interrupted run does not have to buy this work again — a ` +
     `line written before you measured, or carrying what you expected rather than what you ` +
@@ -1764,7 +1778,7 @@ function verifierPrompt(wo, state) {
       `Your caller re-derives this order's verdict from what you write here if an ` +
       `interruption makes it resume — the same computation, over the same facts — so what ` +
       `you record is the four observations above and never a conclusion about them.`,
-      `{"kind":"verify-observed","order":"${wo.id}","branch":"${state.branch}",` +
+      `{"kind":"verify-observed","seq":${nextSeq()},"order":"${wo.id}","branch":"${state.branch}",` +
       `"worktree":"${posix(state.worktree)}","base_sha":"${state.base_sha}",` +
       `"head_sha":"${state.head_sha}","stop_reason":"<yours>","build":"<yours>",` +
       `"suite":"<yours>","failing_tests":<your failing_tests array>,` +
@@ -1797,7 +1811,7 @@ function mergePrompt(entry) {
       `that gap: the merges were in the branch and nothing on disk said which orders they ` +
       `were. This line is what closes it. If the merge did not complete, write NOTHING and ` +
       `report the conflict.`,
-      `{"kind":"merge-observed","order":"${entry.id}","branch":"${entry.branch}",` +
+      `{"kind":"merge-observed","seq":${nextSeq()},"order":"${entry.id}","branch":"${entry.branch}",` +
       `"worktree":"","base_sha":"${integration.head_sha}","head_sha":"<the sha you read back>",` +
       `"stop_reason":"completed","build":"","suite":"","failing_tests":[],` +
       `"discriminator":[],"series_findings":[]}`) +
@@ -1866,6 +1880,31 @@ function recorderPrompt(runDir, entry) {
 // nowhere at all.
 let stateWrites = Promise.resolve()
 
+// ------------------------------------------------------- the shared sequence
+//
+// One counter across BOTH durable files, so a line in one can be ordered against a line in the
+// other. Without it the two are separately append-only and jointly unordered, and the question
+// that needs answering — did this order's green measurement come before the escalation that
+// carried forward, or after it? — has no answer at all: the escalation is a workflow decision
+// in state.jsonl and the measurement is an agent's observation in journal.jsonl.
+//
+// It is a COUNTER and not a clock, and that is the whole of its trustworthiness. A timestamp
+// would have to be read by the agent doing the writing, and an agent that reads a clock is an
+// agent that can plausibly invent one — a fabricated timestamp orders two records confidently
+// and wrongly, which is worse than the honest "cannot tell" it would replace. The number here
+// is minted by this script and handed to the agent as a literal, exactly like the rest of the
+// line: nothing is asked of the writer but to copy it.
+//
+// Dispatch order, not completion order. Two verifiers running in parallel take their numbers
+// when their prompts are built and may append in either physical order — but the records that
+// have to be compared are all about ONE order, and one order's stages are sequential by
+// construction, so for the question this exists to answer the two coincide.
+//
+// Seeded from the maximum already on disk when a run resumes, because a counter that restarts
+// at zero each invocation would make invocation 2's first line collide with invocation 1's.
+let seq = 0
+const nextSeq = () => ++seq
+
 function appendState(entry, label) {
   if (!planPath) return Promise.resolve(null)
 
@@ -1890,6 +1929,7 @@ function appendState(entry, label) {
 // place rather than forgotten in several.
 const waveLine = (parts) => ({
   kind: 'wave',
+  seq: nextSeq(),
   wave: parts.wave,
   merged: parts.merged,
   approved_unmerged: parts.approved_unmerged,
@@ -1906,6 +1946,7 @@ const waveLine = (parts) => ({
 // stage closed over, which is what a resume checks git against before believing either.
 const orderStageLine = (kind, wave, state) => ({
   kind,
+  seq: nextSeq(),
   wave,
   merged: [], approved_unmerged: [], escalated: [], discovered: [],
   integration_base: '', integration_head: '',
@@ -2939,9 +2980,10 @@ try {
           worktree: entry.worktree || '',
           head_sha: entry.head_sha || '',
           measured: entry.measured || [],
-          // Which file this came out of, kept because it decides what can be SAID about it
-          // later. Two records in this same file are ordered by their position in it; one
-          // here and one in the journal are not ordered at all.
+          // Where this record sits in the run's single ordering, and which file it came out
+          // of. The seq is what lets it be compared with a journalled observation at all; the
+          // source is what the report says when the two cannot be compared.
+          seq: Number.isInteger(entry.seq) ? entry.seq : 0,
           source: 'state',
         }
 
@@ -2972,20 +3014,38 @@ try {
       // `retry_escalated` is how a caller says the reason is gone.
       //
       // A wave line's `escalated` is cumulative within its invocation, so wave 4's line
-      // re-lists what escalated in wave 2, and every later invocation re-lists it again. The
-      // FIRST line naming an id is therefore the wave it actually escalated in — last-wins
-      // would report a wave the order was never in, and the number would drift further with
-      // every resume. A success line between two such lines clears the id, so a genuine
-      // re-escalation records its own wave rather than inheriting the old one.
+      // re-lists what escalated in wave 2, and every later invocation re-lists it again.
+      //
+      // The two facts kept about an escalation are therefore aggregated in OPPOSITE
+      // directions, and conflating them is a real defect rather than a tidiness question:
+      //
+      //   `wave` — FIRST line wins. The first line naming an id is the wave it actually
+      //            escalated in; last-wins would report a wave the order was never in, and
+      //            the number would drift further with every resume.
+      //   `seq`  — LAST line wins. This is the ordering, and the question it answers is
+      //            "is this escalation still the newest word about the order?". Holding the
+      //            first line's seq answers a different question and answers it wrongly: an
+      //            order escalated, retried, and escalated AGAIN would be compared against
+      //            the seq of the first escalation, so the retry's green — later than that
+      //            and earlier than the re-escalation — would clear a verdict the run had
+      //            just reached for the second time, on this resume and every one after it.
+      //
+      // A success line between two such lines still clears the id outright, so a genuine
+      // re-escalation after one records its own wave rather than inheriting the old one.
       //
       // The stage maps are deliberately NOT cleared here. An escalation does not unmake the
       // verification that preceded it, and `retry_escalated` needs that record to salvage
       // from; every gate below consults `escalatedPrior` first, so the record stays inert
       // until a caller asks for the retry.
       for (const id of entry.escalated || []) {
-        if (id && !landed.has(id) && !escalatedPrior.has(id)) {
-          escalatedPrior.set(id, entry.wave || 0)
-        }
+        if (!id || landed.has(id)) continue
+
+        const already = escalatedPrior.get(id)
+        escalatedPrior.set(id, {
+          wave: already ? already.wave : (entry.wave || 0),
+          seq: Math.max(already ? already.seq : 0,
+            Number.isInteger(entry.seq) ? entry.seq : 0),
+        })
       }
       // A resumed run inherits what its own earlier waves learned. Without this the
       // accumulator is per-invocation, and the wave that runs after an interruption is the
@@ -3283,6 +3343,17 @@ try {
   if (resumePath) {
     const journal = parseJournal(journalRaw)
 
+    // The counter continues where the run left it. Restarting at zero would mint numbers this
+    // run has already used, so every comparison across an interruption would read the newer
+    // record as the older one — which is worse than having no ordering, because it looks like
+    // one. Both files feed the seed; a resume writes to both.
+    seq = Math.max(
+      seq,
+      ...resumeState.map((e) => (Number.isInteger(e.seq) ? e.seq : 0)),
+      ...journal.entries.map((e) => e.seq),
+      0,
+    )
+
     // Lines that parse but did not record everything the derivation reads. They are dropped
     // for the same reason a torn one is, and they are counted for the same reason too: a
     // journal of unreadable lines is otherwise indistinguishable from an empty one, and the
@@ -3344,6 +3415,7 @@ try {
           worktree: entry.worktree || '',
           head_sha: entry.head_sha || '',
           measured: measuredOf(entry),
+          seq: entry.seq,
           source: 'journal',
         })
       } else {
@@ -3364,6 +3436,28 @@ try {
     // approved order is not also waiting to be reviewed.
     for (const id of approvedOnDisk.keys()) verifiedOnDisk.delete(id)
     for (const id of landed) verifiedOnDisk.delete(id)
+
+    // Increment 6 §1's rule — a recorded success clears an earlier escalation — finally
+    // reaches across the two files. It could only ever be applied WITHIN state.jsonl before,
+    // because a decision there and an observation in the journal had no common ordering to be
+    // compared on; now they share one counter, so the comparison is a comparison rather than
+    // a guess.
+    //
+    // Strictly greater. Equal means neither preceded the other — two lines written before the
+    // counter existed both sit at 0 — and there the honest answer is still that the log cannot
+    // say, so the escalation stands with the ambiguity reported. Zero against a stamped number
+    // is NOT a tie and is not ambiguous: a line carrying no seq was written by a version that
+    // minted none, and a version only moves forward for a given run directory, so it really
+    // does precede every stamped line. Comparing them is reading the log, not guessing at it.
+    for (const [id, prior] of escalatedPrior) {
+      const green = verifiedOnDisk.get(id)
+      if (!green || green.seq <= prior.seq) continue
+
+      escalatedPrior.delete(id)
+      log(`${id}: an earlier invocation escalated it, and a later verification recorded it ` +
+        `green at ${green.head_sha}. The log orders the two, so the escalation is superseded ` +
+        `and the order is picked up rather than carried.`)
+    }
   }
 
   // ------------------------------------------------------------ 3. partition
@@ -3875,7 +3969,8 @@ try {
   // than re-derived. The findings that produced them were never durable — only the ids were —
   // so the carried entry says exactly that instead of inventing a cause. Their consumers block
   // behind them through the ordinary dep gate, which names them as the root.
-  for (const [id, wave] of escalatedPrior) {
+  for (const [id, prior] of escalatedPrior) {
+    const wave = prior.wave
     const wo = orderById.get(id)
     if (!wo) continue
     // Withheld as stale outranks everything, this included. Such an order is already reported
@@ -3904,16 +3999,31 @@ try {
     // it would push a human toward `retry_escalated` on the one input where the log already
     // answered the question.
     const green = verifiedOnDisk.get(id)
+
+    // Anything that reached here is a green the clearing loop above did NOT promote, so it is
+    // earlier than the escalation or tied with it — never later. Which of those two decides
+    // what may honestly be said, and the source decides it as much as the number does:
+    //
+    //   from state.jsonl — ordered by the file itself, whatever the seq says. A success line
+    //     there deletes the escalation as it replays, so a pair that BOTH survived can only
+    //     mean the green came first. That holds for an old log carrying no seq at all.
+    //   from the journal — ordered when the counter separates them, and genuinely not when it
+    //     does not (both at 0, from before the counter existed).
+    //
+    // Telling the ambiguous story about an ordered pair is the defect increment 7 §5 names in
+    // its own words: it pushes a human toward `retry_escalated` on an input where the log
+    // already answered, which is the same class of error as guessing.
+    const ordered = green && (green.source === 'state' || green.seq < prior.seq)
+
     const greenNote = !green || !green.head_sha ? ''
-      : green.source === 'journal'
+      : ordered
         ? '. NOTE: a verification of this order was recorded green at ' + green.head_sha +
-          ', in the journal rather than the run state, so whether it came before or after ' +
-          'this escalation cannot be read — the two files share no ordering. If a retry ' +
-          'measured it green and was interrupted before its review, this is finished work ' +
-          'waiting on that lever'
+          ' BEFORE this escalation — the log orders the two, and the escalation is the later ' +
+          'word. The measurement is real and was superseded by whatever followed it'
         : '. NOTE: a verification of this order was recorded green at ' + green.head_sha +
-          ' BEFORE this escalation — the run state orders the two, and the escalation is the ' +
-          'later word. The measurement is real and was superseded by whatever followed it'
+          ', and neither it nor this escalation carries an ordering — both were written ' +
+          'before this run recorded one. If a retry measured it green and was interrupted ' +
+          'before its review, this is finished work waiting on that lever'
 
     escalations.push({
       id,
