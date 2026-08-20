@@ -312,9 +312,9 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
 
       | what the record and git agree on | what the resume does |
       |---|---|
-      | the branch is already in the integration branch | records the merge; nothing is rebuilt |
+      | the branch is already in the integration branch, and the run recorded it approved or merged | records the merge; nothing is rebuilt |
       | approved, and the branch is still at the reviewed head | merges it as it stands — no coder, no verifier, no second review |
-      | verified green, and the branch is still at the verified head | adopts the commits and goes straight to review |
+      | measured green in the journal, and the branch is still at that head | adopts the commits and goes straight to review |
       | commits on the branch, no stage recorded | adopts them, then verifies and reviews in full |
       | nothing on the branch | dispatches a coder |
 
@@ -328,9 +328,19 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
       those entries `review.salvaged`, with `rounds: 0`, precisely so the two are tellable
       apart.
 
-      The run state records each stage the moment it closes — a line when verification comes
-      back green, another when the review closes — not when the wave ends. That is the
-      difference between a limit landing mid-wave costing one order and costing all of them.
+      **Records are written by whoever did the thing.** A verifier appends its measurements to
+      the run's `journal.jsonl` inside the dispatch that measured; the agent that performs a
+      merge appends the merge inside the dispatch that merged. `state.jsonl` keeps what the
+      workflow itself decided — an order's approval the moment its review closes, and each
+      wave's outcome when it ends. The split has a scar behind it: every record used to be
+      written by a separate courier dispatched afterwards, and a usage limit killed the courier
+      for a wave whose merges had already happened, so the work was in the branch and nothing
+      on disk named it.
+
+      That is why a limit landing mid-wave now costs at most the stage in flight rather than
+      the wave. Nothing an agent writes is a verdict — the facts are re-derived on resume by
+      the same computation that judged them the first time — so a journalled line can never
+      wave through work that was not actually measured.
 
       **Escalations carry forward.** An order an earlier invocation escalated is not silently
       dispatched again: it comes back in `escalations` with `reason: 'carried_forward'`, and

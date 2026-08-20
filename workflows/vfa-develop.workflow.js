@@ -92,7 +92,7 @@ const WORK_ORDERS = {
 const RESUME_INDEX = {
   type: 'object', additionalProperties: false,
   required: ['stop_reason', 'order_ids', 'shared_files', 'partition_raw', 'blocking_gaps',
-             'plan_path', 'plan_notes', 'envelope', 'manifest', 'state', 'notes'],
+             'plan_path', 'plan_notes', 'envelope', 'manifest', 'state', 'journal_raw', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['loaded', 'unreadable'] },
     // The ids of plan.json's work_orders, in file order, and NOTHING else of them. This is
@@ -198,6 +198,18 @@ const RESUME_INDEX = {
         // line, and on every line written before this field existed.
         measured: { type: 'array', items: { type: 'string' } },
       } } },
+    // journal.jsonl, VERBATIM — the whole file as one string, newlines and all, exactly as
+    // `partition_raw` travels. It is parsed here in JS rather than re-emitted through a
+    // schema, and that is the point: the journal is written by the agents that DID the work,
+    // one line per observation, so it is the longest and least structured thing a resume
+    // carries. Asking a courier to re-emit thirty measurement objects field by field is the
+    // 118KB transcription failure with the numbers changed. A verbatim string has one honest
+    // failure mode — a line that will not parse — and JSON.parse finds it, where a paraphrase
+    // of prose would not be found by anything.
+    //
+    // Empty string is a real answer and the ordinary one for a run whose agents predate the
+    // journal, or that has not measured anything yet.
+    journal_raw: { type: 'string' },
     notes: { type: 'string' },
   },
 }
@@ -439,10 +451,119 @@ const runstampOf = (dir) => posix(dir).replace(/\/+$/, '').split('/').pop() || '
  */
 const failuresOutside = (failing, allowed) => {
   const fence = new Set((allowed || []).map(posix))
-  return (failing || []).filter((f) => !fence.has(posix(f.file)))
+  // An unreadable entry is outside every fence. It cannot be placed, and "confined to the
+  // locus" is a claim that needs a path to rest on — the same reasoning as the emptiness
+  // check below, one element down.
+  return (failing || []).filter((f) => !f || !fence.has(posix(f.file)))
 }
 
-const seriesClean = (v) => !v.series_findings.some(f => f.blocking)
+// An unreadable finding counts as blocking. Every one of these guards leans the same way:
+// a journal line is not schema-validated, so an element that cannot be read must cost a
+// re-measurement rather than buy a pass.
+const seriesClean = (v) => !(v.series_findings || []).some(f => !f || f.blocking)
+
+// The three answers a build or a suite can have. Named because a journal line is not schema
+// validated: a field that went missing must be told apart from `absent`, which is a fact the
+// verifier stated about the repository.
+const OUTCOME = new Set(['passed', 'failed', 'absent'])
+
+// ------------------------------------------------------------------ the journal
+//
+// state.jsonl records what the WORKFLOW decided. journal.jsonl records what an AGENT observed,
+// appended by that agent in the same dispatch that made the observation.
+//
+// The split is the whole point. Every durable record used to be written by a separate recorder
+// dispatch fired after the stage closed, which means every stage had a window where the work
+// existed and nothing on disk said so — and in the field a usage limit landed in exactly that
+// window, killing the recorder for a wave whose merges had already happened. An agent that
+// appends its own observation before returning has no such window: the write and the thing it
+// describes are the same execution.
+//
+// What stayed behind is deliberate. A verdict is never journalled, because no agent in this
+// pipeline gets to certify its own work — the verifier reports facts and `verifyOk` below
+// decides, the reviewer reports findings and the empty open set decides. So the journal holds
+// measurements and merges, both of which are things that HAPPENED, and the derivation runs
+// over them here, on resume, exactly as it ran the first time.
+
+/**
+ * Parse journal.jsonl. Malformed lines are dropped and counted rather than halting: this file
+ * is appended to by several agents while a kill can land mid-write, so a torn last line is an
+ * expected shape of it, not corruption of the run. Everything the journal carries is either an
+ * optimization (skip a re-measurement) or corroboration for a fact git also holds, so losing a
+ * line costs tokens and never correctness.
+ */
+function parseJournal(raw) {
+  const lines = String(raw || '').split('\n').map((l) => l.trim()).filter(Boolean)
+  const entries = []
+  let torn = 0
+
+  // Every field is normalized to its declared type on the way in, because the predicates that
+  // read these entries are written against a SCHEMA-VALIDATED verifier result where the arrays
+  // are `required`. A journal line has no schema behind it, and one that parses as JSON while
+  // missing `discriminator` would reach `verifyOk` as `undefined.every(...)` and throw — out
+  // of the replay loop, through the top-level catch, ending a resume before it dispatched
+  // anything. A file whose whole job is making an interrupted run cheaper must not end one.
+  //
+  // Normalizing is not the same as accepting, and `measured` says which. A missing field and
+  // an empty one are different answers: `discriminator: []` is a verifier saying it found
+  // nothing to discriminate, and no `discriminator` key at all is a line that never said. The
+  // second must not be read as the first — `plainVerifyOk` passes vacuously on an empty
+  // discriminator, so silently supplying one turns an incomplete line into a green verdict.
+  // Elements too, not only the containers. `null` is the one JSON scalar that throws on
+  // property access, and the predicates reach into these elements — so an array that survives
+  // `Array.isArray` while holding a null is the same defect as a missing array, wearing a
+  // shape that passes the check for it.
+  const arr = (v) => (Array.isArray(v) ? v.filter((e) => e && typeof e === 'object') : [])
+  const str = (v) => (typeof v === 'string' ? v : '')
+  const has = (o, k, test) => Object.prototype.hasOwnProperty.call(o, k) && test(o[k])
+  // A well-formed array is one every element of which survived that filter. Dropping an
+  // element silently would turn a line that named three failures into one that named two, and
+  // "two failures, all inside the locus" is a pass where three would not have been.
+  const whole = (v) => Array.isArray(v) && v.every((e) => e && typeof e === 'object')
+
+  for (const line of lines) {
+    let parsed = null
+    try {
+      parsed = JSON.parse(line)
+    } catch (e) {
+      torn += 1
+      continue
+    }
+
+    if (!parsed || typeof parsed !== 'object' || !parsed.kind) {
+      torn += 1
+      continue
+    }
+
+    entries.push({
+      kind: str(parsed.kind),
+      order: str(parsed.order),
+      branch: str(parsed.branch),
+      worktree: str(parsed.worktree),
+      base_sha: str(parsed.base_sha),
+      head_sha: str(parsed.head_sha),
+      stop_reason: str(parsed.stop_reason),
+      build: str(parsed.build),
+      suite: str(parsed.suite),
+      failing_tests: arr(parsed.failing_tests),
+      discriminator: arr(parsed.discriminator),
+      series_findings: arr(parsed.series_findings),
+      // Whether this line recorded EVERYTHING the derivation reads, with the two outcomes
+      // drawn from the enum a verifier is allowed to report. `''` and `'absent'` are the case
+      // it separates — `absent` is an observed fact about the repository and keeps its
+      // meaning, `''` is a field that went missing and must not inherit it. Named apart from
+      // the state line's own `measured`, which is an array of what was mechanically checked.
+      recorded: has(parsed, 'stop_reason', (v) => typeof v === 'string') &&
+        has(parsed, 'build', (v) => OUTCOME.has(v)) &&
+        has(parsed, 'suite', (v) => OUTCOME.has(v)) &&
+        has(parsed, 'failing_tests', whole) &&
+        has(parsed, 'discriminator', whole) &&
+        has(parsed, 'series_findings', whole),
+    })
+  }
+
+  return { entries, torn }
+}
 
 // What every role needs before its own question is even worth asking: the verifier finished,
 // the tree builds, and no commit broke its locus. A build that failed makes every downstream
@@ -462,7 +583,7 @@ const failuresConfinedTo = (v, allowed) =>
 
 const plainVerifyOk = v => verifiable(v)
   && v.suite !== 'failed'
-  && v.discriminator.every(d => d.failed_on_base && d.passes_now)
+  && (v.discriminator || []).every(d => d && d.failed_on_base && d.passes_now)
 
 // A RED order lands tests that MUST fail — that is the entire order. Four inversions, each
 // answering a way a red order can be hollow rather than red:
@@ -473,7 +594,7 @@ const plainVerifyOk = v => verifiable(v)
 // The build must still pass: tests that fail because nothing compiles pin nothing either.
 const redVerifyOk = (v, wo) => verifiable(v)
   && (v.discriminator || []).length > 0
-  && v.discriminator.every(d => d.failed_on_base && !d.passes_now)
+  && (v.discriminator || []).every(d => d && d.failed_on_base && !d.passes_now)
   && v.suite !== 'passed'
   && (v.suite !== 'failed' || failuresConfinedTo(v, wo.locus))
 
@@ -1209,7 +1330,7 @@ function indexPrompt() {
   return `Load a vf-agentics run's durable state — everything EXCEPT the work orders. ` +
     `INDEX MODE.\n\n` +
     `RUN DIRECTORY (absolute):\n${resumePath}\n\n` +
-    `Read plan.json and state.jsonl from that directory.\n\n` +
+    `Read plan.json, state.jsonl and journal.jsonl from that directory.\n\n` +
     `From plan.json return: order_ids — the id of every entry in work_orders, in file ` +
     `order, and NOTHING ELSE of the orders (each order travels separately, through a ` +
     `dispatch built for it); shared_files, partition_raw (VERBATIM — it is parsed, and a ` +
@@ -1235,6 +1356,12 @@ function indexPrompt() {
     `from the file, and the wave-line fields empty — wave 0, the four arrays empty, the two ` +
     `integration strings empty. This is a fixed mapping between two shapes, not a repair: ` +
     `never carry a value across from the other half.\n\n` +
+    `Return journal.jsonl as journal_raw: the WHOLE FILE as one string, byte for byte, ` +
+    `newlines and all. Do not parse it, do not reformat it, do not fix a line that looks ` +
+    `broken and do not drop one — your caller parses it itself, and a line that will not ` +
+    `parse is information it needs (an interrupted append looks exactly like that). If the ` +
+    `file does not exist, return an empty string, which is the ordinary answer for a run ` +
+    `whose agents never wrote one.\n\n` +
     `Set plan_path to ${resumePath} — the directory you actually read.\n\n` +
     `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
     `with what you found in notes. Never invent an index and never return a partial one as ` +
@@ -1355,6 +1482,41 @@ function setupPrompt(runstamp) {
     `base because earlier waves merged into it.\n\n` +
     `This worktree is the workflow's own. Everything merges here and the tree the user is ` +
     `sitting in is never touched — not by you, not by anything downstream.`
+}
+
+/**
+ * The instruction that makes an agent record its own observation before it returns.
+ *
+ * `fields` is the JSON body the agent fills in; the surrounding line shape and the append
+ * mechanics are identical everywhere, so they are written once here. A heredoc with a quoted
+ * delimiter is the append: `>>` with an interpolated string would break the first time a
+ * discovered path or a test name carried a quote, and the read-then-write-back the recorder
+ * agent used to perform could truncate the whole file if a kill landed mid-write.
+ *
+ * Returns '' when this run has no directory to write into, which is the plan-less path — there
+ * is nothing to resume from anyway, so there is nothing to journal for.
+ */
+function journalSection(what, fields) {
+  if (!planPath) return ''
+
+  return `RECORD WHAT YOU OBSERVED, BEFORE YOU RETURN. ${what}\n\n` +
+    `Append ONE line to ${planPath}/journal.jsonl, exactly like this, as a single line of ` +
+    `JSON — the redirect creates the file if it is not there. Run these three lines with NO ` +
+    `leading whitespace on any of them; a heredoc delimiter that is indented never matches, ` +
+    `and the shell swallows the rest of your session looking for it:\n\n` +
+    `cat >> "${planPath}/journal.jsonl" <<'VFAJOURNAL'\n` +
+    `${fields}\n` +
+    `VFAJOURNAL\n\n` +
+    `Use the heredoc, not echo and not a redirect of a quoted string: the values below carry ` +
+    `paths and test names, and one apostrophe in a test name turns a quoted append into a ` +
+    `shell that hangs waiting for a closing quote. Append; never rewrite the file. Every ` +
+    `earlier line is another agent's observation and several of us write here.\n\n` +
+    `Write it ONCE, after you have finished observing and with the values you actually ` +
+    `observed. This line is why an interrupted run does not have to buy this work again — a ` +
+    `line written before you measured, or carrying what you expected rather than what you ` +
+    `saw, is worse than no line at all. If the append fails, say so in notes and return your ` +
+    `result anyway: your caller can survive a missing line and cannot survive a missing ` +
+    `result.\n\n`
 }
 
 // What an interrupted invocation of THIS run left in git, if anything. Read-only reconnaissance
@@ -1580,6 +1742,16 @@ function verifierPrompt(wo, state) {
     `passes on the base proves nothing about this change, and that is exactly what the ` +
     `caller needs to know.\n\n` +
     callerNotes() +
+    journalSection(
+      `Your caller re-derives this order's verdict from what you write here if an ` +
+      `interruption makes it resume — the same computation, over the same facts — so what ` +
+      `you record is the four observations above and never a conclusion about them.`,
+      `{"kind":"verify-observed","order":"${wo.id}","branch":"${state.branch}",` +
+      `"worktree":"${posix(state.worktree)}","base_sha":"${state.base_sha}",` +
+      `"head_sha":"${state.head_sha}","stop_reason":"<yours>","build":"<yours>",` +
+      `"suite":"<yours>","failing_tests":<your failing_tests array>,` +
+      `"discriminator":<your discriminator array>,` +
+      `"series_findings":<your series_findings array>}`) +
     `Leave the worktree checked out on ${state.branch} when you finish, whatever the ` +
     `discriminator had to check out along the way — verify with git branch --show-current ` +
     `before you return. A worktree left on a detached HEAD strands every fix commit a later ` +
@@ -1600,6 +1772,17 @@ function mergePrompt(entry) {
     `Report merged_sha as the sha the merge actually produced, read back with git rev-parse ` +
     `HEAD — the caller advances the integration head to it, and every later wave is built on ` +
     `whatever you put there.\n\n` +
+    journalSection(
+      `ONLY after a merge that actually completed, and using the sha you read back — not the ` +
+      `one you expected. A merge is durable in git the instant it happens while the wave line ` +
+      `recording it is written only when the whole wave ends, and a run has already died in ` +
+      `that gap: the merges were in the branch and nothing on disk said which orders they ` +
+      `were. This line is what closes it. If the merge did not complete, write NOTHING and ` +
+      `report the conflict.`,
+      `{"kind":"merge-observed","order":"${entry.id}","branch":"${entry.branch}",` +
+      `"worktree":"","base_sha":"${integration.head_sha}","head_sha":"<the sha you read back>",` +
+      `"stop_reason":"completed","build":"","suite":"","failing_tests":[],` +
+      `"discriminator":[],"series_findings":[]}`) +
     `NEVER resolve a conflict. The loci in a wave were declared pairwise disjoint, so a ` +
     `conflict means the plan's independence declaration was wrong — that is a planner defect ` +
     `a human needs to see, not a merge for you to negotiate. Report the conflicting paths ` +
@@ -1632,21 +1815,31 @@ function waveVerifyPrompt(waveNumber) {
 function recorderPrompt(runDir, entry) {
   return `RECORD MODE. Append one outcome line to this run's state log.\n\n` +
     `RUN DIRECTORY (absolute):\n${runDir}\n\n` +
-    `Append EXACTLY this object to state.jsonl as a single line of JSON followed by a ` +
-    `newline, preserving every line already in the file:\n\n` +
-    `${JSON.stringify(entry)}\n\n` +
-    `Read the file first and write it back with your line added; it is an append-only log ` +
-    `and every earlier line is this run's history. Create the file if it does not exist yet. ` +
+    `APPEND this exact object to state.jsonl as one line of JSON. Run exactly this — the ` +
+    `closing delimiter must be at the very start of its own line, with nothing before it:\n\n` +
+    `cat >> "${runDir}/state.jsonl" <<'VFASTATE'\n` +
+    `${JSON.stringify(entry)}\n` +
+    `VFASTATE\n\n` +
+    `Append. Do NOT read the file and write it back. A rewrite has a window where the file is ` +
+    `truncated, and a run that dies inside it loses every line rather than one — on the one ` +
+    `file whose whole purpose is surviving a run that dies. The redirect creates the file if ` +
+    `it is not there, so there is no case that needs a read first.\n\n` +
+    `The heredoc rather than echo or a redirected quoted string: the object carries paths and ` +
+    `free text, and a single apostrophe in it turns a quoted append into a shell waiting for ` +
+    `a closing quote.\n\n` +
     `Record what you were handed and nothing else — you do not know which orders "should" ` +
     `have merged, and a wave that merged nothing is recorded as a wave that merged nothing.`
 }
 
-// state.jsonl is one append-only file, and three things write to it now: a wave line at the
-// end of each wave, an order-verified line the moment each order's verification comes back
-// green, and an order-approved line the moment its review closes. Order lines are written from
-// INSIDE the pipeline, so two can come due at the same instant — and the recorder appends by
-// reading the file and writing it back, which is a lost-update race the moment two of them run
-// at once.
+// state.jsonl is one append-only file, and two things write to it now: a wave line at the end
+// of each wave, and an order-approved line the moment its review closes. Order lines are
+// written from INSIDE the pipeline, so two can come due at the same instant.
+//
+// The recorder appends for real now (agents/run-state.md, record mode) rather than reading the
+// file and writing it back, so the lost-update race this chain was built for is gone at the
+// source. The chain stays anyway, and cheaply: it costs one promise per write and it is the
+// only thing that keeps the ORDER of the lines equal to the order of the events, which the
+// resume replay reads as evidence of what happened when.
 //
 // So the writes are serialized here rather than hoped about. A promise chain is the whole
 // mechanism. Determinism belongs in JS (IRON LAW §8), and "the log is missing the line for W4"
@@ -1706,7 +1899,12 @@ const orderStageLine = (kind, wave, state) => ({
 })
 
 const orderLine = (wave, state) => orderStageLine('order-approved', wave, state)
-const orderVerifiedLine = (wave, state) => orderStageLine('order-verified', wave, state)
+
+// There is no `order-verified` builder any more, and the reader for that kind stays. Version
+// 0.13.0 wrote it from here, one recorder dispatch after the verification it described; 0.14.0
+// has the verifier journal its own measurements instead, in the dispatch that made them, and
+// re-derives the same verdict from them. Logs written by the older version are still read —
+// dropping the reader would make an upgrade rebuild work its own predecessor had finished.
 
 function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
   const followUp = priorBlockers.length > 0
@@ -2370,16 +2568,15 @@ async function verifyAndReview(carried, wo, waveNumber) {
 
   try {
     if (held.state.verifiedOnResume) {
-      log(`${wo.id}: verification skipped — an earlier invocation recorded it green at this head.`)
+      log(`${wo.id}: verification skipped — its measurements are journalled at this exact head.`)
     } else {
       const stalled = await verifyUntilGreen(wo, held.state, held.trail)
       if (stalled) return { wo, state: held.state, trail: held.trail, escalation: stalled }
-
-      // Green, and recorded the instant it is green rather than when the review that follows
-      // closes. The review loop is the longest stretch inside an order, and an interruption
-      // there used to cost the verification too — re-measuring an unchanged tree to reach a
-      // verdict that had already been reached.
-      await appendState(orderVerifiedLine(waveNumber, held.state), `record:verified:${wo.id}`)
+      // Nothing is recorded here. The verifier journalled every measurement as it made it,
+      // inside the dispatch that made it, and a resume re-derives this same verdict from
+      // those facts. A second write from this side would be a claim about an observation
+      // somebody else already wrote down — later, from further away, and with a kill window
+      // in between.
     }
 
     const escalation = await reviewLoop(wo, held.state, held.trail)
@@ -2442,6 +2639,12 @@ const scavenged = new Map()
 const salvagedApproved = new Map()
 // Escalations an earlier invocation reported, carried forward rather than silently retried.
 const escalatedPrior = new Map()
+// Merges the merging agent recorded itself, in the dispatch that performed them. The second
+// witness for an order whose approval line never got written.
+const mergeObserved = new Map()
+// journal.jsonl as the loader carried it, held until the orders are loaded and its
+// measurements can be re-derived against the roles and loci they were made under.
+let journalRaw = ''
 // Ids git says are already in the integration branch though no state line records the merge.
 const reconciled = []
 const implemented = []
@@ -2772,6 +2975,11 @@ try {
       if (entry.integration_head) integration.head_sha = entry.integration_head
     }
 
+    // Kept verbatim and replayed further down, once the orders themselves are loaded: a
+    // measurement's verdict is re-derived per order, and the derivation needs the order's role
+    // and locus, which arrive with the slice couriers rather than with the index.
+    journalRaw = index.journal_raw || ''
+
     // The caller's override, applied last because it outranks the log rather than joining it.
     for (const id of retryEscalated) escalatedPrior.delete(id)
 
@@ -3041,6 +3249,87 @@ try {
 
   orders = planned.work_orders
   orderById = new Map(orders.map((wo) => [wo.id, wo]))
+
+  // ---------------------------------------------------- the observation journal
+  //
+  // Replayed here rather than beside state.jsonl, because deriving a measurement's verdict
+  // needs the order's role and locus and those arrive with the slice couriers, not the index.
+  //
+  // It can only ADD. The two files answer different questions — what the workflow decided, and
+  // what an agent saw — so neither overrules the other; where both speak they agree by
+  // construction, because the decision was computed from the observation in the first place.
+  if (resumePath) {
+    const journal = parseJournal(journalRaw)
+
+    // Lines that parse but did not record everything the derivation reads. They are dropped
+    // for the same reason a torn one is, and they are counted for the same reason too: a
+    // journal of unreadable lines is otherwise indistinguishable from an empty one, and the
+    // run silently re-buys every measurement while looking like it never had any.
+    let incomplete = 0
+
+    if (journal.torn > 0) {
+      // Expected, not alarming: several agents append here and a kill can land mid-write. It
+      // is said out loud anyway, because "the journal was shorter than it should have been" is
+      // otherwise indistinguishable from "less work was done".
+      log(`${journal.torn} journal line(s) would not parse and were skipped — a torn line is ` +
+        `what an interrupted append looks like. Anything they held is re-derived or re-bought.`)
+    }
+
+    for (const entry of journal.entries) {
+      if (!entry.order) continue
+
+      // A merge the merging agent recorded itself. It does not land the order on its own —
+      // git is still asked whether the branch is really in, at the scavenge below — but it is
+      // the witness that survives when the wave line that would have recorded the merge was
+      // never written, which is the case this whole file exists for.
+      if (entry.kind === 'merge-observed') {
+        mergeObserved.set(entry.order, {
+          branch: entry.branch || '',
+          head_sha: entry.head_sha || '',
+        })
+        continue
+      }
+
+      if (entry.kind !== 'verify-observed') continue
+
+      const wo = orderById.get(entry.order)
+      if (!wo) continue
+
+      if (!entry.recorded) incomplete += 1
+
+      // The verdict is DERIVED here, from the facts the verifier recorded, by the same
+      // function that derived it the first time. Nothing was stored for this side to trust —
+      // which is what lets an agent write the line at all without certifying its own work.
+      //
+      // `recorded` gates it because `verifyOk` reads an absence as a pass: it tests
+      // `!== 'failed'` and `.every()` holds vacuously on an empty array, so an incomplete line
+      // would come out green rather than unreadable. Only a line that recorded everything the
+      // derivation reads gets to answer the question.
+      //
+      // Last line wins per order, in file order: a fix round moves the head and measures
+      // again, and a later red measurement must not be shadowed by an earlier green one.
+      if (entry.recorded && verifyOk(entry, wo)) {
+        verifiedOnDisk.set(entry.order, {
+          branch: entry.branch || '',
+          worktree: entry.worktree || '',
+          head_sha: entry.head_sha || '',
+          measured: measuredOf(entry),
+        })
+      } else {
+        verifiedOnDisk.delete(entry.order)
+      }
+    }
+
+    if (incomplete > 0) {
+      log(`${incomplete} journalled measurement(s) did not record everything a verdict is ` +
+        `computed from and were not read as one; those orders are measured again.`)
+    }
+
+    // A stage the workflow already recorded as closed outranks a measurement of it: an
+    // approved order is not also waiting to be reviewed.
+    for (const id of approvedOnDisk.keys()) verifiedOnDisk.delete(id)
+    for (const id of landed) verifiedOnDisk.delete(id)
+  }
 
   // ------------------------------------------------------------ 3. partition
   //
@@ -3403,21 +3692,30 @@ try {
             // whose approval line was lost too falls to the rungs below and is rebuilt, which
             // costs tokens rather than correctness.
             const approvedRecord = approvedOnDisk.get(entry.id)
+            // Either witness will do, and they fail independently. The approval line is
+            // written by the recorder after the review closes; the merge line is written by
+            // the merging agent inside the merge itself. The incident that motivated the
+            // journal killed the recorder, so the run held merges whose only record would
+            // have been the line that never got written — and the merge line is precisely
+            // what survives that, because nothing separate had to run to produce it.
+            const merged = mergeObserved.get(entry.id)
+            const witnessed = (approvedRecord && approvedRecord.head_sha === entry.head_sha) ||
+              (merged && merged.branch === entry.branch)
 
             if (entry.already_merged === true && entry.branch) {
-              if (approvedRecord && approvedRecord.head_sha === entry.head_sha) {
+              if (witnessed) {
                 landed.add(entry.id)
                 if (!integration.merged.includes(entry.id)) integration.merged.push(entry.id)
                 reconciled.push(entry.id)
                 continue
               }
 
-              // Loudly, because the two readings are far apart: either an approval record was
+              // Loudly, because the two readings are far apart: either both records were
               // lost, or this is a branch nobody ever committed to. Both are answered by
               // implementing the order, and only one of them costs anything.
-              log(`Scavenge: ${entry.id}'s branch is already in the integration branch, but the ` +
-                `run state records no review closing over ${entry.head_sha || '(no head)'} — ` +
-                `it is implemented rather than assumed merged.`)
+              log(`Scavenge: ${entry.id}'s branch is already in the integration branch, but ` +
+                `neither the run state nor the journal records anything closing over ` +
+                `${entry.head_sha || '(no head)'} — it is implemented rather than assumed merged.`)
             }
 
             // An entry naming no worktree, no base, or no commit cannot be verified or

@@ -39,6 +39,9 @@ const resumeLoad = (v) => ({
                               base_branch: '', base_sha: '', programme: '', slice: '' },
     manifest: v.manifest || [],
     state: v.state || [],
+    // Verbatim, exactly as the courier carries it: the fixtures build the file, not a parsed
+    // view of it, so the parser under test is the one the run actually uses.
+    journal_raw: v.journal_raw || '',
     notes: v.notes || '',
   },
   'load:': (prompt, opts) => {
@@ -296,12 +299,79 @@ test('a caller who re-tags a resumed run is obeyed, and never in silence', async
 
 // --- order-grain state (§9.3) --------------------------------------------------------------
 
-test('each stage is recorded as it closes, before the wave it belongs to', async () => {
+test('an approved order is recorded before the wave it belongs to closes', async () => {
   const { prompts } = await fresh({})
   const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
 
-  assert.deepEqual(labels, ['record:verified:W1', 'record:W1', 'record:wave-1'],
-    'recording a stage after the wave records nothing an interruption could use')
+  assert.deepEqual(labels, ['record:W1', 'record:wave-1'],
+    'recording the order after the wave records nothing an interruption could use')
+})
+
+test('a verification is journalled by the verifier, not recorded by a second dispatch', async () => {
+  // The recorder dispatch this replaced had the very window it existed to close: the stage
+  // finished, then something else had to be launched to write it down, and a limit landing
+  // in between lost the record while the work survived.
+  const { prompts } = await fresh({})
+
+  const verify = promptFor(prompts, 'verify:W1')
+  assert.match(verify, /journal\.jsonl/, 'the verifier is told where to append')
+  assert.match(verify, /"kind":"verify-observed"/)
+  assert.match(verify, /VFAJOURNAL/, 'and to append with a heredoc, not a quoted redirect')
+
+  assert.ok(!prompts.some((p) => (p.opts.label || '').startsWith('record:verified')),
+    'nothing is dispatched afterwards to write down what the verifier already wrote')
+})
+
+test('what the verifier journals is facts, never a verdict', async () => {
+  // The line is written by the agent that measured, which is only safe because the line
+  // carries no conclusion: the caller recomputes the verdict from these same facts on resume.
+  const verify = promptFor((await fresh({})).prompts, 'verify:W1')
+
+  for (const field of ['"stop_reason"', '"build"', '"suite"', '"failing_tests"',
+                       '"discriminator"', '"series_findings"']) {
+    assert.ok(verify.includes(field), `the journal line carries ${field}`)
+  }
+  assert.ok(!/"verified"|"green"|"passed_overall"/.test(verify),
+    'no agent in this pipeline certifies its own work')
+})
+
+test('a merge is journalled by the agent that made it, and only when it completed', async () => {
+  const merge = promptFor((await fresh({})).prompts, 'merge:W1')
+
+  assert.match(merge, /"kind":"merge-observed"/)
+  assert.match(merge, /the sha you read back/, 'the observed sha, never the expected one')
+  assert.match(merge, /ONLY after a merge that actually completed/)
+})
+
+test('every heredoc a prompt hands an agent can actually terminate', async () => {
+  // `<<'DELIM'` matches its terminator only at column 0 — `<<-` strips tabs, never spaces. An
+  // indented delimiter never matches, so the shell swallows the rest of the session looking
+  // for it and writes the delimiter line into the file as content. That turns every append
+  // into a junk line, and the torn-line counter that exists to say "an append was
+  // interrupted" then says it on every run, about nothing.
+  const { prompts } = await fresh({})
+
+  for (const p of prompts) {
+    const opened = /<<'([A-Z]+)'/.exec(p.prompt)
+    if (!opened) continue
+
+    const delim = opened[1]
+    const closing = p.prompt.split('\n').filter((l) => l.trim() === delim && l !== delim)
+    assert.deepEqual(closing, [],
+      `${p.opts.label}: the ${delim} terminator is indented and can never match`)
+  }
+})
+
+test('the recorder is told to append, never to read and write back', async () => {
+  // A rewrite has a window where the file is truncated: a run dying inside it loses every
+  // line rather than one, on the file whose whole purpose is surviving a run that dies. The
+  // charter says so; this pins the DISPATCH saying so too, because the task text is what the
+  // agent is actually holding, and two authoritative instructions disagreeing is the defect.
+  const record = promptFor((await fresh({})).prompts, 'record:W1')
+
+  assert.match(record, /cat >> /)
+  assert.match(record, /Do NOT read the file and write it back/)
+  assert.ok(!/[Rr]ead the file first/.test(record))
 })
 
 test('the order line carries what the coder actually reported', async () => {
@@ -551,14 +621,25 @@ test('a verification whose branch has moved since is re-measured', async () => {
   assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
 })
 
-test('a verified order is recorded the moment it is green, before the review opens', async () => {
+test('a resumed run records the approval and nothing about the verification', async () => {
   const { prompts } = await resumed({ scavenge: scavengedW2() })
   const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
 
-  assert.deepEqual(labels, ['record:verified:W2', 'record:W2', 'record:wave-2'])
-  assert.ok(promptFor(prompts, 'record:verified:W2').includes('"kind":"order-verified"'))
-  assert.ok(promptFor(prompts, 'record:verified:W2').includes('"measured":["build","suite","discriminator:1"]'),
-    'what was measured travels with the stage, so a salvage need not re-measure to report it')
+  assert.deepEqual(labels, ['record:W2', 'record:wave-2'])
+  assert.ok(promptFor(prompts, 'record:W2').includes('"kind":"order-approved"'))
+  assert.match(promptFor(prompts, 'verify:W2'), /journal\.jsonl/,
+    'the verification records itself, in the dispatch that performs it')
+})
+
+test('the journal is loaded verbatim, not re-emitted field by field', async () => {
+  // The same handling partition_raw gets, for the same reason: the journal is the longest and
+  // least uniform thing a resume carries, and a courier asked to re-emit thirty measurement
+  // objects is the 118KB transcription failure with the numbers changed.
+  const index = promptFor((await resumed()).prompts, 'resume-index')
+
+  assert.match(index, /journal_raw/)
+  assert.match(index, /WHOLE FILE as one string/)
+  assert.match(index, /a line that will not parse is information it needs/)
 })
 
 /**
@@ -711,6 +792,204 @@ test('an approval recorded before `measured` existed still salvages, and says wh
   assert.ok(note, 'the emptiness is named, never absorbed')
   assert.match(note, /either nothing was mechanically measurable, or/)
   assert.match(note, /nothing readable supports a claim/)
+})
+
+// --- the observation journal (increment 7) -------------------------------------------------
+//
+// state.jsonl records what the workflow DECIDED; journal.jsonl records what an agent SAW,
+// appended by that agent inside the dispatch that saw it. The recorder dispatch the journal
+// replaces had a window between a stage closing and anything on disk saying so, and a usage
+// limit landed in it.
+
+/** One journal line for W2, as the file holds it: a string, not a parsed object. */
+const journalLine = (over = {}) => JSON.stringify({
+  kind: 'verify-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
+  worktree: 'C:/wt/w2', base_sha: M40, head_sha: C40,
+  stop_reason: 'completed', build: 'passed', suite: 'passed', failing_tests: [],
+  discriminator: [{ test_id: 'test/w2.test.js', failed_on_base: true, passes_now: true }],
+  series_findings: [],
+  ...over,
+})
+
+const journalled = (lines) => resumed({
+  ...resumeLoad(loaded({ journal_raw: lines.join('\n') + '\n' })),
+  scavenge: scavengedW2(),
+})
+
+test('a journalled measurement at the branch head skips re-verification', async () => {
+  const { result, prompts } = await journalled([journalLine()])
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'),
+    're-measuring an unchanged tree reaches the verdict the facts on disk already carry')
+  assert.ok(prompts.some((p) => (p.opts.label || '').startsWith('review:W2')),
+    'measured is not reviewed — the other question was never answered')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('the verdict is DERIVED from the journalled facts, never read off them', async () => {
+  // Same line, same head, failing suite. Nothing stored says "not verified" — the facts are
+  // replayed through the same computation that judged them the first time.
+  const { prompts } = await journalled([
+    journalLine({ suite: 'failed', failing_tests: [{ file: 'src/W2.js', id: 'boom' }] }),
+  ])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'a red measurement is a measurement that must be made again')
+})
+
+test('a measurement whose head has moved is not the measurement of what is there', async () => {
+  const { prompts } = await journalled([journalLine({ head_sha: B40 })])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a later measurement supersedes an earlier one, in file order', async () => {
+  // A fix round moves the head and measures again. Reading the green line as the last word
+  // would skip a verification the run itself decided was needed.
+  const { prompts } = await journalled([
+    journalLine(),
+    journalLine({ suite: 'failed', failing_tests: [{ file: 'src/W2.js', id: 'boom' }] }),
+  ])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a journalled merge lands an order whose approval line was never written', async () => {
+  // The incident this file exists for, one layer deeper: the recorder was killed, so the
+  // wave line AND the approval line are missing. The merging agent's own line survives,
+  // because nothing separate had to run to produce it.
+  const { result, prompts } = await resumed({
+    ...resumeLoad(loaded({
+      state: [waveLine()],
+      journal_raw: JSON.stringify({
+        kind: 'merge-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
+        worktree: '', base_sha: M40, head_sha: N40, stop_reason: 'completed',
+        build: '', suite: '', failing_tests: [], discriminator: [], series_findings: [],
+      }) + '\n',
+    })),
+    scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+  })
+
+  assert.deepEqual(result.integration.merged, ['W2'])
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W2'), 'it merged; rebuilding it is waste')
+  assert.ok(prompts.some((p) => p.opts.label === 'record:reconcile'),
+    'and the record git was standing in for gets written')
+})
+
+test('a journalled merge is still not enough on its own — git is the other witness', async () => {
+  const { result, prompts } = await resumed({
+    ...resumeLoad(loaded({
+      state: [waveLine()],
+      journal_raw: JSON.stringify({
+        kind: 'merge-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
+        worktree: '', base_sha: M40, head_sha: N40, stop_reason: 'completed',
+        build: '', suite: '', failing_tests: [], discriminator: [], series_findings: [],
+      }) + '\n',
+    })),
+    // git says the branch is NOT in the integration branch, whatever the line claims.
+    scavenge: scavengedW2(),
+  })
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'a claim about git that git does not corroborate lands nothing')
+  assert.deepEqual(result.integration.merged, ['W2'], 'it goes through the pipeline instead')
+})
+
+test('a torn journal line is skipped and said out loud', async () => {
+  // Several agents append here and a kill can land mid-write, so a half-written last line is
+  // an expected shape of the file. Silently shorter is the reading that must not happen: it
+  // is indistinguishable from less work having been done.
+  const { logs, prompts } = await journalled([
+    journalLine(),
+    '{"kind":"verify-observed","order":"W2","bra',
+  ])
+
+  assert.ok(logs.some((l) => /1 journal line\(s\) would not parse/.test(l)))
+  assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'),
+    'and the lines that did parse are still worth what they say')
+})
+
+test('a journal line missing a field cannot end the run that was reading it', async () => {
+  // The predicates below verifyOk are written against a SCHEMA-VALIDATED verifier result,
+  // where the arrays are required. A journal line has no schema behind it, and one that
+  // parses while missing `discriminator` used to reach `verifyOk` as `undefined.every(...)`,
+  // throw out of the replay, and end a resume before it dispatched anything — a file whose
+  // whole job is making an interrupted run cheaper, ending one.
+  const { result, prompts } = await journalled([
+    '{"kind":"verify-observed","order":"W2","branch":"vfa/20260816-143005-W2",' +
+    '"worktree":"C:/wt/w2","base_sha":"' + M40 + '","head_sha":"' + C40 + '",' +
+    '"stop_reason":"completed","build":"passed","suite":"passed","failing_tests":[],' +
+    '"series_findings":[]}',
+  ])
+
+  assert.equal(result.coverage.failed_channels.includes('pipeline'), false,
+    'the run finishes; it does not throw')
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'and the incomplete line simply buys a measurement instead of skipping one')
+})
+
+test('a null inside a journal array cannot end the run either', async () => {
+  // The container guards were not enough. `Array.isArray([null])` is true, and the predicates
+  // reach into the elements — `series_findings` via seriesClean, which is the FIRST conjunct
+  // of every role's verdict, so this one was reachable for every order in a plan.
+  for (const field of ['series_findings', 'discriminator', 'failing_tests']) {
+    const { result, prompts } = await journalled([journalLine({ [field]: [null] })])
+
+    assert.ok(!result.coverage.failed_channels.includes('pipeline'),
+      `a null inside ${field} must not throw out of the replay`)
+    assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+      `and ${field} holding something unreadable buys a measurement, never a pass`)
+  }
+})
+
+test('an unreadable element is dropped from the line, not from the count', async () => {
+  // Silently dropping it would turn a line that named three failures into one that named
+  // two — and "two failures, all inside the locus" is a pass where three would not have been.
+  const { logs, prompts } = await journalled([
+    journalLine({ failing_tests: [{ file: 'src/W2.js', id: 'a' }, null] }),
+  ])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+  assert.ok(logs.some((l) => /did not record everything a verdict is computed from/.test(l)),
+    'and the run says so rather than looking like it never had a journal')
+})
+
+test('a line that never says what the build did is not a green measurement', async () => {
+  // verifyOk asks `!== 'failed'`, so an EMPTY build sails through it. `absent` is a fact the
+  // verifier stated about the repository; '' is a field that went missing, and reading the
+  // second as the first would claim a green nobody measured.
+  const { prompts } = await journalled([journalLine({ build: '', suite: '' })])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'))
+})
+
+test('a vacuous measurement the verifier actually stated is still honoured', async () => {
+  // The other side of the same line: a repository with no build and no suite at this commit
+  // is a real, observed answer, and increment 3 keeps it passing while flagging it.
+  const { prompts } = await journalled([
+    journalLine({ build: 'absent', suite: 'absent', discriminator: [] }),
+  ])
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'),
+    'absent is an observation, and re-observing it reaches the same answer')
+})
+
+test('an empty journal is the ordinary case, not a failure', async () => {
+  const { result } = await journalled([])
+
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a 0.13.0 log still resumes: order-verified state lines are still read', async () => {
+  // Nothing writes that kind any more. Dropping the reader would make an upgrade rebuild
+  // work its own predecessor had already finished.
+  const { prompts } = await resumed({
+    ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-verified')] })),
+    scavenge: scavengedW2(),
+  })
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'))
+  assert.ok(prompts.some((p) => (p.opts.label || '').startsWith('review:W2')))
 })
 
 // --- carried-forward escalations (increment 6 §5) ------------------------------------------

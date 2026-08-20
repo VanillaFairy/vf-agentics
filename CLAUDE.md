@@ -47,9 +47,17 @@ the same change before planning a new one — and the workflow enforces the same
 mechanically: a fresh invocation whose change string matches a `planned` or `in-flight` run
 on disk halts at a checkpoint (`existing_run`) instead of planning a duplicate, because a
 skill instruction guards only the callers that read it and a silent harness-cache miss
-arrives as a fresh invocation. It records each order the moment a stage closes — verified,
-then approved — rather than when its wave ends, and because order branches are named
-deterministically it can go and look at what an interrupted invocation actually built.
+arrives as a fresh invocation. Because order branches are named deterministically, it can go
+and look at what an interrupted invocation actually built.
+
+**Durability is written by whoever performs the action, in the execution that performs it.**
+A record produced by a separate dispatch after the fact has a window where the work exists and
+nothing on disk says so, and a usage limit has landed in that window in the field. So agents
+append what they observed to `journal.jsonl` themselves — the verifier its measurements, the
+merging agent its merges — while `state.jsonl` holds what the *workflow* decided, approvals and
+wave outcomes, written by a recorder that now truly appends rather than rewriting. No agent
+journals a verdict: verdicts are re-derived from the recorded facts on resume, by the same
+functions that derived them the first time, which is what makes agent-written durability safe.
 
 A resume then **salvages by stage**. It trusts a stage exactly as far as two independent
 records agree: the run said the stage closed, and git still holds the head it closed over.
@@ -64,10 +72,11 @@ the ids whose cause has been dealt with. Salvage is always reported: a run that 
 "implemented W4" about work it adopted rather than did is describing work it did not do.
 
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
-`2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md` and
-`2026-08-20-increment-6-contracts.md`. **Any change to the plan envelope's field list cites the
-registry in increment 5 §1, and any change to a `state.jsonl` line cites the registry in
-increment 6 §2** — nothing finds either set of copies for you.
+`2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
+`2026-08-20-increment-6-contracts.md` and `2026-08-20-increment-7-contracts.md`. **Any change
+to the plan envelope's field list cites the registry in increment 5 §1, any change to a
+`state.jsonl` line cites increment 6 §2, and any change to a `journal.jsonl` line cites
+increment 7 §4** — nothing finds any of those copies for you.
 
 Run the checks with:
 

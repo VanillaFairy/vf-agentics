@@ -1,5 +1,11 @@
 # Increment 6 contracts — salvage by stage
 
+> **Superseded in part by `2026-08-20-increment-7-contracts.md`.** The `order-verified` state
+> line §2 introduces is retired there — nothing writes it, everything still reads it — because
+> verifiers now journal their own measurements and the verdict is re-derived from those. Rung 1
+> gains a second acceptable witness (a journalled merge) and rung 3 reads the journal. The
+> ladder itself, the log-order precedence rule, and the two-witness principle are unchanged.
+
 Companion to `2026-08-17-increment-5-contracts.md`, whose §7 this extends and in two places
 supersedes. Everything else in increments 3, 4 and 5 stands unchanged.
 
@@ -139,7 +145,8 @@ governs what anyone does next.
 `lib/run-status.mjs`: **every** line counts as state (a run holding only `order-verified` lines
 must never read `planned` — that invites re-planning work sitting green on its branches);
 `waves_recorded` counts **distinct wave numbers**, not lines, because §4's corrective line can
-carry a number already recorded; `verified_unapproved` is exposed alongside `approved_unmerged`.
+carry a number already recorded; `measured_unapproved` is exposed alongside `approved_unmerged`
+(named `verified_unapproved` until increment 7 renamed it to what it actually reports).
 `order-verified` feeds nothing else — a verified order is not an approved one, and folding it
 into `approved_unmerged` would report work as review-passed that no reviewer has looked at.
 
@@ -273,7 +280,7 @@ dispatched nor scavenged, blocking its dependents; `retry_escalated` re-dispatch
 names; a carried escalation not also announced as work about to be resumed, and naming the wave
 it escalated in rather than the last wave that ran; both backward-compatibility defaults;
 stage-line ordering (`record:verified:<id>` before `record:<id>` before `record:wave-n`).
-`test/run-status.test.mjs` covers `hasState` over verified-only state, `verified_unapproved`
+`test/run-status.test.mjs` covers `hasState` over verified-only state, `measured_unapproved`
 clearing on merge, and distinct-wave counting with a corrective line present.
 
 The starred cases are the two the design's own first draft got wrong, and both were found by an

@@ -49,8 +49,16 @@ show it as `planned` — that invites re-planning work which may already have me
 `approved_unmerged` is worth reading out loud when it is non-empty: those orders passed review
 and are sitting on their branches unmerged, which is the signature of a run interrupted
 mid-wave. A resume merges them as they stand once git confirms each branch is still at the
-head its review closed over — no coder, no second review. `verified_unapproved` is the same
-story one stage earlier: green, not yet reviewed, and a resume takes them straight to review.
+head its review closed over — no coder, no second review. It is derived from two independent
+records now: the workflow's own `state.jsonl` and the `journal.jsonl` the merging and verifying
+agents append to themselves, so a run whose recorder was killed still reports what it merged
+rather than reading as though nothing happened. `measured_unapproved` is the same story one
+stage earlier, and its name is the careful part: it means a verification was **recorded** for
+those orders, not that it passed. Whether any of them is green is derived by `develop` when it
+resumes, against each order's role and locus; this listing does not repeat that computation and
+must not report it as though it had. Say "a measurement is on record for W2 and W5", never "W2
+and W5 are verified".
+
 Both are reasons to resume rather than re-plan, so say the numbers out loud.
 
 If there are no runs, say so plainly and stop. Do not offer to start one; that is `design`

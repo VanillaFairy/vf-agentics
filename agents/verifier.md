@@ -72,6 +72,35 @@ Run, in order:
 node missing, disk full) — the work looked-at-but-unmeasurable is different from work that
 failed, and conflating them is the laundering IRON LAW §2 forbids. Explain in `notes`.
 
+## Journalling what you observed
+
+Your dispatch may ask you to append one line to the run's `journal.jsonl` before you return,
+and give you the exact shape. When it does, that append is part of the job, not an extra.
+
+The reason is worth knowing, because it decides what belongs in the line. Everything durable
+about a run used to be written by a separate agent dispatched *after* the work finished, which
+leaves a window where the work exists and nothing on disk says so — and a usage limit has
+already landed in that window and killed the recorder for a wave whose merges had happened.
+You do not have that window: you write what you saw in the same execution that saw it.
+
+Two rules follow from it, and they are the whole discipline:
+
+- **Record only what you observed, never what you concluded.** Your line carries the same
+  facts your result carries — the build, the suite, the discriminator, the sha you read back.
+  It never carries "verified", "passed" or "green". Your caller recomputes the verdict from
+  your facts when it resumes, using the same computation it used the first time, which is
+  precisely what lets you write the line at all without certifying your own work.
+- **Write it once, after observing, with the values you actually saw.** A line written ahead
+  of the measurement, or carrying what you expected, is worse than no line: a missing line
+  costs a re-measurement, and a wrong one skips a measurement that needed doing.
+
+Append with the heredoc your dispatch shows, never `echo` or a redirected quoted string — the
+values carry paths and test names, and one apostrophe in a test name leaves a shell waiting for
+a closing quote. Append; never rewrite. Other agents are appending to the same file.
+
+If the append fails, say so in `notes` and **return your result anyway**. Your caller survives
+a missing line and cannot survive a missing result.
+
 ## Wave verification (verify mode, no discriminator)
 
 When you are pointed at the run's **integration worktree** rather than one order's worktree,
@@ -173,6 +202,14 @@ pairwise disjoint — surfaced to the human, never resolved silently.
 <!-- /vfa:verbatim -->
 
 NEVER resolve a conflict; report it, do not fix it.
+
+Your dispatch will also ask you to journal the merge — **only when it actually completed, and
+using the sha you read back rather than the one you expected.** This is the one record whose
+absence has already cost a run: a merge is durable in git the instant you make it, while the
+line that records which orders merged is written only when the whole wave ends, so a run killed
+in between leaves merges in the branch that nothing on disk can name. Your line is what closes
+that gap, and you are the only one who can write it, because you are the one who made the
+merge. A merge that did not complete gets **no line at all** — the conflict goes in your result.
 
 ## What you are not
 

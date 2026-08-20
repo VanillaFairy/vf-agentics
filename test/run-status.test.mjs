@@ -72,7 +72,7 @@ test('order-verified lines alone make a run in-flight too', () => {
   const run = deriveRun('20260816-143005', plan(), state, null)
 
   assert.equal(run.status, 'in-flight')
-  assert.deepEqual(run.verified_unapproved, ['W1'])
+  assert.deepEqual(run.measured_unapproved, ['W1'])
   assert.deepEqual(run.approved_unmerged, [],
     'verified is not approved — reporting it as reviewed would claim a reviewer looked')
 })
@@ -83,7 +83,7 @@ test('a verified order that later merged is not still reported as verified', () 
     wave({ merged: ['W1'] }),
   ]
 
-  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).verified_unapproved, [])
+  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).measured_unapproved, [])
 })
 
 test('waves_recorded counts waves, not lines', () => {
@@ -95,6 +95,97 @@ test('waves_recorded counts waves, not lines', () => {
 
   assert.equal(run.waves_recorded, 1)
   assert.deepEqual(run.merged, ['W1', 'W2'])
+})
+
+// --- the observation journal (increment 7) -------------------------------------------------
+
+const mergeObserved = (order, head = 'ccccccc') => ({
+  kind: 'merge-observed', order, branch: 'vfa/x-' + order, head_sha: head,
+})
+
+test('a merge the journal recorded counts as merged, wave line or no wave line', () => {
+  // The gap this closes: a merge is durable in git the instant it happens, while the wave
+  // line naming it is written only when the whole wave ends. A run killed in between used to
+  // read as never having landed those orders — which invites re-planning work that is
+  // already in the branch.
+  const run = deriveRun('20260816-143005', plan(), [], null, [],
+    [mergeObserved('W1'), mergeObserved('W2')])
+
+  assert.deepEqual(run.merged, ['W1', 'W2'])
+  assert.deepEqual(run.unreached, ['W3'])
+  assert.equal(run.status, 'in-flight')
+})
+
+test('the two sources union rather than replace — they fail independently', () => {
+  const run = deriveRun('20260816-143005', plan(), [wave({ merged: ['W1'] })], null, [],
+    [mergeObserved('W2')])
+
+  assert.deepEqual(run.merged, ['W1', 'W2'])
+})
+
+test('a run with no wave line still reports the head its merges produced', () => {
+  // Reporting '' there sends a human looking for a branch the row says nothing about, on
+  // exactly the run most worth looking at.
+  const run = deriveRun('20260816-143005', plan(), [], null, [],
+    [mergeObserved('W1', 'ddddddd'), mergeObserved('W2', 'eeeeeee')])
+
+  assert.equal(run.integration_head, 'eeeeeee', 'the last merge is where the branch stands')
+})
+
+test('a wave line still outranks the journal for the head it recorded', () => {
+  const run = deriveRun('20260816-143005', plan(), [wave({ merged: ['W1'] })], null, [],
+    [mergeObserved('W1', 'ddddddd')])
+
+  assert.equal(run.integration_head, 'bbbbbbb')
+})
+
+test('a journalled measurement is what measured_unapproved counts now', () => {
+  // The state line this replaced is retired, so without the journal clause the field is
+  // permanently empty while still being reported as a fact — and the runs skill tells the
+  // operator to read it out, so the two tools would disagree with the human reading the
+  // wrong one.
+  const run = deriveRun('20260816-143005', plan(), [], null, [],
+    [{ kind: 'verify-observed', order: 'W1', head_sha: 'aaa' }])
+
+  assert.deepEqual(run.measured_unapproved, ['W1'])
+})
+
+test('a measurement the run later merged or approved is no longer outstanding', () => {
+  const journal = [{ kind: 'verify-observed', order: 'W1', head_sha: 'aaa' },
+                   { kind: 'verify-observed', order: 'W2', head_sha: 'bbb' }]
+  const state = [{ kind: 'order-approved', wave: 1, order: 'W2', branch: 'vfa/x-W2' },
+                 wave({ merged: ['W1'] })]
+
+  const run = deriveRun('20260816-143005', plan(), state, null, [], journal)
+
+  assert.deepEqual(run.measured_unapproved, [],
+    'W1 merged and W2 is approved-unmerged; neither is still waiting to be looked at')
+  assert.deepEqual(run.approved_unmerged, ['W2'])
+})
+
+test('measured_unapproved says a measurement exists, never that it passed', () => {
+  // A red measurement is still a measurement. This file does not re-derive greenness — a
+  // second implementation of that is a second thing to drift — so the field name is the whole
+  // of the honesty here, and the runs skill is written against it.
+  const run = deriveRun('20260816-143005', plan(), [], null, [],
+    [{ kind: 'verify-observed', order: 'W1', build: 'failed', suite: 'failed' }])
+
+  assert.deepEqual(run.measured_unapproved, ['W1'])
+})
+
+test('a journal alone makes a run in-flight, never planned', () => {
+  const run = deriveRun('20260816-143005', plan(), [], null, [],
+    [{ kind: 'verify-observed', order: 'W1', head_sha: 'aaa' }])
+
+  assert.equal(run.status, 'in-flight',
+    'an agent got far enough to have something to record, so there is something to resume')
+})
+
+test('a journalled merge of every waved order is integrated, and lands on ancestry', () => {
+  const journal = [mergeObserved('W1'), mergeObserved('W2'), mergeObserved('W3')]
+
+  assert.equal(deriveRun('20260816-143005', plan(), [], false, [], journal).status, 'integrated')
+  assert.equal(deriveRun('20260816-143005', plan(), [], true, [], journal).status, 'landed')
 })
 
 test("git's unanswerable ancestry is not read as a no-but-known", () => {
