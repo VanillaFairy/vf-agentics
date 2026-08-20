@@ -41,13 +41,16 @@ const coverageFields = (searchedDescription) => ({
   },
   stop_reason: {
     type: 'string',
-    enum: ['exhausted', 'budget', 'stuck'],
+    enum: ['exhausted', 'unfinished', 'stuck'],
     description:
       '"exhausted" — every candidate your searches turned up has been triaged and you can ' +
-      'name the surface that covers the request. "budget" — the work was larger than one ' +
-      'pass and you stopped partway. "stuck" — you could not find a way forward. Only ' +
-      '"exhausted" counts as a complete result, so claim it only when it is true. The other ' +
-      'two are not failures: the caller will resume you.',
+      'name the surface that covers the request. "unfinished" — one pass could not cover ' +
+      'the surface; you are handing back an honest partial and the caller will resume you ' +
+      'until the search is done. "stuck" — you could not find a way forward. Cost, effort ' +
+      'already spent, and the size of your report are never reasons to stop: never stop ' +
+      'because the work feels large. Only "exhausted" counts as a complete result, so ' +
+      'claim it only when it is true. The other two are not failures: the caller will ' +
+      'resume you.',
   },
   no_match: {
     type: 'string',
@@ -184,8 +187,7 @@ const input = typeof args === 'string' ? { question: args } : (args || {})
 const question = input.question || ''
 const roots = input.roots || '.'
 const notes = input.notes || ''
-const maxTopics = input.max_topics || 4
-const maxRounds = input.max_rounds || 3
+const maxTopics = input.max_topics || 8
 
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
@@ -248,8 +250,11 @@ const plan = await agent(
   (notes ? `BACKGROUND SUPPLIED BY THE USER:\n${notes}\n` : '') +
   `\nEach topic must be answerable by searching the current code on its own, with no ` +
   `dependency on the other topics. Give each a short kebab-case key and a precise ` +
-  `instruction for a read-only search agent: what to find, and where to look. Return no ` +
-  `more than ${maxTopics} topics — merge related ones rather than exceeding that.\n\n` +
+  `instruction for a read-only search agent: what to find, and where to look. Size each ` +
+  `topic so a single search agent can exhaust it in one pass — one subsystem, one named ` +
+  `concern. Prefer more, smaller topics over one merged catch-all: a kitchen-sink topic ` +
+  `forces a partial first pass, and everything later is built on what these searches ` +
+  `return.\n\n` +
   `Set history_needed if answering the question requires git history rather than the ` +
   `current tree: when a behaviour changed, which commit introduced or removed something, ` +
   `why code is the way it is, or any regression. Put that question in history_question. ` +
@@ -272,22 +277,81 @@ if (!plan || !plan.topics || plan.topics.length === 0) {
     coverageOf([], [], [], ['planning produced no topics, so nothing was searched']))
 }
 
-// The schema cannot cap array length, so enforce it here.
-const overflow = []
+// The cap in the prompt is sizing guidance to the planner, never a licence to drop work:
+// every topic the planner decided the question needs gets searched. Cutting the list here
+// would undersurvey the one stage everything else is built on — the earlier behaviour of
+// slicing the overflow off produced runs whose plans rested on evidence nobody gathered.
+// Cost is controlled by method — cheap scouts, tight schemas — not by cutting work (§8).
 if (plan.topics.length > maxTopics) {
-  for (const t of plan.topics.slice(maxTopics)) overflow.push(t.key)
-  log(`Planner returned ${plan.topics.length} topics; keeping ${maxTopics}, escalating: ${overflow.join(', ')}`)
-  plan.topics = plan.topics.slice(0, maxTopics)
+  log(`Planner returned ${plan.topics.length} topics (asked for at most ${maxTopics}); searching all of them.`)
 }
 
 log(`Plan: ${plan.topics.length} topic(s)` +
     `${plan.history_needed ? ' + git history' : ''}` +
     `${plan.docs_needed ? ' + documentation' : ''}`)
 
-// ------------------------------------------------- 2. history and docs
+// ---------------------------------------------------------- 2. the resume engine
 //
-// Both run alongside the scouts. IRON LAW §5: a side-channel failure must not discard the
-// scout and analyst work already paid for, so nothing here rejects.
+// Drives one evidence agent to exhaustion (IRON LAW §3): the scouts, the historian and the
+// doc-researcher all go through here. Every stop condition is about the GOAL, and none is a
+// counter or a budget (§1): the loop ends when the agent exhausts the surface, when it
+// dead-ends without naming what is left, when a round errors out, or when a round covers no
+// new ground — the observable form of "stuck". Cost never ends it: a search still finding
+// new ground keeps going, however many rounds that takes, because every later stage is built
+// on what this one returns and is far more expensive to mislead than to wait for.
+//
+// `absorb(found)` folds one round into the caller's accumulators and returns true when the
+// round gained new ground. Progress is judged on evidence actually gained, never on the
+// agent's account of itself: a round that re-treads old ground while naming the same
+// remainder would otherwise be resumed forever.
+async function resumeToExhaustion({ key, prompt, launch, absorb }) {
+  let round = 0
+  let prev = null
+  while (true) {
+    round++
+    let found
+    try {
+      found = await launch(prompt(round, prev), round)
+    } catch (e) {
+      log(`${key}: round ${round} threw (${e && e.message}); keeping what was found.`)
+      return { exhausted: false, notReached: `round ${round} failed before completion: ${e && e.message}` }
+    }
+    if (!found) {
+      log(`${key}: round ${round} returned nothing; keeping what was found.`)
+      return { exhausted: false, notReached: `round ${round} produced no result` }
+    }
+
+    const progressed = absorb(found)
+    prev = found
+
+    if (found.stop_reason === 'exhausted') {
+      return { exhausted: true, notReached: '' }
+    }
+
+    // Not exhausted but nothing named as unreached: another round would be handed an empty
+    // task and would return "exhausted" having done nothing. Treat it as the dead end it is
+    // rather than paying for a round that launders it into completeness.
+    if (!(found.not_reached || '').trim()) {
+      log(`${key}: stop_reason "${found.stop_reason}" with nothing named as unreached — treating as a dead end.`)
+      return { exhausted: false, notReached: `search stopped as "${found.stop_reason}" without naming what was missed` }
+    }
+
+    if (!progressed) {
+      log(`${key}: round ${round} covered no new ground — stopping as stuck rather than looping.`)
+      return { exhausted: false, notReached: found.not_reached }
+    }
+
+    log(`${key}: unfinished after round ${round} (${found.stop_reason}), resuming.`)
+  }
+}
+
+// ------------------------------------------------- 3. history and docs
+//
+// Both run alongside the scouts, and both are driven through the same resume engine: a
+// historian that hands back an honest partial is resumed until the search is done, exactly
+// like a scout — before this, the channels were single-shot and a truncated one was merely
+// recorded. IRON LAW §5 still holds: a side-channel failure must not discard the scout and
+// analyst work already paid for, so nothing here rejects.
 //
 // Every outcome is recorded, including the one that used to vanish: a track the planner
 // marked necessary and then gave no question for. That case reported as neither researched
@@ -316,94 +380,122 @@ function sideChannel(name, needed, ask, launch) {
   )
 }
 
+// A channel's rounds accumulate prose findings rather than hit lists, so the engine's
+// progress measure is the searched surface — the one part of the contract that is
+// deduplicable — and the merged rounds keep the shape every consumer already reads:
+// findings plus the coverage fields. Returns null when no round ever produced a result,
+// which sideChannel records as the failed channel it is.
+async function channelToExhaustion({ key, first, launch }) {
+  const findings = []
+  const searched = []
+  const noMatch = []
+  const seen = new Set()
+  let sawResult = false
+
+  const absorb = (found) => {
+    sawResult = true
+    const before = seen.size
+    if ((found.findings || '').trim()) findings.push(found.findings.trim())
+    for (const s of found.searched || []) {
+      const k = String(s).trim()
+      if (k && !seen.has(k)) { seen.add(k); searched.push(s) }
+    }
+    if ((found.no_match || '').trim()) noMatch.push(found.no_match.trim())
+    return seen.size > before
+  }
+
+  const prompt = (round, prev) => round === 1
+    ? first
+    : `Continue an unfinished search — do not start over.\n\n` +
+      `ORIGINAL REQUEST:\n${first}\n\n` +
+      `ALREADY SEARCHED (do not repeat these):\n${searched.join('\n')}\n\n` +
+      `ALREADY ESTABLISHED (do not re-derive these):\n${findings.join('\n\n')}\n\n` +
+      `STILL NOT REACHED — this is your job now:\n${prev.not_reached}`
+
+  const end = await resumeToExhaustion({ key, prompt, launch, absorb })
+  if (!sawResult) return null
+  return {
+    findings: findings.join('\n\n'),
+    searched,
+    stop_reason: end.exhausted ? 'exhausted' : 'unfinished',
+    no_match: noMatch.join('\n'),
+    not_reached: end.notReached,
+  }
+}
+
 const historyChannel = sideChannel(
   'git history search', plan.history_needed, plan.history_question,
-  (ask) => agent(
-    `${ask}\n\nRepositories: ${roots}\nContext: ${question}`,
-    { agentType: 'vf-agentics:historian', effort: 'low', schema: HISTORY,
-      phase: 'History', label: 'history' },
-  ),
+  (ask) => channelToExhaustion({
+    key: 'history',
+    first: `${ask}\n\nRepositories: ${roots}\nContext: ${question}`,
+    launch: (p, round) => agent(p, {
+      agentType: 'vf-agentics:historian', effort: 'low', schema: HISTORY,
+      phase: 'History', label: `history${round > 1 ? `#${round}` : ''}` }),
+  }),
 )
 
 const docsChannel = sideChannel(
   'documentation research', plan.docs_needed, plan.docs_question,
-  (ask) => agent(
-    `Research this against primary sources and report the facts with URLs.\n\n` +
-    `${ask}\n\nContext: ${question}`,
-    { agentType: 'vf-agentics:doc-researcher', effort: 'low', schema: DOCS,
-      phase: 'Docs', label: 'docs' },
-  ),
+  (ask) => channelToExhaustion({
+    key: 'docs',
+    first: `Research this against primary sources and report the facts with URLs.\n\n` +
+      `${ask}\n\nContext: ${question}`,
+    launch: (p, round) => agent(p, {
+      agentType: 'vf-agentics:doc-researcher', effort: 'low', schema: DOCS,
+      phase: 'Docs', label: `docs${round > 1 ? `#${round}` : ''}` }),
+  }),
 )
 
-// -------------------------------------------------- 3. scout -> 4. analyze
+// -------------------------------------------------- 4. scout -> 5. analyze
 
 const partial = []
 
 // Search to exhaustion. IRON LAW §3: an incomplete scout is RESUMED, never reported as a
-// result. Every exit path returns an object, and every incomplete exit records the topic —
-// an interrupted search has to be as visible downstream as one that simply ran out of rounds.
+// result. The engine owns the stop conditions; this wrapper owns what a scout accumulates —
+// deduplicated hits and searched surface, which double as the engine's progress measure.
 async function scoutUntilComplete(topic) {
   const hits = []
   const searched = []
   const noMatch = []
-  let round = 0
-  let found = null
+  const seen = new Set()
 
-  function incomplete(notReached) {
-    partial.push(topic.key)
-    return { hits, searched, complete: false, noMatch: noMatch.join('\n'), notReached }
-  }
-
-  while (round < maxRounds) {
-    round++
-    const prompt = round === 1
-      ? `${topic.find}\n\nRepositories: ${roots}\n\n` +
-        `Report every location you find. If there are far more than about 40, report the ` +
-        `most relevant, set stop_reason to "budget", and name the rest in not_reached.`
-      : `Continue an unfinished search — do not start over.\n\n` +
-        `ORIGINAL REQUEST: ${topic.find}\n` +
-        `Repositories: ${roots}\n\n` +
-        `ALREADY SEARCHED (do not repeat these):\n${searched.join('\n')}\n\n` +
-        `ALREADY FOUND (do not report these again):\n` +
-        hits.map((h) => `${h.path}:${h.line}`).join('\n') +
-        `\n\nSTILL NOT REACHED — this is your job now:\n${found.not_reached}`
-
-    try {
-      found = await agent(prompt, {
-        agentType: 'vf-agentics:scout', effort: 'low', schema: HITS,
-        phase: 'Scout', label: `scout:${topic.key}${round > 1 ? `#${round}` : ''}`,
-      })
-    } catch (e) {
-      log(`${topic.key}: round ${round} threw (${e && e.message}); keeping what was found.`)
-      return incomplete(`round ${round} failed before completion: ${e && e.message}`)
+  const absorb = (found) => {
+    const before = seen.size
+    for (const h of found.hits || []) {
+      const k = `hit:${h.path}:${h.line}`
+      if (!seen.has(k)) { seen.add(k); hits.push(h) }
     }
-
-    if (!found) {
-      log(`${topic.key}: round ${round} returned nothing; keeping what was found.`)
-      return incomplete(`round ${round} produced no result`)
+    for (const s of found.searched || []) {
+      const k = `searched:${String(s).trim()}`
+      if (String(s).trim() && !seen.has(k)) { seen.add(k); searched.push(s) }
     }
-
-    hits.push(...(found.hits || []))
-    searched.push(...(found.searched || []))
     if ((found.no_match || '').trim()) noMatch.push(found.no_match.trim())
-
-    if (found.stop_reason === 'exhausted') {
-      return { hits, searched, complete: true, noMatch: noMatch.join('\n'), notReached: '' }
-    }
-
-    // Not exhausted but nothing named as unreached: another round would be handed an empty
-    // task and would return "exhausted" having done nothing. Treat it as the dead end it is
-    // rather than paying for a round that launders it into completeness.
-    if (!(found.not_reached || '').trim()) {
-      log(`${topic.key}: stop_reason "${found.stop_reason}" with nothing named as unreached — treating as a dead end.`)
-      return incomplete(`search stopped as "${found.stop_reason}" without naming what was missed`)
-    }
-
-    log(`${topic.key}: incomplete after round ${round} (${found.stop_reason}), resuming.`)
+    return seen.size > before
   }
 
-  log(`ESCALATION: ${topic.key} still incomplete after ${maxRounds} rounds.`)
-  return incomplete(found.not_reached || '')
+  const prompt = (round, prev) => round === 1
+    ? `${topic.find}\n\nRepositories: ${roots}\n\n` +
+      `Report every location you find, and search to exhaustion: you stop when the surface ` +
+      `is covered or you are genuinely stuck, never because the list is getting long or ` +
+      `the work feels large. If one pass truly cannot cover the request, report what you ` +
+      `have, set stop_reason to "unfinished", and name exactly what remains in ` +
+      `not_reached — you will be resumed until the search is done.`
+    : `Continue an unfinished search — do not start over.\n\n` +
+      `ORIGINAL REQUEST: ${topic.find}\n` +
+      `Repositories: ${roots}\n\n` +
+      `ALREADY SEARCHED (do not repeat these):\n${searched.join('\n')}\n\n` +
+      `ALREADY FOUND (do not report these again):\n` +
+      hits.map((h) => `${h.path}:${h.line}`).join('\n') +
+      `\n\nSTILL NOT REACHED — this is your job now:\n${prev.not_reached}`
+
+  const launch = (p, round) => agent(p, {
+    agentType: 'vf-agentics:scout', effort: 'low', schema: HITS,
+    phase: 'Scout', label: `scout:${topic.key}${round > 1 ? `#${round}` : ''}`,
+  })
+
+  const end = await resumeToExhaustion({ key: topic.key, prompt, launch, absorb })
+  if (!end.exhausted) partial.push(topic.key)
+  return { hits, searched, complete: end.exhausted, noMatch: noMatch.join('\n'), notReached: end.notReached }
 }
 
 const findings = await pipeline(
@@ -439,7 +531,7 @@ const findings = await pipeline(
   }),
 )
 
-// ---------------------------------------------------------- 5. account
+// ---------------------------------------------------------- 6. account
 
 // Reconcile by pipeline index, not by the topic string the analyst echoed back. pipeline()
 // preserves order, so this is exact and needs no cooperation from the model — a verdict that
@@ -451,7 +543,6 @@ plan.topics.forEach((topic, i) => {
   if (findings[i]) verdicts.push(findings[i])
   else dropped.push(topic.key)
 })
-dropped.push(...overflow)
 
 if (dropped.length > 0) log(`WARNING: no result for topic(s): ${dropped.join(', ')}`)
 if (partial.length > 0) log(`WARNING: could not search to exhaustion: ${partial.join(', ')}`)
@@ -493,9 +584,6 @@ function channelEvidence(channel) {
         `as settled.`)
 }
 
-// Overflow topics are already counted in `dropped` above — they were planned and produced
-// no result. They are deliberately NOT also listed in `unreached`: double-reporting would
-// make coverage read worse than it is and duplicate them in resumable.remaining.
 const unreached = []
 
 // A topic that produced a verdict but never exhausted its search is still incomplete. One
@@ -505,9 +593,7 @@ const droppedKeys = new Set(dropped)
 const incomplete = partial.filter((k) => !droppedKeys.has(k)).concat(truncatedChannels)
 
 return surveyResult(
-  // Includes overflow, so the caller sees every topic that was planned — not just the
-  // ones that survived the cap.
-  plan.topics.map((t) => t.key).concat(overflow),
+  plan.topics.map((t) => t.key),
   verdicts,
   channelEvidence(history),
   channelEvidence(docs),

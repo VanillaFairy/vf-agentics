@@ -53,12 +53,15 @@ const coverageFields = (searchedDescription) => ({
   },
   stop_reason: {
     type: 'string',
-    enum: ['exhausted', 'budget', 'stuck'],
+    enum: ['exhausted', 'unfinished', 'stuck'],
     description:
       '"exhausted" — you covered the surface you were asked to cover and can name it. ' +
-      '"budget" — the work was larger than one pass and you stopped partway. "stuck" — you ' +
-      'could not find a way forward. Only "exhausted" counts as complete, so claim it only ' +
-      'when it is true. The other two are not failures: the caller will resume you.',
+      '"unfinished" — one pass could not cover the surface; you are handing back an honest ' +
+      'partial and the caller will resume you until the search is done. "stuck" — you ' +
+      'could not find a way forward. Cost, effort already spent, and the size of your ' +
+      'report are never reasons to stop: never stop because the work feels large. Only ' +
+      '"exhausted" counts as complete, so claim it only when it is true. The other two are ' +
+      'not failures: the caller will resume you.',
   },
   no_match: {
     type: 'string',
@@ -277,7 +280,6 @@ const roots = input.roots || '.'
 const constraints = input.constraints || ''
 const notes = input.notes || ''
 const maxAngles = input.max_angles || 4
-const maxRounds = input.max_rounds || 3
 
 // The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
 // the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
@@ -405,10 +407,17 @@ const constraintLine = (frame.hard_constraints || []).join('\n')
 // IRON LAW §3: an unexhausted search is RESUMED, never reported as a result. Every exit
 // returns an object, and every incomplete exit records the angle — because here, more than
 // anywhere, an interrupted search that reads as a finished one licenses the wrong decision.
+//
+// No round counter ends this loop (§1): it runs until the angle is exhausted, dead-ends
+// without naming what is left, errors out, or a round covers no new ground — the observable
+// form of "stuck". Progress is judged on evidence actually gained (new candidates or new
+// searched surface, both deduplicated), never on the agent's account of itself: a round
+// that re-treads old ground while naming the same remainder would otherwise resume forever.
 async function searchUntilComplete(angle) {
   const candidates = []
   const searched = []
   const noMatch = []
+  const seen = new Set()
   let round = 0
   let found = null
 
@@ -417,7 +426,7 @@ async function searchUntilComplete(angle) {
     return { candidates, searched, noMatch: noMatch.join('\n'), notReached }
   }
 
-  while (round < maxRounds) {
+  while (true) {
     round++
 
     const opening = round === 1
@@ -464,8 +473,18 @@ async function searchUntilComplete(angle) {
       return incomplete(`round ${round} produced no result`)
     }
 
-    candidates.push(...(found.candidates || []))
-    searched.push(...(found.searched || []))
+    // Absorb the round deduplicated. Exact-name matching is the trivial half of deduping
+    // and belongs in JS; the same project under two names stays the assessor's job. The
+    // growth of `seen` is also the progress measure that decides whether resuming can work.
+    const before = seen.size
+    for (const c of found.candidates || []) {
+      const k = `candidate:${String((c && c.name) || '').trim().toLowerCase()}`
+      if (!seen.has(k)) { seen.add(k); candidates.push(c) }
+    }
+    for (const s of found.searched || []) {
+      const k = `searched:${String(s).trim()}`
+      if (String(s).trim() && !seen.has(k)) { seen.add(k); searched.push(s) }
+    }
     if ((found.no_match || '').trim()) noMatch.push(found.no_match.trim())
 
     if (found.stop_reason === 'exhausted') {
@@ -480,11 +499,13 @@ async function searchUntilComplete(angle) {
       return incomplete(`search stopped as "${found.stop_reason}" without naming what was missed`)
     }
 
-    log(`${angle.key}: incomplete after round ${round} (${found.stop_reason}), resuming.`)
-  }
+    if (seen.size === before) {
+      log(`${angle.key}: round ${round} covered no new ground — stopping as stuck rather than looping.`)
+      return incomplete(found.not_reached)
+    }
 
-  log(`ESCALATION: ${angle.key} still incomplete after ${maxRounds} rounds.`)
-  return incomplete(found.not_reached || '')
+    log(`${angle.key}: unfinished after round ${round} (${found.stop_reason}), resuming.`)
+  }
 }
 
 // The repo channel gets the same treatment every side channel in this plugin gets: it may

@@ -183,7 +183,7 @@ test('an unexhausted angle is carried as never-reached, worded apart from found-
     agent: happy({
       'find:': byAngle(
         () => found([]),
-        () => found([], { stop_reason: 'budget', not_reached: 'crates.io and PyPI' }),
+        () => found([], { stop_reason: 'unfinished', not_reached: 'crates.io and PyPI' }),
       ),
       assess: assessedAs([]),
     }),
@@ -207,7 +207,7 @@ test('an unexhausted angle is resumed rather than reported', async () => {
         () => {
           rounds += 1
           return rounds === 1
-            ? found([], { stop_reason: 'budget', not_reached: 'crates.io' })
+            ? found([], { stop_reason: 'unfinished', not_reached: 'crates.io' })
             : found([candidate('limiter-c')])
         },
       ),

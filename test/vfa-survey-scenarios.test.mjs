@@ -110,7 +110,7 @@ test('the resume round is handed what was never reached, not what was proven abs
     plan: PLAN(),
     'scout:a#2': HITS({ searched: ['grep legacy'] }),
     'scout:a': HITS({
-      stop_reason: 'budget',
+      stop_reason: 'unfinished',
       no_match: 'nothing under tests/',
       not_reached: 'src/legacy/ was never opened',
     }),
@@ -139,6 +139,65 @@ test('what a scout proved absent reaches the analyst as evidence of absence', as
   assert.match(analyze.prompt, /nothing under tests\//)
 })
 
+test('a search still finding new ground is resumed past any round count', async () => {
+  const rounds = 5
+  const { result, prompts } = await run({
+    plan: PLAN(),
+    'scout:': (prompt, opts) => {
+      // Labels run scout:a, scout:a#2 … scout:a#5, so the round is read off the label.
+      const suffix = /#(\d+)$/.exec(String(opts.label))
+      const r = suffix ? Number(suffix[1]) : 1
+      return r < rounds
+        ? HITS({ searched: [`grep pass ${r}`], stop_reason: 'unfinished', not_reached: `surface ${r + 1}` })
+        : HITS({ searched: [`grep pass ${r}`] })
+    },
+    'analyze:': VERDICT('a'),
+  })
+
+  // The old loop cut this search off after 3 rounds and reported the topic incomplete —
+  // a budget wearing the name of a threshold. Progress is the only licence to continue,
+  // and while it holds, no counter may end the search (IRON LAW §1).
+  const scoutCalls = prompts.filter((p) => String(p.opts.label).startsWith('scout:'))
+  assert.equal(scoutCalls.length, rounds)
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a resumed round that covers no new ground ends the loop as stuck, not another round', async () => {
+  const { result, prompts, logs } = await run({
+    plan: PLAN(),
+    'scout:': HITS({ stop_reason: 'unfinished', not_reached: 'src/legacy/ was never opened' }),
+    'analyze:': VERDICT('a'),
+  })
+
+  // Every round returns the identical hits and searched surface, so round 2 gains nothing.
+  // Without the progress gate this is the loop that never converges; with it, the second
+  // round is the proof of stuckness and there is no third.
+  const scoutCalls = prompts.filter((p) => String(p.opts.label).startsWith('scout:'))
+  assert.equal(scoutCalls.length, 2)
+  assert.deepEqual(result.coverage.incomplete, ['a'])
+  assert.equal(result.coverage.complete, false)
+  assert.ok(logs.some((l) => /covered no new ground/.test(l)))
+})
+
+test('every planned topic is searched — the topic cap guides the planner, it never drops work', async () => {
+  const topics = ['a', 'b', 'c'].map((k) => ({ key: k, find: 'find ' + k }))
+  const { result, prompts, logs } = await run({
+    plan: PLAN({ topics }),
+    'scout:': HITS(),
+    'analyze:a': VERDICT('a'),
+    'analyze:b': VERDICT('b'),
+    'analyze:c': VERDICT('c'),
+  }, { max_topics: 2 })
+
+  // Slicing the overflow off left planned topics unsearched while every later stage read
+  // the result as the evidence base. The cap stays in the planner's prompt as sizing
+  // guidance; what the planner decided the question needs is searched, all of it.
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:')).length, 3)
+  assert.deepEqual(result.coverage.dropped, [])
+  assert.equal(result.coverage.complete, true)
+  assert.ok(logs.some((l) => /searching all of them/.test(l)))
+})
+
 test('a scout that stops without naming what it missed is a dead end, not a resume', async () => {
   const { result, prompts } = await run({
     plan: PLAN(),
@@ -155,23 +214,49 @@ test('a scout that stops without naming what it missed is a dead end, not a resu
 
 // ------------------------------------------------------ evidence-channel coverage
 
-test('a channel that returns without exhausting its search makes coverage incomplete', async () => {
-  const { result } = await run({
+test('a channel that cannot finish makes coverage incomplete, after the resume is spent', async () => {
+  // Both rounds return the identical evidence, so the resume gains no new ground and the
+  // channel genuinely cannot finish — the case that must surface as incomplete.
+  const stalled = EVIDENCE({ stop_reason: 'unfinished', not_reached: 'every ref older than 2024' })
+  const { result, prompts } = await run({
     plan: PLAN({ history_needed: true, history_question: 'when did X change' }),
     'scout:': HITS(),
     'analyze:': VERDICT('a'),
-    history: EVIDENCE({ stop_reason: 'budget', not_reached: 'every ref older than 2024' }),
+    history: stalled,
+    'history#2': stalled,
   })
 
   // Truncated is neither failed nor finished. Before the channels carried a stop_reason this
   // was invisible in JS, and a half-read history came back complete.
+  assert.ok(prompts.some((p) => p.opts.label === 'history#2'),
+    'an unfinished channel is resumed before it may be reported')
   assert.deepEqual(result.coverage.failed_channels, [])
   assert.ok(result.coverage.incomplete.includes('history'))
   assert.equal(result.coverage.complete, false)
   assert.ok(result.coverage.resumable.remaining.includes('history'),
     'a truncated channel is resumable work and must say so')
-  assert.match(result.history, /COVERAGE LIMIT \(budget\)/)
+  assert.match(result.history, /COVERAGE LIMIT \(unfinished\)/)
   assert.match(result.history, /every ref older than 2024/)
+})
+
+test('an unfinished evidence channel is resumed to exhaustion like a scout', async () => {
+  const { result, prompts } = await run({
+    plan: PLAN({ history_needed: true, history_question: 'when did X change' }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+    history: EVIDENCE({ stop_reason: 'unfinished', not_reached: 'refs older than 2024' }),
+    'history#2': EVIDENCE({ findings: 'the 2023 refactor moved it', searched: ['git log --before 2024'] }),
+  })
+
+  // The channels used to be single-shot: a historian handing back an honest partial was
+  // merely recorded as truncated, and the evidence stayed half-read while develop planned
+  // on it. Now the same resume engine that drives the scouts drives the channels.
+  const resumed = prompts.find((p) => p.opts.label === 'history#2')
+  assert.ok(resumed, 'an unfinished channel must be resumed rather than recorded')
+  assert.match(resumed.prompt, /STILL NOT REACHED[\s\S]*refs older than 2024/)
+  assert.equal(result.coverage.complete, true)
+  assert.doesNotMatch(result.history, /COVERAGE LIMIT/)
+  assert.match(result.history, /the 2023 refactor moved it/)
 })
 
 test("a channel's evidence of absence travels with its findings", async () => {
