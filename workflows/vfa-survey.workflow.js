@@ -87,7 +87,10 @@ const coverageFields = (searchedDescription) => ({
 const PLAN = {
   type: 'object',
   additionalProperties: false,
-  required: ['topics', 'docs_needed', 'docs_question', 'history_needed', 'history_question'],
+  required: [
+    'topics', 'common_ground',
+    'docs_needed', 'docs_question', 'history_needed', 'history_question',
+  ],
   properties: {
     topics: {
       type: 'array',
@@ -104,6 +107,16 @@ const PLAN = {
           },
         },
       },
+    },
+    common_ground: {
+      type: 'string',
+      description:
+        'A precise search instruction, in the same form as a topic\'s, for ground several ' +
+        'topics would each need to read — a shared configuration object, a subsystem they all ' +
+        'touch. It is scouted ONCE and what it finds is handed to every analyst alongside its ' +
+        'own topic, so naming it here replaces the same files being searched and read once per ' +
+        'topic. Send an empty string — never omit the field — when the topics genuinely share ' +
+        'no ground.',
     },
     docs_needed: {
       type: 'boolean',
@@ -263,12 +276,18 @@ const plan = await agent(
   `REPOSITORIES: ${roots}\n` +
   (notes ? `BACKGROUND SUPPLIED BY THE USER:\n${notes}\n` : '') +
   `\nEach topic must be answerable by searching the current code on its own, with no ` +
-  `dependency on the other topics. Give each a short kebab-case key and a precise ` +
+  `dependency on the other topics — the shared ground below is the one exception to that, ` +
+  `because it reaches every topic's analyst. Give each a short kebab-case key and a precise ` +
   `instruction for a read-only search agent: what to find, and where to look. Size each ` +
   `topic so a single search agent can exhaust it in one pass — one subsystem, one named ` +
   `concern. Prefer more, smaller topics over one merged catch-all: a kitchen-sink topic ` +
   `forces a partial first pass, and everything later is built on what these searches ` +
   `return.\n\n` +
+  `When several topics would each need to read the same files, do NOT fold that surface ` +
+  `into each of them. Name it once in common_ground, as a precise instruction for a single ` +
+  `search agent: it is searched once, and every analyst receives what it finds alongside ` +
+  `its own topic's locations. Then confine each topic's instruction to what is unique to ` +
+  `that topic. Send an empty string when the topics genuinely share no ground.\n\n` +
   `Set history_needed if answering the question requires git history rather than the ` +
   `current tree: when a behaviour changed, which commit introduced or removed something, ` +
   `why code is the way it is, or any regression. Put that question in history_question. ` +
@@ -300,7 +319,13 @@ if (plan.topics.length > maxTopics) {
   log(`Planner returned ${plan.topics.length} topics (asked for at most ${maxTopics}); searching all of them.`)
 }
 
+// The ground the planner says several topics would each have to read. Read defensively: a
+// plan from before this field existed is not a broken plan, it is a plan with no shared
+// ground, and it must degrade to exactly that rather than throwing on the way past.
+const commonFind = (plan.common_ground || '').trim()
+
 log(`Plan: ${plan.topics.length} topic(s)` +
+    `${commonFind ? ' + common ground' : ''}` +
     `${plan.history_needed ? ' + git history' : ''}` +
     `${plan.docs_needed ? ' + documentation' : ''}`)
 
@@ -488,15 +513,23 @@ async function scoutUntilComplete(topic) {
     return seen.size > before
   }
 
+  // The shared ground is searched once, by its own scout, so every other scout is told to
+  // leave it alone. Without this the topics that share a surface each re-read it, and each
+  // of their analysts then pays to read the same code again — the redundancy this field
+  // exists to remove. The common scout itself is never handed the exclusion.
+  const exclude = commonFind && topic.key !== 'common-ground'
+    ? `\n\nA separate scout covers this shared ground — do not search it:\n${commonFind}`
+    : ''
+
   const prompt = (round, prev) => round === 1
-    ? `${topic.find}\n\nRepositories: ${roots}\n\n` +
+    ? `${topic.find}${exclude}\n\nRepositories: ${roots}\n\n` +
       `Report every location you find, and search to exhaustion: you stop when the surface ` +
       `is covered or you are genuinely stuck, never because the list is getting long or ` +
       `the work feels large. If one pass truly cannot cover the request, report what you ` +
       `have, set stop_reason to "unfinished", and name exactly what remains in ` +
       `not_reached — you will be resumed until the search is done.`
     : `Continue an unfinished search — do not start over.\n\n` +
-      `ORIGINAL REQUEST: ${topic.find}\n` +
+      `ORIGINAL REQUEST: ${topic.find}${exclude}\n` +
       `Repositories: ${roots}\n\n` +
       `ALREADY SEARCHED (do not repeat these):\n${searched.join('\n')}\n\n` +
       `ALREADY FOUND (do not report these again):\n` +
@@ -513,12 +546,38 @@ async function scoutUntilComplete(topic) {
   return { hits, searched, complete: end.exhausted, noMatch: noMatch.join('\n'), notReached: end.notReached }
 }
 
+// Launched before the pipeline rather than inside it: it is one search whose result every
+// topic's analyst reads, so it runs alongside the topic scouts instead of after them. It is
+// an ordinary scout in every other respect — same labels, same phase, same resume to
+// exhaustion, and the same entry in `partial` when it does not get there.
+const commonGround = commonFind
+  ? scoutUntilComplete({ key: 'common-ground', find: commonFind })
+  : Promise.resolve(null)
+
+// What the shared scout found, written into every analyst's evidence. The warning is the
+// load-bearing half: an analyst reasoning over a shared surface nobody finished searching
+// must be able to say what its conclusion rests on (IRON LAW §4).
+function sharedGroundSection(common) {
+  if (!common) return ''
+  return `\n\nSHARED GROUND (scouted once for every topic — treat it as part of your evidence):\n` +
+    JSON.stringify(common.hits, null, 1) +
+    `\n\nSHARED GROUND SEARCH SURFACE COVERED:\n${common.searched.join('\n')}` +
+    (common.noMatch
+      ? `\n\nSHARED GROUND SEARCHED AND NOT FOUND (this is evidence of absence):\n${common.noMatch}`
+      : '') +
+    (common.complete
+      ? ''
+      : `\n\nWARNING: the shared-ground search did NOT finish. It never reached: ` +
+        `${common.notReached}. Anything you conclude from the shared ground inherits that ` +
+        `limit — state what your conclusion rests on.`)
+}
+
 const findings = await pipeline(
   plan.topics,
 
   (topic) => scoutUntilComplete(topic),
 
-  (found, topic) => agent(
+  async (found, topic) => agent(
     `Answer this part of a larger question, using the locations below as your starting point.\n\n` +
     `OVERALL QUESTION: ${question}\n` +
     `THIS TOPIC: ${topic.find}\n\n` +
@@ -527,6 +586,7 @@ const findings = await pipeline(
     `\n\nSEARCH SURFACE ACTUALLY COVERED:\n${found.searched.join('\n')}` +
     (found.noMatch ? `\n\nSEARCHED AND NOT FOUND (this is evidence of absence):\n${found.noMatch}` : '') +
     (found.notReached ? `\n\nNEVER SEARCHED: ${found.notReached}` : '') +
+    sharedGroundSection(await commonGround) +
     (found.complete
       ? `\n\nThe search was exhausted. Judge the search surface above for yourself: if it ` +
         `does not actually cover the topic, say so in risks rather than accepting it.`

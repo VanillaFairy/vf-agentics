@@ -307,6 +307,115 @@ test('an unfinished evidence channel is resumed to exhaustion like a scout', asy
   assert.match(result.history, /the 2023 refactor moved it/)
 })
 
+// ------------------------------------------------------------------ shared ground
+//
+// A plan whose topics all touch one subsystem used to have every topic scout re-read the
+// same files, and then every analyst — the expensive tier — read the same code again. In a
+// field run 44% of the files came back from two or more scouts, one of them from four.
+// `common_ground` is the planner's way to name that surface once; these tests pin that it is
+// searched once, excluded from the topic scouts, delivered to every analyst, and — when it
+// does not finish — visible as a limit rather than as silence.
+
+test('shared ground is scouted once, kept out of the topic scouts, and reaches every analyst', async () => {
+  const { result, prompts } = await run({
+    plan: PLAN({
+      topics: [{ key: 'a', find: 'find a' }, { key: 'b', find: 'find b' }],
+      common_ground: 'the Phaser game config in src/main.ts',
+    }),
+    'scout:common-ground': HITS({ hits: [{ path: 'src/main.ts', line: 12, note: 'the game config' }] }),
+    'scout:': HITS(),
+    'analyze:a': VERDICT('a'),
+    'analyze:b': VERDICT('b'),
+  })
+
+  const common = prompts.filter((p) => String(p.opts.label).startsWith('scout:common-ground'))
+  assert.equal(common.length, 1, 'the shared surface is searched once, not once per topic')
+  assert.doesNotMatch(common[0].prompt, /A separate scout covers this shared ground/,
+    'the common scout must never be told to skip the very ground it was sent for')
+
+  for (const key of ['a', 'b']) {
+    const scout = prompts.find((p) => p.opts.label === `scout:${key}`)
+    assert.match(scout.prompt, /A separate scout covers this shared ground — do not search it/)
+    assert.match(scout.prompt, /the Phaser game config in src\/main\.ts/)
+
+    const analyze = prompts.find((p) => p.opts.label === `analyze:${key}`)
+    assert.match(analyze.prompt,
+      /SHARED GROUND \(scouted once for every topic — treat it as part of your evidence\):/)
+    assert.match(analyze.prompt, /src\/main\.ts/,
+      'excluding the shared ground from a scout only works if the analyst is handed it')
+    assert.ok(analyze.prompt.indexOf('SHARED GROUND') < analyze.prompt.indexOf('Do not search yourself'),
+      'the shared ground is evidence, so it belongs before the closing instructions')
+  }
+
+  // The shared scout exhausted, so it is not resumable work and must not appear as any.
+  assert.equal(result.coverage.complete, true)
+  assert.deepEqual(
+    result.coverage.dropped
+      .concat(result.coverage.incomplete, result.coverage.unreached,
+        result.coverage.failed_channels, result.coverage.resumable.remaining),
+    [])
+})
+
+test('an empty common_ground changes nothing about the run', async () => {
+  const { result, prompts } = await run({
+    plan: PLAN({ common_ground: '' }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:common-ground')).length, 0,
+    'no shared ground means no shared scout to pay for')
+  assert.doesNotMatch(prompts.find((p) => p.opts.label === 'scout:a').prompt,
+    /A separate scout covers this shared ground/)
+  assert.doesNotMatch(prompts.find((p) => p.opts.label === 'analyze:a').prompt, /SHARED GROUND/)
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a shared scout that cannot finish is incomplete work and warns every analyst', async () => {
+  // Both rounds return the identical hits and searched surface, so the resume gains no new
+  // ground and the shared search genuinely cannot finish.
+  const stalled = HITS({ stop_reason: 'unfinished', not_reached: 'src/scenes/ was never opened' })
+  const { result, prompts } = await run({
+    plan: PLAN({ common_ground: 'the Phaser game config in src/main.ts' }),
+    'scout:common-ground': stalled,
+    'scout:common-ground#2': stalled,
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:common-ground')).length, 2,
+    'the shared scout is resumed before it may be reported, then stops as stuck')
+
+  // Evidence shared by every topic is the worst place for a half-done search to go quiet:
+  // one unfinished scout would otherwise leave every verdict resting on it (IRON LAW §4).
+  assert.ok(result.coverage.incomplete.includes('common-ground'))
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.resumable.remaining.includes('common-ground'))
+
+  const analyze = prompts.find((p) => p.opts.label === 'analyze:a')
+  assert.match(analyze.prompt, /WARNING: the shared-ground search did NOT finish/)
+  assert.match(analyze.prompt, /src\/scenes\/ was never opened/)
+})
+
+test('a plan from before common_ground existed reads as no shared ground, not as a crash', async () => {
+  const legacy = {
+    topics: [{ key: 'a', find: 'find a' }],
+    docs_needed: false, docs_question: '',
+    history_needed: false, history_question: '',
+  }
+  assert.ok(!('common_ground' in legacy), 'the legacy plan shape genuinely omits the field')
+
+  const { result, prompts } = await run({
+    plan: legacy,
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:common-ground')).length, 0)
+  assert.doesNotMatch(prompts.find((p) => p.opts.label === 'analyze:a').prompt, /SHARED GROUND/)
+  assert.equal(result.coverage.complete, true)
+})
+
 test("a channel's evidence of absence travels with its findings", async () => {
   const { result } = await run({
     plan: PLAN({ history_needed: true, history_question: 'when did X change' }),
