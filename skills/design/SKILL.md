@@ -326,14 +326,25 @@ the ratification of a design; it is not a second ceremony bolted onto every slic
 
 ## Step 5 — Hand off
 
-Once ratified — **a single-change design only; scoped mode returns instead**:
+Once ratified — **a single-change design only; scoped mode returns instead** — read the change
+out of the document rather than retyping it:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/programme.mjs" --section change --file <the design document>
+```
 
 ```
-Skill({ skill: 'vf-agentics:develop', args: '<the ratified change, in one paragraph>' })
+Skill({ skill: 'vf-agentics:develop', args: '<that output, verbatim>' })
 ```
 
-and pass the settled-evidence block through as `notes`. `develop` surveys, plans, partitions
-and implements from there.
+and pass the settled-evidence block through as `notes` — `--section settled-evidence` prints
+that one the same way. `develop` surveys, plans, partitions and implements from there.
+
+**Why the extra command instead of copying the paragraph.** The change string is a key, not a
+description: `develop`'s existing-run guard and its resume guard both compare it exactly. A
+rewrapped line or a normalized dash between one session and the next is a different change as
+far as those guards can tell, so the duplicate they exist to catch goes through and the same
+work is planned and implemented twice. Bytes never ride a model.
 
 A **programme** hands off to the graph rather than to the build:
 

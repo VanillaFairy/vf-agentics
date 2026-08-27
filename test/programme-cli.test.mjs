@@ -312,6 +312,41 @@ test('--change fails by name when the leaf carries no change section', (t) => {
   assert.match(JSON.parse(out).error, /not a finished design/)
 })
 
+test('--section --file prints one marked section of any document, byte-exact', (t) => {
+  const { root } = fixture()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  // A single-change design is one document with the same markers a leaf carries, and its
+  // change section is what gets handed to develop. No programme is needed to read it.
+  const doc = join(root, 'design.md')
+  writeFileSync(doc, [
+    '# design',
+    '<!-- vfa:section change -->',
+    'Replace the legacy timer poll with an event subscription.',
+    '<!-- /vfa:section -->',
+  ].join('\n'), 'utf8')
+
+  const run = spawnSync(process.execPath, [LIB, root, '--section', 'change', '--file', doc],
+    { encoding: 'utf8' })
+
+  assert.equal(run.status, 0)
+  assert.equal(run.stdout.trim(), 'Replace the legacy timer poll with an event subscription.')
+})
+
+test('--section fails by name when the marker is absent', (t) => {
+  const { root } = fixture()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  const doc = join(root, 'design.md')
+  writeFileSync(doc, '# design\n\nstill drafting', 'utf8')
+
+  const run = spawnSync(process.execPath, [LIB, root, '--section', 'change', '--file', doc],
+    { encoding: 'utf8' })
+
+  assert.equal(run.status, 1)
+  assert.match(JSON.parse(run.stdout).error, /not a finished design/)
+})
+
 test('--append-delivered refuses a run that is visibly still in flight', (t) => {
   const { root } = fixture()
   t.after(() => rmSync(root, { recursive: true, force: true }))
