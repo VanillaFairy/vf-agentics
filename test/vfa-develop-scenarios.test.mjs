@@ -338,6 +338,31 @@ test('a stalled verify fix round escalates as verify_failed_repeatedly with a ve
   assert.deepEqual(result.integration.merged, [], 'an escalated order is never merged')
 })
 
+test('a fix round that lands commits and moves nothing escalates on the second identical verdict', async () => {
+  // The other stall shape. `noProgress` catches a fix round that lands NOTHING; this is the
+  // coder that lands commit after commit against a red it cannot move — a flaky test, a
+  // broken toolchain — where git shows progress every round and the failing facts never
+  // change. That loop had no exit at all: it ran until the invocation was killed, taking
+  // every parallel order in the wave with it.
+  let round = 0
+  const { result } = await run({
+    agent: happyAgents({
+      'verify:': verified({ build: 'failed' }),
+      // A genuinely moving head every round, so the no-new-commit exit cannot be what fires.
+      'fix:': () => {
+        const sha = 'f'.repeat(39) + (++round)
+        return coded({ head_sha: sha, commits: [{ sha, subject: 'attempt ' + round }] })
+      },
+    }),
+  })
+
+  assert.equal(result.escalations.length, 1)
+  assert.equal(result.escalations[0].reason, 'verify_failed_repeatedly')
+  assert.ok(result.escalations[0].unresolved.some((f) => /without changing what fails/.test(f.claim)),
+    'the escalation says which stall this was')
+  assert.deepEqual(result.integration.merged, [])
+})
+
 test('a schema-whole but semantically impossible coder result escalates as incoherent_result', async () => {
   const { result } = await run({
     agent: happyAgents({ 'code:': coded({ status: 'done', commits: [] }) }),

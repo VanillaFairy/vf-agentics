@@ -2297,6 +2297,9 @@ const unfixedVerdict = (v) => v.status === 'not_fixed' || v.status === 'regresse
 // commit has made no progress, and an identical next round would make none either. No
 // counter is consulted on either path.
 async function verifyUntilGreen(wo, state, trail) {
+  // The failing facts of the previous round, as a comparable key. See the exit below.
+  let priorFailureKey = null
+
   while (true) {
     const call = await dispatch(wo, state, trail, 'the verifier for ' + wo.id, [],
       () => agent(verifierPrompt(wo, state), {
@@ -2321,6 +2324,29 @@ async function verifyUntilGreen(wo, state, trail) {
 
     const failures = verifyFailureFindings(wo, v)
     log(`${wo.id}: verification failed on ${failures.length} fact(s); dispatching a fix round.`)
+
+    // The verify-side analogue of the review loop's same-id-twice exit.
+    //
+    // `noProgress` below catches a fix round that lands nothing. It does not catch the other
+    // shape: a coder that lands commit after commit against a red it cannot move — a flaky
+    // test, a broken toolchain, a platform-specific failure — where every round makes visible
+    // progress in git and none of it changes what is failing. That loop has no exit at all,
+    // and it does not end quietly: it runs until the invocation is killed, taking every
+    // parallel order in the wave with it.
+    //
+    // Keyed on the failing facts, not on rounds. Identical facts twice running means the last
+    // fix addressed something else, and a third round asks the same question of the same code.
+    const failureKey = failures.map((f) => f.id).sort().join('|')
+
+    if (priorFailureKey !== null && failureKey === priorFailureKey) {
+      log(`ESCALATION ${wo.id}: two fix rounds landed commits and left the same facts failing.`)
+      return esc(wo, 'verify_failed_repeatedly',
+        failures.concat([runtimeFinding(wo.id + '-unmoved',
+          'two consecutive fix rounds landed commits without changing what fails',
+          failures.map((f) => f.claim || f.id).join('; '))]),
+        trail, state)
+    }
+    priorFailureKey = failureKey
 
     // The trail records every round that asked for work, verify rounds included — an
     // escalation reading `verify_failed_repeatedly` with an empty trail told a human
@@ -2379,7 +2405,7 @@ async function reviewLoop(wo, state, trail) {
   let priorBlockers = []
   let unfixedLastRound = []
   let openBlockers = []
-  let churnedLastRound = false
+  let churnedBefore = false
   let round = 0
 
   while (true) {
@@ -2434,20 +2460,32 @@ async function reviewLoop(wo, state, trail) {
       return esc(wo, 'review_not_converging', open, trail, state)
     }
 
-    // §7.3(c): the churn exit — the mirror of `stuck`. Two consecutive rounds each ruled
-    // every prior blocker fixed and still minted new blocking findings on material earlier
-    // rounds accepted. The fixes are landing; the reviewer pool is not converging; another
-    // round buys another sample, not a resolution. In the field one contract order paid
-    // eleven rounds this way across two runs and ended escalated regardless — this trigger
-    // hands the same trail to the human after two.
+    // §7.3(c): the churn exit — the mirror of `stuck`. A round that ruled every prior blocker
+    // fixed and still minted new blocking findings on material earlier rounds accepted. The
+    // fixes are landing; the reviewer pool is not converging; another round buys another
+    // sample, not a resolution. In the field one contract order paid eleven rounds this way
+    // across two runs and ended escalated regardless.
+    //
+    // TWO SUCH ROUNDS ANYWHERE IN THE LOOP, not two adjacent ones. Adjacency was defeatable
+    // by a single interposed round, and the defeating sequence is not exotic — it is what the
+    // loop does when a reviewer pool disagrees with itself: round N mints blocker X; round N+1
+    // rules X not_fixed exactly once, which cannot trip `stuck` (nothing was unfixed the round
+    // before) and which cleared this marker; round N+2 rules X fixed and mints Y, churn-shaped
+    // again against a marker that had just been reset. A period-2 cycle in which fixes always
+    // land, no id is ever unfixed twice running, and no two churn rounds are adjacent —
+    // defeating all three exits, and ending only when something outside the workflow kills it.
+    //
+    // "Two churn rounds happened" is a fact about the trail, in the same family as "the same
+    // id survived two rounds". It is not an effort cap: a loop that converges never trips it,
+    // however many rounds it takes.
     const churned = round > 1 && stillOpen.length === 0 && !verdicts.some(unfixedVerdict) &&
       blockers.length > 0 && blockers.every((f) => !priorBlockers.some((p) => p.id === f.id))
 
-    if (churned && churnedLastRound) {
-      log(`ESCALATION ${wo.id}: two consecutive rounds ruled all prior blockers fixed and still minted new ones.`)
+    if (churned && churnedBefore) {
+      log(`ESCALATION ${wo.id}: a second round ruled all prior blockers fixed and still minted new ones.`)
       return esc(wo, 'review_churn', open, trail, state)
     }
-    churnedLastRound = churned
+    churnedBefore = churnedBefore || churned
 
     const headBefore = state.head_sha
     const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, open,

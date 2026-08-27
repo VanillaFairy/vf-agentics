@@ -117,7 +117,10 @@ test('clean-fix churn escalates as review_churn instead of buying round four', a
   assert.ok(prompts.some((p) => p.opts.label === 'review:W1#3'))
 })
 
-test('a not_fixed round resets the churn marker — that path is review_not_converging territory', async () => {
+test('a loop that churns, carries, then converges is not escalated', async () => {
+  // One churn-shaped round does not close the gate. This sequence ends with nothing open,
+  // which is the only exit that says the work is done, and it reaches it — a single bout of
+  // reviewer disagreement followed by convergence is exactly the loop working.
   const { result } = await run({
     'review:': reviewerRounds([
       { findings: [major('M1')], fix_verdicts: [] },
@@ -129,6 +132,32 @@ test('a not_fixed round resets the churn marker — that path is review_not_conv
 
   assert.deepEqual(result.escalations, [])
   assert.deepEqual(result.integration.merged, ['W1'])
+})
+
+test('churn alternating with a carry round still escalates — adjacency was defeatable', async () => {
+  // The period-2 cycle that defeated all three exits. Round 2 is churn-shaped. Round 3 rules
+  // that finding not_fixed exactly once, which cannot trip `review_not_converging` (nothing
+  // was unfixed the round before) and which used to CLEAR the churn marker. Round 4 is
+  // churn-shaped again against a freshly cleared marker, and round 5 repeats round 3 — fixes
+  // always land, no id is ever unfixed twice running, no two churn rounds are adjacent.
+  //
+  // Left alone this ran until something outside the workflow killed it. Two churn rounds
+  // anywhere in the loop is a fact about the trail, not a cap on effort.
+  const { result, prompts } = await run({
+    'review:': reviewerRounds([
+      { findings: [major('M1')], fix_verdicts: [] },
+      { findings: [major('M2')], fix_verdicts: [fixed('M1')] },
+      { findings: [major('M2', { claim: 'M2 restated' })], fix_verdicts: [{ id: 'M2', status: 'not_fixed' }] },
+      { findings: [major('M3')], fix_verdicts: [fixed('M2')] },
+      { findings: [major('M3', { claim: 'M3 restated' })], fix_verdicts: [{ id: 'M3', status: 'not_fixed' }] },
+      { findings: [major('M4')], fix_verdicts: [fixed('M3')] },
+    ]),
+  })
+
+  assert.equal(result.escalations.length, 1)
+  assert.equal(result.escalations[0].reason, 'review_churn')
+  assert.ok(!prompts.some((p) => p.opts.label === 'review:W1#5'),
+    'the second churn round ends it, rather than the cycle running on')
 })
 
 test('a major with no failure scenario cannot block, even on a contract order', async () => {
