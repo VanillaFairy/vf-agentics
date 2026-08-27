@@ -55,6 +55,12 @@ const AXES = {
 // `severity` is the design ladder, not the code one. The code ladder is verbatim-diffed and
 // speaks in acceptance criteria and commit series; a probe holding it would invent a mapping
 // to a document that has neither and rule badly in both directions.
+// `stop_reason` is the same instrument every search-shaped output in this plugin carries, and
+// it is here for the same reason (IRON LAW §2). A prober that ran out of room halfway down a
+// long design returned the identical empty findings list as one that read the whole thing and
+// honestly found nothing — and an empty list on every axis computes `ratifiable: true`. That
+// is a partial attack minted into a clean bill of health on the one gate that decides whether
+// a design gets built.
 const PROBE_FINDINGS = {
   type: 'object', additionalProperties: false,
   required: ['findings', 'notes'],
@@ -69,6 +75,11 @@ const PROBE_FINDINGS = {
         evidence: { type: 'string' },  // the text or code that makes it real
       } } },
     notes: { type: 'string' },
+    // Not `required`: an exhausted prober with nothing to say must never be deadlocked by a
+    // field it forgot (the 0.12.1 postmortem). Absent, it is normalized below — toward
+    // "unfinished", never toward "done".
+    stop_reason: { type: 'string', enum: ['exhausted', 'unfinished', 'artefact_unreadable'] },
+    not_reached: { type: 'string' },
   },
 }
 
@@ -166,7 +177,16 @@ function probePrompt(axis) {
     `what is written. If a passage only makes sense once you assume what they meant, that ` +
     `assumption is the finding.\n\n` +
     `Finding nothing on your axis after an honest attack IS your report. Do not pad it — a ` +
-    `manufactured ambiguity costs a person a real conversation about a non-problem.`
+    `manufactured ambiguity costs a person a real conversation about a non-problem.\n\n` +
+    `ALWAYS set stop_reason, and set it honestly. "exhausted" means you read the whole ` +
+    `artefact and attacked all of it on your axis. "unfinished" means you did not get that ` +
+    `far, whatever the reason — then put what you never reached into not_reached, in enough ` +
+    `detail that a later probe can pick it up. "artefact_unreadable" means you could not read ` +
+    `it at all.\n\n` +
+    `Your caller cannot tell a clean document from a half-read one by looking at an empty ` +
+    `findings list — the two are the same list. Only this field separates them, and it gates ` +
+    `whether anyone is allowed to build from this design. Reporting "exhausted" for a document ` +
+    `you skimmed is not optimism, it is the one lie this pipeline cannot catch.`
 }
 
 // ---------------------------------------------------------------- run
@@ -232,6 +252,7 @@ const reports = await parallel(axes.map((axis) => () =>
 // those two look identical in a findings list and mean opposite things.
 const findings = []
 const unexamined = []
+const partiallyExamined = []
 
 axes.forEach((axis, i) => {
   const report = reports[i]
@@ -242,6 +263,18 @@ axes.forEach((axis, i) => {
     for (const f of report.findings || []) {
       findings.push({ ...f, axis: axis.key, id: `P${findings.length + 1}` })
     }
+
+    // An axis that stopped short keeps whatever it found — the findings above are already in
+    // — but it is not an axis that came back clean. Anything other than an explicit
+    // "exhausted" counts as short, including an absent field: normalizing silence toward done
+    // is exactly how a half-read document earns a clean bill of health.
+    if (report.stop_reason !== 'exhausted') {
+      partiallyExamined.push({
+        key: axis.key,
+        why: report.stop_reason || 'unstated',
+        remainder: (report.not_reached || '').trim(),
+      })
+    }
   }
 })
 
@@ -250,17 +283,51 @@ if (unexamined.length > 0) {
   log(`WARNING: no report from ${unexamined.length} axis/axes: ${unexamined.join(', ')}.`)
 }
 
+if (partiallyExamined.length > 0) {
+  log(`WARNING: ${partiallyExamined.length} axis/axes stopped before exhausting the artefact: ` +
+    `${partiallyExamined.map((a) => `${a.key} (${a.why})`).join(', ')}.`)
+}
+
 const ambiguities = findings.filter((f) => f.severity === 'ambiguity')
 const gaps = findings.filter((f) => f.severity === 'gap')
 
 log(`${findings.length} finding(s): ${ambiguities.length} ambiguity, ${gaps.length} gap, ` +
   `${findings.length - ambiguities.length - gaps.length} note.`)
 
-// The gate, computed. `ratifiable` is a count of open ambiguities and the fact that every
-// axis was actually attacked — never a prober's opinion that the document is sound. An
-// unexamined axis makes it false for the same reason a partial survey makes a plan
-// incomplete: nobody looked, and nobody-looked is not the same as nothing-there.
-const ratifiable = ambiguities.length === 0 && unexamined.length === 0
+const incomplete = partiallyExamined.map((a) => a.key)
+
+const coverage = {
+  complete: unexamined.length === 0 && incomplete.length === 0 && failedChannels.length === 0,
+  dropped: unexamined,
+  incomplete,
+  failed_channels: failedChannels,
+  unreached: unexamined.map((key) =>
+    key + ': no probe reported on this axis, so nothing here was examined for it')
+    .concat(partiallyExamined.map((a) =>
+      `${a.key}: the probe stopped "${a.why}" before exhausting the artefact` +
+      (a.remainder ? `, never reaching: ${a.remainder}` : ', without naming what it missed') +
+      ' — its findings stand, its silence does not'))
+    .concat(failedChannels.includes('repo-axes')
+      ? ['this repository\'s own review guidance was never read, so the probe covered the ' +
+         'four standing axes only and anything this project specifically asks reviewers to ' +
+         'check went unchecked']
+      : []),
+  resumable: {
+    runId: 'unknown-to-script: pair with the runId from the Workflow launch result',
+    remaining: unexamined.concat(incomplete),
+  },
+}
+
+// The gate, computed. `ratifiable` is a count of open ambiguities and the fact that the
+// artefact was actually attacked, whole — never a prober's opinion that the document is sound.
+//
+// It is now exactly "no open ambiguity, and coverage is complete". Three ways of not having
+// looked used to differ here: a dead prober made it false, but an axis that read half the
+// document and a repo whose own review standard was never discovered both left it true. All
+// three mean the same thing to the person about to build from this design — nobody looked —
+// so the gate cannot be more permissive than the coverage block it ships beside. Ratifiable
+// implies coverage.complete, in one direction and by construction.
+const ratifiable = ambiguities.length === 0 && coverage.complete
 
 return {
   artifact,
@@ -269,21 +336,5 @@ return {
   findings,
   ambiguities,
   ratifiable,
-  coverage: {
-    complete: unexamined.length === 0 && failedChannels.length === 0,
-    dropped: unexamined,
-    incomplete: [],
-    failed_channels: failedChannels,
-    unreached: unexamined.map((key) =>
-      key + ': no probe reported on this axis, so nothing here was examined for it')
-      .concat(failedChannels.includes('repo-axes')
-        ? ['this repository\'s own review guidance was never read, so the probe covered the ' +
-           'four standing axes only and anything this project specifically asks reviewers to ' +
-           'check went unchecked']
-        : []),
-    resumable: {
-      runId: 'unknown-to-script: pair with the runId from the Workflow launch result',
-      remaining: unexamined,
-    },
-  },
+  coverage,
 }

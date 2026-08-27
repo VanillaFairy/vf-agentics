@@ -24,7 +24,14 @@ const axesResult = (over = {}) => ({
   ...over,
 })
 
-const found = (findings = [], notes = 'attacked') => ({ findings, notes })
+// A prober that read the whole artefact says so. `stop_reason` is what separates "attacked
+// it all and found nothing" from "got halfway" — the two produce the same empty findings
+// list — so the default here is the exhausted one and the short reads are opt-in.
+const found = (findings = [], notes = 'attacked') =>
+  ({ findings, notes, stop_reason: 'exhausted', not_reached: '' })
+
+const stoppedShort = (over = {}) =>
+  ({ findings: [], notes: '', stop_reason: 'unfinished', not_reached: '', ...over })
 
 const finding = (over = {}) => ({
   severity: 'note', section: '§3', claim: 'c', evidence: 'e', ...over,
@@ -120,6 +127,60 @@ test('an axis whose prober died is unexamined, never a silent pass', async () =>
   assert.equal(result.coverage.complete, false)
   assert.ok(result.coverage.failed_channels.includes('probe'))
   assert.deepEqual(result.coverage.resumable.remaining, ['reinvention'])
+})
+
+test('an axis that stopped halfway is not an axis that came back clean', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: probeAgents({
+      'probe:yagni': stoppedShort({ not_reached: '§7 onward' }),
+    }),
+  })
+
+  assert.deepEqual(result.findings, [], 'the same empty list a clean probe returns')
+  assert.equal(result.ratifiable, false,
+    'a half-read artefact cannot compute a clean bill of health')
+  assert.deepEqual(result.coverage.incomplete, ['yagni'])
+  assert.deepEqual(result.coverage.dropped, [], 'it reported — it just did not finish')
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.unreached.some((u) => /§7 onward/.test(u)))
+  assert.deepEqual(result.coverage.resumable.remaining, ['yagni'])
+})
+
+test('a short read keeps the findings it did make', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: probeAgents({
+      'probe:ambiguity': stoppedShort({ findings: [finding({ severity: 'ambiguity' })] }),
+    }),
+  })
+
+  assert.equal(result.ambiguities.length, 1, 'its findings stand')
+  assert.equal(result.ratifiable, false)
+  assert.ok(result.coverage.unreached.some((u) => /without naming what it missed/.test(u)))
+})
+
+test('a missing stop_reason normalizes toward unfinished, never toward done', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: probeAgents({ 'probe:invariants': { findings: [], notes: '' } }),
+  })
+
+  assert.equal(result.ratifiable, false, 'silence is not exhaustion')
+  assert.deepEqual(result.coverage.incomplete, ['invariants'])
+})
+
+test('ratifiable implies coverage.complete — the repo-axes hole included', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: probeAgents({ axes: () => { throw new Error('unreadable') } }),
+  })
+
+  assert.deepEqual(result.findings, [], 'the four standing axes all came back clean')
+  assert.ok(result.coverage.failed_channels.includes('repo-axes'))
+  assert.equal(result.coverage.complete, false)
+  assert.equal(result.ratifiable, false,
+    "the project's own review standard was never discovered — nobody looked, one level up")
 })
 
 test('findings carry their axis and a stable id', async () => {
