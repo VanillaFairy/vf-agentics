@@ -1,0 +1,271 @@
+# vf-agentics — intention and scenario catalogue
+
+Produced 2026-08-27 by `/vf-agentics:investigate` (run `wf_65c6093a-746`, report mode,
+intelligence `max`). Survey coverage was **complete** — no dropped topics, no incomplete
+or failed channels; the closing section of the report lists the gaps the catalogue
+itself inherits. This document seeds the adversarial per-scenario probe (pass 2): one
+analyst per scenario cluster, each judging against the requirements below.
+
+## Main requirements (evaluation rubric)
+
+Stated by the user 2026-08-27. Every proposed improvement must serve at least one.
+
+1. **Configurable intelligence per task.** Intelligence level is balanced and
+   configurable at task granularity — not one dial for the whole run.
+2. **Completion is mandatory.** If a task is set, it must be done, regardless of cost.
+   Cost is never a reason to stop, truncate, or silently drop work.
+3. **Minimize cost within the chosen level.** Given the selected intelligence level,
+   any available cost reduction must be taken. Cheap where cheap suffices.
+4. **Judge the effort's shape.** Development tasks differ: some need strict
+   red-green-refactor TDD, some are simple tasks, some are in between. The system must
+   judge which shape a piece of work needs. Applies mostly to work orders.
+5. **Maximum resumability.** Detect early when a session limit is likely to be hit —
+   never start lengthy work that is doomed to be killed; split it into smaller steps.
+6. **Deterministic → script.** If something is deterministic, it must be done as a
+   script, not a model. Model calls are reserved for judgment.
+
+## Observed incidents (live evidence from this investigation, 2026-08-27)
+
+- **Session restart killed the in-flight vfa-investigate workflow.** Its journal
+  recorded 11 agents `started`, 0 `completed` — partial agent transcripts existed but
+  nothing was salvageable through the resume cache. Direct hit on requirement 5.
+- **Resume dropped the workflow args.** Relaunching via `scriptPath` +
+  `resumeFromRunId` runs the script argless; it received `question: ""` and returned an
+  empty coverage-honest result in 5 ms. The script's guard is good; the resume path
+  silently losing the question is not, and skills/investigate/SKILL.md records the
+  runId without warning that args must be re-passed on resume.
+- **A usage limit killed all 16 probe analysts mid-flight.** The account's session
+  limit landed during the adversarial pass: 16 agents dispatched, 16 errored, ~525k
+  tokens spent with zero completed agents to cache. The coverage block honestly
+  reported every scenario unprobed — but nothing predicted the limit before dispatch,
+  and no partial work survived. Requirement 5's early-detection clause, exactly.
+
+---
+
+## Intention
+
+vf-agentics is a pool of delivery skills (design → plan → programme → develop, with investigate/probe/runs/find-existing-solutions alongside) sharing one agent pool and one evidence core (vfa-survey), governed by a single IRON LAW: a set task must be done and finished no matter the cost — efficiency is an optimization, never a termination condition (docs/superpowers/specs/2026-08-08-vf-agentics-design.md §0). The one failure mode the whole plugin exists to prevent is **a partial result indistinguishable from a whole one**. Everything below is a mechanical consequence of that: no counter-based termination anywhere (lint-enforced), verdicts and completeness derived in JS from recorded facts and never self-reported by a model, every exit path returning a coverage block `{complete, dropped, incomplete, failed_channels, unreached, resumable}` where `complete` is computed as the AND of the four loss arrays being empty, and every degradation landing in exactly one named array plus prose instead of vanishing or throwing.
+
+Note before the catalogue: **survey is not a user-facing skill.** No skills/survey/SKILL.md exists; workflows/vfa-survey.workflow.js is the shared evidence core reached through design Step 1 (skills/design/SKILL.md:28) and nested inside investigate, develop, find-existing-solutions, and diagnose.
+
+---
+
+## A. Survey core (shared evidence engine — workflows/vfa-survey.workflow.js)
+
+**A1. Happy path.** Trigger: any consuming pipeline supplies a question. Behavior: planner emits topics (+ optional common_ground, history flag, docs flag) → one scout per topic plus a common-ground scout run to exhaustion → historian/doc-researcher side channels if flagged → one analyst per topic writes a verdict; coverage derived in JS at :244-257.
+
+**A2. Empty question.** Trigger: blank/whitespace question. Behavior: immediate empty return, nothing dispatched, `unreached` says so. Source: :269-272.
+
+**A3. Planner death or zero topics.** Trigger: planner throws (`.catch→null`) or returns no topics. Behavior: empty result, `unreached: ['planning produced no topics, so nothing was searched']`. Source: :310-318.
+
+**A4. Planner topic overflow.** Trigger: plan exceeds maxTopics(8). Behavior: logged only — ALL topics are still searched; cost is controlled by method, never by dropping work (IRON LAW §8). Source: :320-327.
+
+**A5. Pre-0.16 plan without common_ground.** Trigger: resumed older plan. Behavior: degrades to "no shared ground," never throws. Source: :329-332; commit bc58c9f.
+
+**A6. Resume-to-exhaustion engine (all evidence agents).** Trigger: any scout/historian/doc-researcher round ends. Behavior: the only exits are goal-shaped — `exhausted`; a thrown round (work kept, exhausted:false); a null/empty round; a dead end (`stop_reason!=='exhausted'` but blank not_reached — "another round would launder it into completeness"); or `stuck` (a round that gained no new dedup keys). No round counter exists anywhere. Source: :353-393; the "no budget stops" postmortem, commit df56404 (0.12.0).
+
+**A7. Scout resumed, ends unexhausted.** Trigger: scout stops unfinished. Behavior: resume prompt feeds back ALREADY SEARCHED / ALREADY FOUND / STILL NOT REACHED (never restart, agents/scout.md:42); if it still ends unexhausted its topic key joins `partial[]` → `incomplete`. Source: :531-552.
+
+**A8. Side channel requested but questionless.** Trigger: planner sets history/docs flag true but produces no question. Behavior: `{requested:true, result:null, error:'the planner marked it necessary and then produced no question'}` — the once-invisible bug case made loud. Source: :402-428.
+
+**A9. Side channel returns falsy or throws.** Trigger: historian/doc-researcher dies or returns nothing. Behavior: caught, logged, channel joins `failed_channels`; failed history means "any claim about when/why is unsupported" in downstream prose. Source: :407-428, :638-640.
+
+**A10. Channel truncated.** Trigger: channel returned but `stop_reason!=='exhausted'`. Behavior: joins `incomplete` (a different claim than failed), and a "COVERAGE LIMIT — never reached:" caveat is appended to its findings string. Source: :646-675.
+
+**A11. Common-ground scout unfinished.** Trigger: shared-ground search didn't finish. Behavior: its hits plus a WARNING injected into every analyst prompt; other scouts were told to skip that ground. Source: :527-529, :560-580.
+
+**A12. Analyst death.** Trigger: per-topic analyst throws (`.catch→null`). Behavior: reconciliation is by pipeline INDEX, not echoed topic string — the missing finding drops the topic key into `dropped`. Survey never throws. Source: :587-627.
+
+**A13. Coverage schema deadlock (fixed).** Trigger: exhausted agent with nothing to report omits a required coverage field. Behavior: only the payload field is schema-required; coverage fields are demanded by charter prose ("always include, empty string never omit") and normalized in JS. Source: :78, :140; agents/scout.md:36, historian.md:52, doc-researcher.md:25; commit 7a447b9 (0.12.1).
+
+## B. Investigate (skills/investigate/SKILL.md, workflows/vfa-investigate.workflow.js)
+
+**B1. Happy path, task mode (default).** Trigger: user asks investigate. Behavior: tier/mode/roots parsed (SKILL.md:28-48), workflow launched, runId recorded (SKILL.md:58-63); tasks land via TaskList→TaskCreate→TaskUpdate addBlockedBy (SKILL.md:73-78).
+
+**B2. Happy path, report mode.** Trigger: as_tasks off. Behavior: result.report handed back verbatim; the main session, not an agent, writes any file. Source: SKILL.md:91-95.
+
+**B3. Missing host Task tools.** Trigger: TaskCreate call fails (undetectable beforehand — the failure IS the branch). Behavior: fall back to TodoWrite, emit tasks in blocked_by order with "After <subject>:" prefixes, say aloud ordering is now advisory. Source: SKILL.md:80-89; enforced generically by tools/rules/task-tool-fallback.mjs.
+
+**B4. Empty question.** Trigger: blank question. Behavior: immediate report-mode return, nothing run, unreached populated. Source: workflow.js:90-99.
+
+**B5. Survey workflow unresolvable.** Trigger: both 'vf-agentics:vfa-survey' and bare 'vfa-survey' fail name lookup (`notFound()` = /not found/i). Behavior: `failed_channels:['survey']` reported explicitly as "a broken reference in this plugin, not an environmental failure." Source: workflow.js:110-143.
+
+**B6. Survey returned without a coverage block.** Trigger: malformed survey result. Behavior: `failed_channels:['survey']`, "evidence phase did not complete." Source: workflow.js:147-156.
+
+**B7. Synthesis failure.** Trigger: synthesis analyst throws (either mode). Behavior: 'synthesis' joins failed_channels; unreached notes evidence was gathered but never turned into tasks/report. Source: workflow.js:204-218, :256-265.
+
+**B8. Task-cap overflow.** Trigger: synthesis emits >12 tasks. Behavior: MAX_TASKS enforced in JS (schemas cannot bound arrays — no-schema-bounds rule); overflow recorded in BOTH `gaps` and `coverage.unreached`, complete forced false. Source: workflow.js:230-239.
+
+**B9. Degraded-coverage surfacing.** Trigger: any result with complete=false. Behavior: mandatory Step 4 — the gap leads the answer; task mode also reads `result.tasks.gaps`, the only place synthesis records holes it refused to invent tasks for. The caveats builder mirrors the coverage block into prose NOTE lines inside the synthesis prompt itself. Source: SKILL.md:97-121; workflow.js:29-33, :167-185.
+
+## C. Develop (skills/develop/SKILL.md, workflows/vfa-develop.workflow.js)
+
+**C1. Happy path.** Trigger: ratified change. Behavior: run-status check → dirty-tree gate + gitignore of .claude/vfa/ and .claude/worktrees/ (SKILL.md:71, 122) → integration worktree vfa/\<runstamp\>-integration (workflow.js:1286) → per-order coder in branch vfa/\<runstamp\>-\<order-id\> (workflow.js:2422; dash not slash, .claude/knowledge/gotchas.md:100) → verifyUntilGreen (:2218) → adversarial reviewLoop whose only success exit is a computed empty open set — the reviewer has no approval to give (:2345) → --no-ff merge into integration (:1620, :4017) → per-wave verify of merged head (:4056) → wave recorded (:4099) → one fresh integration reviewer over the whole merged diff (:4139) → stop. The single merge into the user's branch is the session's act after a human gate (SKILL.md:262); cleanup only after acceptance (SKILL.md:448); in a programme run the target is the programme branch (SKILL.md:288).
+
+**C2. Duplicate invocation (existing_run).** Trigger: fresh invocation whose change string exactly matches a planned/in-flight run on disk. Behavior: halt at checkpoint 'existing_run' before anything is bought — comparison computed in-script so a skipped skill step can't bypass it; integrated/landed rows don't block; `confirmed_duplicate` is the only override, never rewording. Source: workflow.js:3054-3149; SKILL.md:154-167; commit 31cbcdb (0.9.0 postmortem: a hard-killed run re-bought survey/plan/half of wave 1).
+
+**C3. blocking_gaps checkpoint.** Trigger: survey couldn't reach evidence the change names. Behavior: halt; re-invoke with resume_path + confirmed_gaps on a go. Source: SKILL.md:169.
+
+**C4. plan_only checkpoint.** Trigger: user parks the plan. Behavior: resume_path is the pickup. Source: SKILL.md:174.
+
+**C5. Stale tree / lost anchor.** Trigger: resumed run finds the repo moved or the anchor commit gone (only resumed runs can be stale — a fresh one just surveyed, workflow.js:3406). Behavior: drift observed against integration.base_sha/envelope.base_sha (:3421); staleWithhold holds the whole run for a human ruling absent confirmed_stale (:3456-3462); rulings are per-order, uncleared orders stay withheld and named in coverage (:3522); DRIFT is sited before setup so a stale exit leaves no worktree litter (proposal-run-lifecycle AP, line 301). Skill side: SKILL.md:178, 388.
+
+**C6. Bare SHA base_ref.** Trigger: caller passes a raw SHA. Behavior: refused at input — it re-resolves to itself and defeats drift detection. Source: workflow.js:902.
+
+**C7. Plan not persisted.** Trigger: checkpoint returns with empty resume_path. Behavior: said plainly — re-invocation must replan from scratch. Source: SKILL.md:181.
+
+**C8. Coder death / null return / incoherent result.** Trigger: agent throws, returns nothing, or returns schema-valid nonsense. Behavior: all three converge in dispatch() → haltedEsc() → logged ESCALATION with synthetic runtimeFinding, reason 'budget' or 'incoherent_result'; never a silent stop. Coherence checks: done-with-no-commits flagged (:482), fresh coder claiming landed work with no branch flagged (:499), but done-with-no-commits is VALID on a continuation — the series may already be complete (:514). Source: workflow.js:950-982.
+
+**C9. Coder blocked / needs_context.** Trigger: legal CODER_RESULT statuses. Behavior: route to escalation, not retry. Source: workflow.js:205.
+
+**C10. Whole stage returned nothing.** Trigger: a pipeline stage yields nothing per order. Behavior: lostChain() converts it to a 'budget' escalation rather than letting the order vanish. Source: workflow.js:2595.
+
+**C11. Tests stay red.** Trigger: verify keeps failing. Behavior: verifyUntilGreen loops on facts with no round counter; a fix round with zero commits or unchanged head_sha is noProgress → escalate 'verify_failed_repeatedly'. Source: workflow.js:2206-2259.
+
+**C12. Review-loop stalls (three computed exits).** Trigger: adversarial review rounds. Behavior: blocking set = criticals + majors on contract orders only with a non-empty failure_scenario (scenario-less majors go to the human gate, not the loop); open set = this round's blockers plus prior blockers ruled not_fixed/regressed — never narrowed to the round's criticals (a narrowing that once shipped a known-unfixed critical as complete). Exits: same finding id unfixed two consecutive rounds → 'review_not_converging' (:2349); two consecutive rounds clearing all priors while minting new ones → 'review_churn' (:2362; field data: 5-7 round loops measuring reviewer sampling variance, commit da43567, 0.11.0); fix round landing no commit against open criticals → 'no_fix_progress' (:2383). Fixes re-verified before re-review (:2398). Contract pinned verbatim: SKILL.md:236-260 + test/verbatim-blocks.test.mjs.
+
+**C13. Merge conflict.** Trigger: an approved branch conflicts on merge. Behavior: merging agent is ordered to NEVER resolve — report paths and stop (:1620); integration.merge_stopped_at set, every later approved order in the wave becomes approved_unmerged with its branch intact (:4017-4048); since wave loci were declared pairwise disjoint, the conflict is surfaced as a planner defect (SKILL.md:265-267).
+
+**C14. Integration worktree setup fails.** Trigger: worktree creation error. Behavior: no orders dispatched; coverage with failedChannel 'integration', full plan intact for resume. Source: workflow.js:3543.
+
+**C15. Merge broke the build.** Trigger: post-merge wave verification fails. Behavior: lineStopped — unless the failure is owned entirely by a landed red order whose green hasn't landed (red/green/refactor carve-out, SKILL.md:187-206). Source: workflow.js:4056-4090.
+
+**C16. Wave-record write fails.** Trigger: state.jsonl append error at wave close. Behavior: run continues (IRON LAW §5); 'run-state' joins failedChannels; extraUnreached warns a resume would re-dispatch already-merged orders. Source: workflow.js:4099-4119.
+
+**C17. pause-between-waves.** Trigger: opt-in flag. Behavior: human gate between waves; remaining waves deferred with resumable state. Source: workflow.js:4126.
+
+**C18. Integration reviewer dies.** Trigger: final whole-diff review agent fails. Behavior: failedChannels gains 'integration-review'; stated plainly that no one has seen the merged change whole; its criticals go to the human gate with no auto fix-loop. Source: workflow.js:4139-4157.
+
+**C19. Carried escalations.** Trigger: resume of a run with open escalations. Behavior: presented first, as decisions not information; 'carried_forward' means this invocation declined to re-buy it — offer retry_escalated, never guess. Escalations are neither scavenged nor dispatched, block dependents, re-enter only via retry_escalated (increment-6-contracts.md:212). Source: SKILL.md:185-194; workflow.js:2843-2848, :3014.
+
+**C20. Blocked orders.** Trigger: an order's provider never landed. Behavior: never dispatched; listed as [{id, blocked_by}]; never re-invoke while the naming escalation is open — the seven-orders-escalating-over-one-missing-toolchain failure this bucket prevents. Source: SKILL.md:208-216.
+
+**C21. Coupled orders.** Trigger: orders touching the user's live tree. Behavior: session implements them itself under coder commit discipline, but the verifier runs in a throwaway worktree at the pre-change SHA (its discriminator force-checks-out and would wreck uncommitted work), then the same verbatim review contract. Source: SKILL.md:218-234.
+
+**C22. Top-level crash.** Trigger: anything escaping every guard. Behavior: the catch still returns developResult() with complete=false and failed_channels:['pipeline'] — no path ends in an uncaught throw. Source: workflow.js:4263.
+
+## D. Run state & resume (.claude/vfa/runs/, lib/run-verdict.mjs, lib/ledger.mjs, lib/run-status.mjs)
+
+**D1. Record authorship.** Trigger: any wave activity. Behavior: workflow decisions → state.jsonl ('wave'/'order-approved'/'order-escalated', workflow.js:1787-1825); agents journal their OWN observations in the execution that performed them (coder 'coder-done', verifier 'verify-observed', merger 'merge-observed') — closing the window where work exists and disk doesn't say so (0.14.0 postmortem: a wave's merges existed but the separate recorder courier was killed by the same limit; commit 5344f2b). One monotonic seq minted by the workflow spans both files (a counter, not a clock — an agent that can read a clock can fabricate one; commit c82a8ce, 0.15.0). lib/ledger.mjs appendLine is the sole physical writer and refuses any line whose digest doesn't recompute (:93). Agents never journal verdicts — verdicts are re-derived on resume.
+
+**D2. Journal write refused.** Trigger: agent can't append. Behavior: degrade — stop_reason 'unwritable', "return your result anyway" (agents/verifier.md:115, run-state.md:69); appendState failures .catch-swallowed (workflow.js:1750).
+
+**D3. Resume transport.** Trigger: develop re-invoked with resume_path. Behavior: survey/plan skipped (:2670-2677); one courier runs lib/run-verdict.mjs and pastes its stdout; workflow recomputes the payload digest before believing a word ("bytes never ride a model," increment-9-contracts.md:29); transport failure buys exactly one retry one model tier up (:2728-2772); both tiers failing → loud non-dispatching halt with resume_path (:2774-2793). Lineage: the haiku loader paraphrased 13 of 14 orders (0.9.1, commit 7b377d3), then the fan-out — no dispatch ever carries the whole plan, one courier per manifest row against its own digest (0.10.0, commit d5d947b).
+
+**D4. Change guard.** Trigger: resume where the plan was written for a different change string. Behavior: halt before any dispatch. Source: workflow.js:2807-2825.
+
+**D5. Clean-run fast path.** Trigger: resume of a run that recorded nothing. Behavior: empty ledger + no vfa/\<runstamp\>-* branches proven by one `git branch --list`, logged aloud so the skipped archaeology is visible. Source: lib/run-verdict.mjs:698; workflow.js:2829-2835.
+
+**D6. Stage-wise salvage ladder.** Trigger: resume of a dirty run. Behavior: replay() folds both ledgers per order; nextActionFor() walks merge→review→verify→continue-series→code and trusts a stage only where the run record AND git's branch head agree; disagreement redoes the stage; rebuild ('code') is the ladder's bottom. Continue-series is offered only when the run demonstrably speaks the coder-done dialect (some other order recorded one) — a pre-0.14 run with commits resumes at verify, never continue (run-verdict.mjs:493-509). Source: run-verdict.mjs:51, 247, 451-509; commit 5abc24b (0.13.0).
+
+**D7. Merge done, record lost.** Trigger: order branch is an ancestor of integration but no wave line recorded it. Behavior: ancestry alone is NEVER trusted (a coder that died before its first commit is also an ancestor — the empty-branch adversarial finding, increment-6-contracts.md:56-64); a second witness is required (approval head match or merge-observed journal line); reconciled orders get a corrective wave line and one verification of that head. Source: run-verdict.mjs:474-483; workflow.js:2872, :3710.
+
+**D8. Corrupt run state.** Trigger: plan.json missing/unparseable or verdict damaged beyond retry. Behavior: corruptHalt — failed_channels:['run-state'], nothing dispatched, and pointedly never "every order coupled" (a documented field failure that offered four merged orders back for reimplementation). Source: workflow.js:2688, :2774-2793.
+
+**D9. Uncommitted work.** Trigger: dirty worktree found on resume. Behavior: reported via git status --porcelain, never adopted automatically; commits are the unit of salvage. Source: run-verdict.mjs:759; proposal-deterministic-ledger-resume:203.
+
+**D10. Concurrent runs / existing worktree / pruned worktree.** Trigger: multiple runs in flight, or resume finds its branch/worktree already present or pruned. Behavior: attach/enter, never delete or force (:3286); observed-vs-recorded integration head mismatch logged and git wins (:3602); pruned worktrees rebuilt for salvaged branches since commits survive on branches (:3651).
+
+**D11. Envelope adoption.** Trigger: resume with caller-supplied conditions. Behavior: roots/intelligence/programme/slice/base adopted from the plan on disk, overrides logged; only 'change' must match or halt. Source: workflow.js:2955; proposal-run-lifecycle:131.
+
+## E. Runs skill (skills/runs/SKILL.md, lib/run-status.mjs)
+
+**E1. List/pick.** Trigger: "what runs do I have" / "resume X". Behavior: every field derived fresh per call, nothing stored; archived/ filtered, newest first; the printed word is 'label' not 'status' because coupled orders and escalations leave no state.jsonl trace — labels carry "N coupled, not tracked here / N escalated" qualifiers so a bare word never overclaims. Source: SKILL.md:19-43; run-status.mjs:261, :339.
+
+**E2. No runs.** Trigger: empty runs dir. Behavior: say so and stop; do not offer to start one. Source: SKILL.md:64-65.
+
+**E3. Unreadable run.** Trigger: unparseable plan.json. Behavior: status 'unknown', label 'unreadable' — never 'planned', which would invite re-planning possibly-merged work. Source: run-status.mjs:147; SKILL.md:45-47.
+
+**E4. Interruption signatures.** Trigger: mid-wave kill. Behavior: approved_unmerged and measured_unapproved each derived from two independent records (state + journal); read aloud as reasons to resume, not re-plan; greenness re-derived by develop, never restated here. A torn JSONL line from a killed agent is noted and skipped, never thrown (run-status.mjs:283). An unconfirmed merge (journal-only, no wave line) keeps the run in-flight — a journalled merge alone once promoted a run to 'integrated', which the duplicate guard reads as finished, buying the change twice (commit acb86ec). Git unable to answer ancestry returns null, not false, so landed isn't demoted (run-status.mjs:326). Source: SKILL.md:49-62; run-status.mjs:81, :161.
+
+**E5. Handoff and archive.** Trigger: user picks a run / asks to tidy. Behavior: handoff to develop carries only change + resume_path (roots/notes/intelligence travel through the loader under schema, never as conversation free text, SKILL.md:76-88); archive is move-only into runs/archived/, explicit go required (SKILL.md:93-103).
+
+## F. Design (skills/design/SKILL.md)
+
+**F1. Happy path.** Trigger: a change worth designing. Behavior: survey BEFORE asking the user anything (:26); find-existing-solutions when building a capability (:65); one-question-at-a-time interview with recommendations (:119); 2-3 parallel analyst approach drafts with fixed stances (:155-166); mandatory probe via the vfa-probe workflow (:187-199); artefact with vfa:section markers (:229); handoff single change→develop, programme→plan (:327).
+
+**F2. Existing-solutions sweep unfinished.** Trigger: sweep incomplete while the design builds from scratch. Behavior: becomes a blocking open question. Source: :65.
+
+**F3. Open-question ladder.** Trigger: unresolved questions at handoff time. Behavior: blocking/parked/lookup/compost; HARD rule — an open blocking question never hands off to develop (:135-145; lint-pinned by tools/rules/design-gate.mjs).
+
+**F4. Panel skip.** Trigger: decision space already pinned. Behavior: legal only with recorded reason — visible, not silent. Source: :183-185.
+
+**F5. Session dies mid-design.** Trigger: leaf missing required section markers. Behavior: programme skill mechanically re-derives it as awaiting-design — that IS the recovery. Source: :281; skills/programme/SKILL.md:110-112.
+
+**F6. Probe findings loop.** Trigger: probe returns ambiguities. Behavior: no bounded re-probe retry exists, deliberately (IRON LAW §1) — each ambiguity is resolved with the user and the count-based gate recomputed. Source: :206, :225.
+
+**F7. Ratification gate.** Trigger: design done. Behavior: HARD GATE — no implementation until the user ratifies in words; silence and "looks good" don't count. Source: :316.
+
+**F8. Scoped mode.** Trigger: programme with later undesigned slices. Behavior: slices stay undesigned until frontier; design re-invoked per slice, probe reruns per leaf. Source: :289.
+
+## G. Probe (skills/probe/SKILL.md, workflows/vfa-probe.workflow.js)
+
+**G1. Happy path.** Trigger: a written artefact to attack. Behavior: axes = target repo's own review guidance + four standing axes (contract ambiguity, unnamed invariants, YAGNI, reinvention); probers never see the author's reasoning; findings get stable ids; `ratifiable = ambiguities===0 && unexamined===0`, computed — gap severity alone does NOT block. Disposition is the user's; deliberately no fix loop, no author rebuttal. Source: workflow.js:194-217, :263; SKILL.md:12, :50, :76; test/vfa-probe-scenarios.test.mjs:98.
+
+**G2. Probe finds nothing.** Trigger: honest attack, no findings. Behavior: "finding nothing on your axis IS your report" — clean probe stays ratifiable, coverage complete; padding forbidden. Source: workflow.js:168; test:41, :160.
+
+**G3. Prober dies.** Trigger: an axis's agent fails. Behavior: axis → unexamined; ratifiable forced false; coverage.dropped names it; failed_channels gains 'probe'; resumable.remaining lists it — nobody-looked stays distinguishable from nothing-found. Source: workflow.js:230-251; test:108.
+
+**G4. Repo guidance unreadable.** Trigger: repo-axes read fails. Behavior: degrade to the four standing axes; failed_channels 'repo-axes'; unreached states the project's own review asks went unchecked — warning, not fatal. A repo that honestly declares no guidance (stop_reason no_guidance_found) stays complete. Source: workflow.js:202-215, :279-283; test:139.
+
+**G5. No artefact path / empty-charge axis.** Trigger: missing input. Behavior: nothing dispatched, ratifiable false, unreached says so (:174-190; test:151); an axis with an empty charge is silently not dispatched (test:68).
+
+**G6. Workflow dispatch fails at skill level.** Trigger: probe workflow can't launch. Behavior: never silently substitute a self-probe — self-probe is offered, explicitly named weaker (misses premise defects), user decides. And the skill may not report a clean probe while coverage.complete is false. Source: SKILL.md:27, :70, :91.
+
+## H. Plan (skills/plan/SKILL.md, lib/programme.mjs)
+
+**H1. Happy path.** Trigger: ratified multi-slice design. Behavior: programme.json + plan.md built with the user; the artifact's existence IS the authorization (no approval field to go stale); slices are deliverables, not layers; plan decides slices, the run-level planner decides work orders — same word, two grains, never meet. Source: SKILL.md:3, :21, :35, :50, :192.
+
+**H2. Defective decomposition.** Trigger: bad programme.json. Behavior: the LOADER, not the author's reading, refuses eleven defect kinds (duplicate id, cycles, contract with no paths, consumes naming a non-dependency, bare ordering with no reason, …) and repairs nothing. Source: SKILL.md:73, :122; increment-5-contracts.md:120.
+
+**H3. Revision.** Trigger: re-invoking plan. Behavior: scoped to the pending subgraph only; delivered slices never edited. Auto-routes to revision: a drift flag (landed diff intersects pending consumed paths) and leftover follow-up work becoming a new slice. Source: SKILL.md:165-181; programme.mjs:634.
+
+**H4. Task tools missing.** Trigger: TaskCreate/TaskUpdate unavailable. Behavior: TodoWrite fallback, said aloud. Source: SKILL.md:186.
+
+## I. Programme (skills/programme/SKILL.md, lib/programme.mjs)
+
+**I1. Status/drive routing.** Trigger: user asks status or to advance. Behavior: deriveProgramme() computes every slice state fresh; a TOTAL routing table — awaiting-design→design, ready→drive, in-flight→offer resume never re-plan, delivery-pending→finish between-slice acts, delivered-gaps-open→acceptance ruling, blocked→name deps and stop, unknown→never dispatch. Reconciliation precedes new work. Source: SKILL.md:60-83; programme.mjs:449.
+
+**I2. Drive a ready slice.** Trigger: frontier slice with a ratified leaf. Behavior: change extracted mechanically from the marked section; notes assembled byte-for-byte by `--notes` (missing marker fails loudly by name); invoke develop with roots=programme worktree, base_ref=programme branch; on resume pass no notes — the run adopts its envelope from disk. Source: SKILL.md:118-140.
+
+**I3. Develop returns a checkpoint.** Trigger: blocking_gaps/stale/plan_only comes back. Behavior: NOT a delivery — routes through develop's own step 3; nothing below (merge/append/drift) runs, nor while an escalation is open. Source: SKILL.md:142-148.
+
+**I4. delivery-pending (interrupted between-slice acts).** Trigger: a FINISHED develop run with no merge/append-delivered recorded. Behavior: derives as delivery-pending (programme.mjs:502); complete the acts, checking git whether the merge already landed before redoing it. Source: SKILL.md:80.
+
+**I5. Slice merge conflict.** Trigger: merge into programme branch conflicts. Behavior: the tree moved or two slices overlapped undeclared — surfaced, never silently resolved. Source: SKILL.md:150-161.
+
+**I6. Event-log integrity.** Trigger: delivered/merged events. Behavior: append verbs validate shape and refuse duplicates — the only path into the log; the run's coverage block is copied verbatim, never recomputed; external/brownfield work enters only via `--run ''` plus a required `--ruling`. Source: SKILL.md:163-181.
+
+**I7. Corrupt programme state.** Trigger: one malformed JSONL line or unknown event type. Behavior: parseEvents fails closed and the WHOLE programme derives as unknown — a bad line names no slice, so its blast radius is undecidable; never dispatch over it; repair is a human fixing one line. Foreign/stale runs are listed in their own section, never counted as loose ends. Source: programme.mjs:275, :298, :455; SKILL.md:85-89.
+
+**I8. Drift after each merge.** Trigger: a slice lands. Behavior: `--drift` intersects moved paths against pending designed slices' consumed contracts — a path-set intersection, never a model's reading; 'flagged' (contract moved) reported separately from 'unexamined' (undesigned, nothing to check), because conflating them reassures the user about a slice nobody looked at. Source: SKILL.md:183-199; programme.mjs:634.
+
+**I9. Standing advance mode.** Trigger: advance='standing'. Behavior: proceeds through implementation but stops, naming the trigger, on ANY user-decision point (undesigned leaf, escalation, checkpoint, gap acceptance, drift flag, HUMAN: criterion, review critical, unknown/delivery-pending, loader failure, complete) — the rule is the closure, the list its known instances. Source: SKILL.md:208-218.
+
+**I10. Landing.** Trigger: programme-complete — a distinct predicate from an empty frontier, so a delivered-but-gapped slice never reads finished (programme.mjs:544). Behavior: one ask, presenting the user's branch drift against the opened anchor with it (divergence before the yes is a conversation, after it a conflict), then `git merge --no-ff` + `--append-merged`; the user's checkout is otherwise untouched (lint-pinned by design-gate.mjs). Source: SKILL.md:220-233.
+
+## J. Find-existing-solutions (skills/find-existing-solutions/SKILL.md, workflows/vfa-find-existing-solutions.workflow.js)
+
+**J1. Happy path.** Trigger: considering building something the world may already have. Behavior: Frame (analyst) → Search (one doc-researcher per angle + one scout on the repo-dependency channel, the single inside-the-repo exception) → Assess; viable/ruled_out computed in JS from declared disqualifiers_hit, never model-asserted suitability. Source: SKILL.md:19, :63, :88-89; workflow.js:703.
+
+**J2. Framing yields zero angles.** Trigger: frame stage fails. Behavior: immediate return, failed_channels:['frame'], unreached states the result says nothing about whether a solution exists. Source: workflow.js:345.
+
+**J3. Empty result set.** Trigger: nothing gathered. Behavior: BINDING rule — you may not report "nothing exists, build it" while coverage.complete===false; "searched and found nothing" (evidence FOR building) presented apart from "never reached" (evidence of nothing); failed 'repo' channel means the already-a-dependency claim is unsupported; failed 'assess' means empty disqualifiers_hit means nobody checked. Source: workflow.js:598-600; SKILL.md:99-110.
+
+**J4. Stuck angle / dropped candidate.** Trigger: a round gains no new candidates or surface. Behavior: searchUntilComplete stops as 'stuck' rather than looping (workflow.js:430); a candidate dropped by assessment is recovered by set-difference (:669, :684).
+
+## K. Lint layer (tools/lint.mjs + tools/rules/*.mjs)
+
+**K1. Enforcement point.** Trigger: `node tools/lint.mjs` (the documented pre-merge command, CLAUDE.md:102). Behavior: walks the tree (skipping .git/node_modules/docs/test, POSIX-normalized paths so Windows backslashes can't defeat `applies` regexes), exits 1 on any finding as `file:line [rule] message`. There is no CI file — the gate is convention. A malformed rule module throws at load naming the offending file (lint.mjs:12, :68-77, :97, :117-121).
+
+**K2. The rules.** no-turn-caps — bans max_turns/max_tool_calls tokens, counter-stop prose, and stop_reason near 'budget' across workflows/skills/agent charters (IRON LAW §1). workflow-meta — missing/non-literal meta, missing vfa- prefix, phase() call not in meta.phases. design-gate — presence test for the develop-handoff, HARD GATE, blocking-question, programme-branch-merge, and untouched-checkout clauses in the two governed SKILL.md files. task-tool-fallback — any SKILL.md mentioning Task tools must mention TodoWrite. no-imports — workflow sandbox has no module loader. coverage-block — no return / no coverage key / vacuous coverage / bare `return;` ("early abort indistinguishable from finished"). qualified-agent-types — agentType must be '\<plugin\>:\<agent\>'. no-self-verdict — bans boolean approved/passed/ok/complete/success keys in structured-output schemas (IRON LAW §2). no-schema-bounds — bans minItems/maxItems etc., which the platform strips. agent-frontmatter — frontmatter present, required keys, name==filename stem, model in the allowed set.
+
+---
+
+## Known gaps this catalogue inherits
+
+- **Unread code ranges in vfa-develop.workflow.js** (roughly 1081-1600, 1782-2199, 2600-3050, 3200-3480 across the two code scouts): planner dispatch and plan-persistence mechanics are attested via SKILL.md prose and checkpoint contracts, not code; a planner-death branch beyond "empty resume_path" may exist unread. lib/run-verdict.mjs was read only in part; verbatim-block and scenario test files were grepped, not read.
+- **Missing host primitives are unguarded.** Only nested-workflow name lookup has a handling branch (notFound in investigate/develop). No code path anywhere checks for the absence of the agent/workflow/pipeline/parallel primitives themselves — the plugin implicitly treats the workflow runtime as guaranteed. Missing Task tools are handled only at the skill layer (TodoWrite fallback).
+- **Review-loop pathological alternation** (rounds alternating stuck-ish and churn-ish, never two alike consecutively) has no explicit exit beyond dispatch()'s budget escalation; reachability was not established.
+- **Spec-vs-code coder-model tension**: intelligence-tiering spec §7 leaves "coder pinned to Opus" open while agents/coder.md reads sonnet (deliberate per commit d91f49f and workflow.js:676 — opus only at max intelligence); the spec addendum flags this as unresolved.
+- **The diagnose pipeline** nests vfa-survey but was outside every scout's remit and is not catalogued here; likewise the UE sibling plugin's preflight/revert scenarios. Programme-layer iteration 3 was ratified with its third probe round waived, so its invariants carry weaker adversarial assurance than increments 6-9.
