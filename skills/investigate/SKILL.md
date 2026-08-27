@@ -71,6 +71,19 @@ do not guess at results before the notification arrives.
 There is no bespoke-script path. If a question genuinely does not fit this shape, say so rather
 than authoring a one-off workflow — a shape that recurs belongs in `workflows/` as its own file.
 
+**Resuming an interrupted run: re-pass the args.** A resume re-executes the script, which
+reads nothing from the prior run — so `resumeFromRunId` alone runs it with no question at all,
+and it returns an empty result in milliseconds while the interrupted run's cached agents go
+unreachable. The spent resume is the whole loss; there is no second one.
+
+```
+Workflow({ scriptPath, resumeFromRunId, args })
+```
+
+`args` is in `coverage.resumable.args` of the result you are resuming from, exactly as it was
+launched. When you no longer have that result, rebuild it from this step's argument list —
+`question` above all, since that is what the guard tests.
+
 ## Step 3 — Land the result
 
 **Task mode:**

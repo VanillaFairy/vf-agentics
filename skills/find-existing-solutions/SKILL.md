@@ -71,6 +71,12 @@ launch result — the script cannot read its own id, and `runId` is what pairs w
 Let it run in the background. Tell the user they can watch with `/workflows`. Do not poll, and
 do not guess at results before the notification arrives.
 
+**Resuming an interrupted sweep: re-pass the args.** A resume re-executes the script, which
+reads nothing from the prior run, so `resumeFromRunId` on its own runs it with no capability
+to search for — an empty result in milliseconds, and the interrupted run's cached agents out
+of reach. Pass `Workflow({ scriptPath, resumeFromRunId, args })` with the args from
+`coverage.resumable.args`.
+
 ## Step 3 — Present it, in this order
 
 1. **What you already have.** `already_present` first, always. A dependency you are already
