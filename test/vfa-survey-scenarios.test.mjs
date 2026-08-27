@@ -40,6 +40,33 @@ const run = (script, over = {}) => runWorkflow(WF, {
   agent: scriptedAgents(script),
 })
 
+// ------------------------------------------- the intelligence dial
+
+// `develop` forwards its own dial into this nested call, so a run dialled to `low` reaches
+// its analysis here and nowhere else. The dial is only real where it reaches an `opts.model`.
+test('`low` puts the analysts on sonnet and leaves the search tier alone', async () => {
+  const { prompts } = await run(
+    { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
+    { intelligence: 'low' },
+  )
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'sonnet', 'the analyst that plans the topics is a judging agent')
+  assert.equal(modelOf('analyze:a'), 'sonnet', 'and so is the one that rules on each')
+  assert.equal(modelOf('scout:a'), undefined, 'search never moves with the dial')
+})
+
+test('a tier this script does not define is served as normal, not as itself', async () => {
+  const { prompts } = await run(
+    { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
+    { intelligence: 'cheap' },
+  )
+
+  assert.equal(prompts.find((p) => p.opts.label === 'plan').opts.model, undefined,
+    'an unrecognised tier that dispatches at the frontmatter default while the caller reports ' +
+    'the tier it typed is a run billed at one price and described at another')
+})
+
 // ------------------------------------------- a requested channel that produced nothing
 
 test('a channel marked necessary with no question is a failure, not a silent skip', async () => {

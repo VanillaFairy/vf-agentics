@@ -1000,6 +1000,80 @@ test('every exit path returns the integration handle, even the ones that dispatc
   assert.equal(result.coverage.complete, false)
 })
 
+// ---------------------------------------------------------------- the intelligence dial
+//
+// Three positions, each moving a different set of agents. A dial is only real where it
+// reaches an `opts.model`, so that is what these read — and the absences matter as much as
+// the values: a tier that grew a coder override would show up here as a model where there
+// should be none.
+
+test('`low` puts every judging agent on sonnet and moves nothing else', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'low' },
+    agent: happyAgents(),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'sonnet', 'the planner is a judging agent')
+  assert.equal(modelOf('review:W1#1'), 'sonnet', 'so is every per-order reviewer')
+  assert.equal(modelOf('review:integration'), 'sonnet', 'and so is the integration reviewer')
+
+  // The coder already runs sonnet by frontmatter, so what these pin is that the dial did not
+  // TOUCH it. An explicit model here would mean `low` had grown a coder tier of its own, and
+  // the next edit to coder.md would silently stop applying to low-tier runs.
+  assert.equal(modelOf('code:W1'), undefined, 'the coder keeps its frontmatter at `low`')
+  assert.equal(modelOf('verify:W1'), undefined, 'the mechanical tier never moves with the dial')
+})
+
+test('`max` still carries the coder up with the judges', async () => {
+  // The coupling `low` deliberately does not have. It is asserted here so that adding the
+  // third position cannot quietly become a rewrite of the second one.
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'max' },
+    agent: happyAgents(),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'fable')
+  assert.equal(modelOf('review:W1#1'), 'fable')
+  assert.equal(modelOf('code:W1'), 'fable')
+  assert.equal(modelOf('verify:W1'), undefined)
+})
+
+test('a tier nobody defined is served as `normal`, not as itself', async () => {
+  // The dial is a closed set of three. A typo that fell through would dispatch with
+  // `model: undefined` and read, in every log and every envelope, as the tier the user typed.
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'cheap' },
+    agent: happyAgents(),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), undefined)
+  assert.equal(modelOf('code:W1'), undefined)
+})
+
+test('a resumed run adopts a recorded `low` the same way it adopts any other tier', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
+  const { prompts, logs } = await runWorkflow(WF, {
+    args: { change: 'add the thing', resume_path: RUN_DIR, plugin_root: 'C:/plugin' },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      ...resumeLoad(loaded(orders, { envelope: envelope({ intelligence: 'low' }) })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  assert.equal(prompts.find((p) => p.opts.label === 'review:W2#1').opts.model, 'sonnet',
+    'a plan written under `low` is reviewed under `low` when it is picked up again')
+  assert.ok(!logs.some((l) => /Override: intelligence/.test(l)),
+    'a caller who passed no tier has disagreed with nothing')
+})
+
 // ---------------------------------------------------------------- the plan envelope
 //
 // A resumed run must implement under the conditions its plan was written for, not under

@@ -9,7 +9,8 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 
 ## Parse arguments
 
-**Intelligence** sets the tier for the whole run — the judging agents and the coder both.
+**Intelligence** sets the tier for the whole run — the judging agents, and at `max` the coder
+with them.
 
 <!-- vfa:verbatim intelligence-tier -->
 The dial follows the model this session is running, never how important the work feels:
@@ -22,6 +23,19 @@ Fable session that leaves the dial at `normal` has its work judged by a weaker m
 one the user is talking to. Only the user moves it — a bare leading `max` token, or
 `--intelligence=max`.
 <!-- /vfa:verbatim -->
+
+**`low` is this skill's own downshift, and only the user asks for it.** It puts the judging
+agents on Sonnet — the planner, every reviewer, and the analysts of the nested survey — and
+leaves the rest of the run exactly where it was: the coder, the verifier, the scouts and the
+courier all keep their own model. Pass it as a bare leading `low` token, or
+`--intelligence=low`.
+
+Nothing derives it. The block above derives `max` and `normal` from the model this session is
+running and stops there, because `low` puts the judges on the same model as the coder and
+leaves no strong reader anywhere in the loop: a defective work order implemented faithfully
+clears verification, and then clears a review fenced to the same defective criteria. That is a
+real trade for a cheap run, and it belongs to the user — say what it costs when they ask for
+it, and never reach for it on their behalf.
 
 **A resume derives nothing.** When you are resuming a parked run (step 3e), pass no
 `intelligence` at all — the plan's envelope carries the tier it was planned at, and the

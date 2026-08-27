@@ -177,7 +177,17 @@ Additive. Every kind from increments 6 and 7 parses exactly as before.
 | `order-escalated` | state | workflow | An escalation that reaches only the wave line is lost when the invocation dies mid-wave — so a resume re-dispatches an order that already defeated a coder, a verifier or a review loop, at full price. Carries `reason`. |
 | `coder-done` | journal | the coder | Git shows commits on a branch whether the coder finished or died mid-series. Only the author knows which, and the difference decides `verify` versus `continue-series`. |
 | `review-observed` | journal | the reviewer | One line per round: rounds already spent become visible instead of restarting from zero. |
-| `discovery` | journal | whoever learned it | Wave lines re-listed every discovery cumulatively; in one field run that was most of `state.jsonl` by volume. Journalled once by its discoverer, unioned by the verdict. |
+| `discovery` | journal | whoever learned it | **Read, not yet written.** The reader is in place and the kind is reserved; no dispatch emits one today. |
+
+**Wave lines carry only what their own wave learned.** They used to carry the whole accumulated
+discovery set on every line, so a run's discoveries were re-serialized once per wave — in one
+field run that duplication was the majority of `state.jsonl` by volume, on the one file a resume
+has to read in full. The verdict unions the per-wave deltas back, which is what it always did,
+so old logs carrying the cumulative form read identically.
+
+`discovery` is the eventual home for the same information written once by whoever learned it.
+It is listed here because the reader ships now and a later increment will cite this section —
+but a registry that describes a record nothing produces is a trap, so the row says so plainly.
 
 ## 5. What increment 9 supersedes
 

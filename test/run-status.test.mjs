@@ -396,3 +396,43 @@ test('a line written before kind existed is still a wave line', () => {
   assert.equal(run.waves_recorded, 1)
   assert.deepEqual(run.merged, ['W1', 'W2', 'W3'])
 })
+
+// --- the escalation record, and the two eras of it -------------------------------------------
+
+test('an order-escalated line is read as an escalation', () => {
+  // Written the instant an order escalates, so a run killed mid-wave keeps the verdict its
+  // wave line never got to record. The older wave-line form still counts; both join one union.
+  const state = [
+    { kind: 'order-escalated', seq: 3, wave: 1, order: 'W2', reason: 'review_unconverged',
+      merged: [], approved_unmerged: [], escalated: [], discovered: [] },
+  ]
+
+  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).escalated, ['W2'])
+})
+
+test('both eras of the escalation record are unioned, and reported once', () => {
+  const state = [
+    { kind: 'order-escalated', seq: 3, wave: 1, order: 'W2', reason: 'coder_blocked',
+      merged: [], approved_unmerged: [], escalated: [], discovered: [] },
+    wave({ escalated: ['W2', 'W3'] }),
+  ]
+
+  assert.deepEqual(deriveRun('20260816-143005', plan(), state, null).escalated, ['W2', 'W3'])
+})
+
+test('an order that escalated and later merged is not reported as escalated', () => {
+  // An escalation is a fact about a moment, not a permanent property. The retry that cleared it
+  // is recorded as a merge, and reporting the order as escalated afterwards sends a human
+  // looking for a failure the run already resolved — and offers `retry_escalated` for work
+  // that is already in the integration branch.
+  const state = [
+    { kind: 'order-escalated', seq: 2, wave: 1, order: 'W2', reason: 'coder_blocked',
+      merged: [], approved_unmerged: [], escalated: [], discovered: [] },
+    wave({ wave: 2, merged: ['W2'] }),
+  ]
+  const run = deriveRun('20260816-143005', plan(), state, null)
+
+  assert.deepEqual(run.escalated, [])
+  assert.deepEqual(run.merged, ['W2'])
+  assert.doesNotMatch(run.label, /escalated/)
+})

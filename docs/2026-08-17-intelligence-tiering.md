@@ -226,3 +226,27 @@ uses for carried evidence: measured on eva, ruled by the user, never assumed.
    the programme layer, the dispatch-time Opus spec agent with Sonnet executors.
 5. **Watch the right needles:** under cheaper coders, falling escalation rates and
    late-stage discoveries are the failure signature — a quiet run is not a good run.
+
+---
+
+## 7. Addendum, 2026-08-27 — the `low` position
+
+A third dial position ships in 0.18.0: `low`, which puts the judging agents — planner,
+reviewers, and the nested survey's analysts — on Sonnet and moves nothing else. The coder
+keeps its frontmatter, and so do the verifier, the scouts and the courier.
+
+This is in direct tension with §2's principle and §6.2's "never weaken the generator and the
+judge together": step 1's coder pin was never applied, so `agents/coder.md` still reads
+`model: sonnet`, and a `low` run therefore has Sonnet on both sides of the loop. The hole §2
+describes is real and unchanged — a defective work order implemented faithfully clears
+verification, then clears a review fenced to the same defective criteria.
+
+What makes it shippable is that nothing *derives* it. The `intelligence-tier` verbatim block
+still derives only `max` and `normal` from the session model; `low` is a downshift the user
+asks for by name, and `skills/develop/SKILL.md` requires the skill to say what it costs when
+they do. The ruling in §6.2 stands as advice to sessions, not as a configuration the dial
+refuses to express.
+
+If step 1 is ever applied (coder → `opus`), `low` becomes the coherent cheap tier §2 would
+have endorsed: Sonnet judges over an Opus coder, generator strong and judge cheap, which is
+the safe half of the asymmetry rather than both halves weakened.
