@@ -3994,15 +3994,60 @@ try {
     })
   }
 
+  // ---------------------------------------------- 3d. will this run fit the session
+  //
+  // The IRON LAW says a set task is finished regardless of cost. It does not say the task has
+  // to be finished in ONE INVOCATION, and the two have been quietly conflated: a run that
+  // dispatches a wave it cannot pay for does not finish that wave more slowly, it dies in the
+  // middle of it and takes every parallel order down at once. Work in flight when a session
+  // limit lands is not resumed cheaply — the agents that had not yet returned left nothing to
+  // resume from. Three such deaths were observed in one afternoon.
+  //
+  // So this is not a budget stop. §1 forbids ending work because effort was spent, and nothing
+  // here ends anything: it moves the boundary to a place where stopping is FREE. Waves are
+  // already the run's natural seam — wave k+1 branches from the head wave k's merges produced,
+  // the state line is written, and a resume picks up exactly there. Stopping at a seam this
+  // run chose beats being killed at a point the platform chose.
+  //
+  // It fires only when the caller set a token target. With no target `remaining()` is Infinity
+  // and none of this runs, because there is then no honest signal to act on — a script cannot
+  // see an account's usage limit, and guessing at one would halt runs that would have finished.
+
+  const spentNow = () => (budget && typeof budget.spent === 'function' ? budget.spent() : 0)
+  const remainingNow = () => (budget && typeof budget.remaining === 'function' ? budget.remaining() : Infinity)
+  const hasTarget = Boolean(budget && budget.total)
+
+  // Dispatches one order costs at a floor: coder, verifier, reviewer, merge. Fix rounds and
+  // review rounds sit on top, which is why this is a floor and is named one — a projection
+  // that flattered the next wave would defeat the whole point.
+  const DISPATCHES_PER_ORDER = 4
+  const waveCost = (ids) => ids.length * DISPATCHES_PER_ORDER + 1
+
+  const plannedDispatches = waves.reduce((n, ids) => n + waveCost(ids), 0)
+  log(`Plan size: ${orders.length} order(s) across ${waves.length} wave(s) — at least ` +
+    `${plannedDispatches} agent dispatches before the integration review.`)
+
+  if (hasTarget) {
+    log(`Token target set: ${Math.round(remainingNow() / 1000)}k remaining. Waves will stop at ` +
+      `a boundary rather than start work the target cannot cover.`)
+  }
+
   // -------------------------------------------------------- 4. the wave loop
   //
   // One invocation carries the whole partition. Between waves there IS a barrier, and it is
   // the justified kind: wave k+1 branches from the head that wave k's merges produced, so it
   // cannot start until they have happened AND been verified.
 
+  // What the last completed wave actually cost, and how many dispatches it covered. Measured
+  // rather than assumed: a projection built from this run's own observed spend is the only
+  // one worth acting on, and it needs no constant anybody has to keep true.
+  let lastWaveSpend = 0
+  let lastWaveDispatches = 0
+
   for (let w = 0; w < waves.length; w++) {
     const waveNumber = w + 1
     const waveIds = waves[w]
+    const spendAtWaveStart = spentNow()
     // A carried-forward escalation is accounted for — it already sits in `escalations` — so it
     // is not pending. Leaving it in would send it round the dispatch path this invocation
     // deliberately declined to buy.
@@ -4277,6 +4322,34 @@ try {
     if (pauseBetweenWaves && w + 1 < waves.length) {
       lineStopped = 'paused after wave ' + waveNumber + ' at the caller\'s request'
       log(`PAUSED after wave ${waveNumber}; remaining waves are deferred with resumable state.`)
+      continue
+    }
+
+    // ------------------------------------------- 4e. does the next wave fit
+    //
+    // Projected from what THIS run just spent, per dispatch, against what the next wave needs
+    // at its floor. The floor matters: a wave that ends up needing fix rounds costs more than
+    // this predicts, so the projection under-states and the halt fires later than it ideally
+    // would — never earlier, which would strand work that would have finished.
+
+    lastWaveSpend = spentNow() - spendAtWaveStart
+    lastWaveDispatches = waveCost(pending)
+
+    if (hasTarget && w + 1 < waves.length && lastWaveDispatches > 0 && lastWaveSpend > 0) {
+      const perDispatch = lastWaveSpend / lastWaveDispatches
+      const nextWave = waves[w + 1].filter((id) =>
+        !landed.has(id) && !staleWithheldIds.includes(id) && !treeWithheldIds.includes(id) &&
+        !escalatedPrior.has(id))
+      const projected = waveCost(nextWave) * perDispatch
+
+      if (nextWave.length > 0 && projected > remainingNow()) {
+        lineStopped = 'stopped after wave ' + waveNumber + ' because wave ' + (waveNumber + 1) +
+          ' is projected to cost about ' + Math.round(projected / 1000) + 'k against ' +
+          Math.round(remainingNow() / 1000) + 'k remaining'
+        log(`STOPPING after wave ${waveNumber}: wave ${waveNumber + 1} projects ~` +
+          `${Math.round(projected / 1000)}k against ${Math.round(remainingNow() / 1000)}k left. ` +
+          `Deferred with resumable state — dying mid-wave would leave nothing to resume from.`)
+      }
     }
   }
 

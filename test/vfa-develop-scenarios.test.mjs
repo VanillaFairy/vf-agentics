@@ -1085,6 +1085,52 @@ test('`normal` names opus rather than inheriting it', async () => {
   assert.equal(modelOf('code:W1'), undefined, 'the coder is not on this table at any position')
 })
 
+// ------------------------------------------------- does the next wave fit
+//
+// Not a budget stop. §1 forbids ending work because effort was spent, and nothing here ends
+// anything — it moves the boundary to a seam where stopping is free. A wave killed halfway
+// through by a session limit leaves nothing to resume from: the agents that had not returned
+// left no record. A wave boundary has the state line written and the next wave branching from
+// a head that already exists.
+
+const TWO_WAVES = (over = {}) => plan([order('W1'), order('W2')], {
+  partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
+  ...over,
+})
+
+test('a run with no token target never stops early, however large', async () => {
+  const { result, logs } = await run({
+    agent: happyAgents({ plan: TWO_WAVES() }),
+  })
+
+  // With no target `remaining()` is Infinity. A script cannot see an account's usage limit,
+  // and guessing at one would halt runs that would have finished.
+  assert.deepEqual(result.integration.merged, ['W1', 'W2'])
+  assert.ok(!logs.some((l) => /STOPPING after wave/.test(l)))
+})
+
+test('the plan size is reported before any wave is dispatched', async () => {
+  const { logs } = await run({ agent: happyAgents({ plan: TWO_WAVES() }) })
+
+  assert.ok(logs.some((l) => /Plan size: 2 order\(s\) across 2 wave\(s\)/.test(l)),
+    'the caller can see what the run is about to buy')
+})
+
+test('a wave the remaining target cannot cover is deferred at the boundary, not started', async () => {
+  const { result, logs } = await run({
+    agent: happyAgents({ plan: TWO_WAVES() }),
+    // Wave 1 costs enough that the projection for wave 2 exceeds what is left.
+    budget: { total: 60_000, perDispatch: 6_000 },
+  })
+
+  assert.deepEqual(result.integration.merged, ['W1'], 'wave 1 completed and merged')
+  assert.ok(logs.some((l) => /STOPPING after wave 1/.test(l)))
+
+  // The whole point: deferred work is resumable work. A mid-wave death is not.
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.resumable.remaining.includes('W2'))
+})
+
 // ------------------------------------------------- the dial, per order
 //
 // One dial for a whole run prices a ten-order plan as though its orders were the same work.

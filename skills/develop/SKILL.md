@@ -51,6 +51,15 @@ directory; pass `notes` only when the user gave extra constraints.
 next one starts. It is off unless the user asks for it: one invocation carrying the whole
 change is the point of this pipeline, and paused waves cost a re-invocation each.
 
+**Reach for it — or for `--plan-only` — when this session is already deep.** The run logs its
+plan size before dispatching anything (`Plan size: N order(s) across M wave(s)`), and where the
+caller set a token target the workflow stops at a wave boundary rather than starting a wave the
+target cannot cover. Neither can see an account's usage limit; you can. A run killed halfway
+through a wave does not resume cheaply: the agents that had not returned recorded nothing, so
+their work is gone rather than deferred. A wave boundary has the state line written and the
+next wave branching from a head that already exists, which is why stopping there is nearly
+free — and it is the difference the three interruptions of 2026-08-27 turned on.
+
 `--plan-only` surveys, plans and partitions, then stops with the plan written to disk and
 nothing implemented. Use it when the user says to plan something now and build it later, or
 wants to look at the decomposition before paying for it. The run returns a checkpoint whose

@@ -33,7 +33,8 @@ export function compileWorkflow(path) {
  * @returns {Promise<{ result, logs: string[], phases: string[],
  *                     prompts: Array<{prompt: string, opts: object}> }>}
  */
-export async function runWorkflow(path, { args, agent, workflow } = {}) {
+export async function runWorkflow(path, opts = {}) {
+  const { args, agent, workflow } = opts
   const logs = []
   const phases = []
   const prompts = []
@@ -66,7 +67,18 @@ export async function runWorkflow(path, { args, agent, workflow } = {}) {
   const parallelFake = (thunks) =>
     Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)))
 
-  const budget = { total: null, spent: () => 0, remaining: () => Infinity }
+  // No target by default — remaining() is Infinity, matching a run with no token directive,
+  // and every budget-aware branch stays dark. A scenario that wants one passes `budget:
+  // { total, perDispatch }`: `spent` then grows by `perDispatch` for every agent dispatched,
+  // which is what lets a test drive a workflow's own projection with real arithmetic instead
+  // of a stubbed number.
+  const budget = opts.budget
+    ? {
+        total: opts.budget.total,
+        spent: () => prompts.length * (opts.budget.perDispatch || 0),
+        remaining: () => Math.max(0, opts.budget.total - prompts.length * (opts.budget.perDispatch || 0)),
+      }
+    : { total: null, spent: () => 0, remaining: () => Infinity }
 
   const result = await compileWorkflow(path)(
     agentFake, pipelineFake, parallelFake,
