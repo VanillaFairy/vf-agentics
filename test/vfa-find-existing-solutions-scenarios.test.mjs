@@ -81,6 +81,27 @@ const happy = (over = {}) => {
 
 const run = (opts) => runWorkflow(WF, { args: ARGS, ...opts })
 
+// The dial reaches here for the same reason it reaches investigate: one derivation rule,
+// shared verbatim by every skill that passes `intelligence`. Framing the capability and
+// assessing each candidate are both judgment, so both move with it — and the searching angles
+// never do.
+test('the framing and assessing analysts follow the dial; the search tier does not', async () => {
+  const modelsAt = async (intelligence) => {
+    const { prompts } = await run({ args: { ...ARGS, intelligence }, agent: happy() })
+    const at = (label) => prompts.find((p) => p.opts.label === label).opts.model
+    return { frame: at('frame'), assess: at('assess'), find: at('find:stdlib') }
+  }
+
+  assert.deepEqual(await modelsAt('low'),
+    { frame: 'sonnet', assess: 'sonnet', find: undefined })
+  assert.deepEqual(await modelsAt('normal'),
+    { frame: 'opus', assess: 'opus', find: undefined })
+  assert.deepEqual(await modelsAt('max'),
+    { frame: 'fable', assess: 'fable', find: undefined })
+  assert.deepEqual(await modelsAt(undefined),
+    { frame: 'opus', assess: 'opus', find: undefined }, 'an absent dial is the derived `normal`')
+})
+
 /** The invariant the whole workflow exists to protect. */
 const assertEmptyNeverReadsAsExhausted = (result) => {
   if (result.candidates.length > 0) return

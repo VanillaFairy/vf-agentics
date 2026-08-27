@@ -64,8 +64,13 @@ const question = input.question || ''
 const roots = input.roots || '.'
 const notes = input.notes || ''
 const asTasks = Boolean(input.as_tasks)
-const intelligence = input.intelligence === 'max' ? 'max' : 'normal'
-const judge = intelligence === 'max' ? { model: 'fable' } : {}
+// The intelligence dial — the same three positions every skill in this plugin passes, because
+// they share one derivation rule (fable → max, opus → normal, sonnet and below → low) and a
+// sonnet session therefore sends `low` here as readily as it sends it to develop. The judging
+// tier in this workflow is the analyst that synthesizes.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
+const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
+const judge = JUDGE_TIER[intelligence]
 
 const MAX_TASKS = 12
 

@@ -216,16 +216,16 @@ const roots = input.roots || '.'
 const notes = input.notes || ''
 const maxTopics = input.max_topics || 8
 
-// The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
-// the judging tier to fable and `low` drops it to sonnet. Spreading {} rather than passing
-// model: undefined keeps the frontmatter default authoritative.
+// The intelligence dial. Three positions, each naming the judging tier rather than inheriting
+// it: `low` is sonnet, `normal` is opus, `max` is fable. The judging tier in this workflow is
+// the analysts — the one that plans the topics and the ones that rule on them.
 //
-// The judging tier in this workflow is the analysts — the one that plans the topics and the
-// ones that rule on them. `develop` forwards its own dial into this nested call, so a run
-// dialled to `low` reaches its analysis through this line and nowhere else; a tier this
-// script did not recognise would be served as `normal` in silence, and the caller would
-// report a cheap tier while paying the normal one.
-const JUDGE_TIER = { low: { model: 'sonnet' }, normal: {}, max: { model: 'fable' } }
+// Every caller derives the position from the model it is running (fable → max, opus → normal,
+// sonnet and below → low), and `develop` forwards its own dial into this nested call, so a run
+// dialled to `low` reaches its analysis through this line and nowhere else. A position this
+// script did not recognise is served as `normal`: dispatching at one tier while the caller
+// reports the one it typed bills a run at one price and describes it at another.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
 const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
 const judge = JUDGE_TIER[intelligence]
 

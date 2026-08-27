@@ -292,11 +292,14 @@ const constraints = input.constraints || ''
 const notes = input.notes || ''
 const maxAngles = input.max_angles || 4
 
-// The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
-// the judging tier to fable. Spreading {} rather than passing model: undefined keeps the
-// frontmatter default authoritative.
-const intelligence = input.intelligence === 'max' ? 'max' : 'normal'
-const judge = intelligence === 'max' ? { model: 'fable' } : {}
+// The intelligence dial — the same three positions every skill in this plugin passes, because
+// they share one derivation rule (fable → max, opus → normal, sonnet and below → low) and a
+// sonnet session therefore sends `low` here as readily as it sends it to develop. The judging
+// tier in this workflow is the analyst that frames the capability and the ones that assess
+// each candidate.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
+const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
+const judge = JUDGE_TIER[intelligence]
 
 // ---------------------------------------------------------------- coverage
 //

@@ -1026,9 +1026,11 @@ test('`low` puts every judging agent on sonnet and moves nothing else', async ()
   assert.equal(modelOf('verify:W1'), undefined, 'the mechanical tier never moves with the dial')
 })
 
-test('`max` still carries the coder up with the judges', async () => {
-  // The coupling `low` deliberately does not have. It is asserted here so that adding the
-  // third position cannot quietly become a rewrite of the second one.
+test('`max` moves the coder too, but to opus and not to the model the judges get', async () => {
+  // Fable-judged, opus-implemented — the configuration the coupled dial could not express.
+  // The equality that must NOT hold is the interesting one: a `max` run where the coder and
+  // the reviewer share a model is the coupling this position was split to remove, and it
+  // returns silently the moment somebody reaches for one ternary to set both.
   const { prompts } = await run({
     args: { ...ARGS, intelligence: 'max' },
     agent: happyAgents(),
@@ -1038,13 +1040,29 @@ test('`max` still carries the coder up with the judges', async () => {
 
   assert.equal(modelOf('plan'), 'fable')
   assert.equal(modelOf('review:W1#1'), 'fable')
-  assert.equal(modelOf('code:W1'), 'fable')
+  assert.equal(modelOf('code:W1'), 'opus')
+  assert.notEqual(modelOf('code:W1'), modelOf('review:W1#1'),
+    'the judge and the generator are priced apart at the top position, deliberately')
   assert.equal(modelOf('verify:W1'), undefined)
 })
 
+test('`normal` names opus rather than inheriting it', async () => {
+  // The dial is the authority on what a judge costs. Reading `undefined` here would mean the
+  // tier came from whatever agents/reviewer.md happens to say, which prices a run correctly
+  // right up until somebody edits that file — while the tier the envelope RECORDS still comes
+  // from the dial.
+  const { prompts } = await run({ args: { ...ARGS, intelligence: 'normal' }, agent: happyAgents() })
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'opus')
+  assert.equal(modelOf('review:W1#1'), 'opus')
+  assert.equal(modelOf('review:integration'), 'opus')
+  assert.equal(modelOf('code:W1'), undefined, 'the coder is not on this table at any position')
+})
+
 test('a tier nobody defined is served as `normal`, not as itself', async () => {
-  // The dial is a closed set of three. A typo that fell through would dispatch with
-  // `model: undefined` and read, in every log and every envelope, as the tier the user typed.
+  // The dial is a closed set of three. A typo that fell through would dispatch at some other
+  // tier while every log and every envelope read back the tier the user typed.
   const { prompts } = await run({
     args: { ...ARGS, intelligence: 'cheap' },
     agent: happyAgents(),
@@ -1052,7 +1070,7 @@ test('a tier nobody defined is served as `normal`, not as itself', async () => {
 
   const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
 
-  assert.equal(modelOf('plan'), undefined)
+  assert.equal(modelOf('plan'), 'opus')
   assert.equal(modelOf('code:W1'), undefined)
 })
 
@@ -1114,7 +1132,7 @@ test('a resumed run adopts the notes and tier its plan was written under', async
     'evidence that silently went missing is the failure this envelope exists to prevent, and ' +
     'the announced length is the only way a reader can see it did not')
   assert.ok(code.prompt.includes('C:/repo'), 'the roots the plan was surveyed against win')
-  assert.equal(code.opts.model, 'fable', 'the recorded intelligence tier is adopted too')
+  assert.equal(code.opts.model, 'opus', 'the recorded intelligence tier is adopted too')
 })
 
 test('an explicit caller value still wins over the record, and says so', async () => {
@@ -1168,7 +1186,7 @@ test('a resume that supplies the tier it already recorded is not an override', a
     }),
   })
 
-  assert.equal(prompts.find((p) => p.opts.label === 'code:W2').opts.model, 'fable')
+  assert.equal(prompts.find((p) => p.opts.label === 'code:W2').opts.model, 'opus')
   assert.ok(!logs.some((l) => /Override: intelligence/.test(l)),
     'agreeing with the record is not a disagreement to report')
 })

@@ -638,23 +638,35 @@ let slice = typeof input.slice === 'string' ? input.slice.trim() : ''
 // against and this is the only record of the world it was written for.
 let envelopeBase = { branch: '', sha: '' }
 
-// The intelligence dial. `normal` inherits each agent's frontmatter model — which pins the
-// coder to sonnet: the volume tier of this pipeline is the coder, its output is gated by the
-// verifier and fresh adversarial reviewers rather than by its own brilliance, and `inherit`
-// in the field billed every coding agent at whatever model the interactive session happened
-// to run. `max` overrides the judging tier and the coder to fable. Spreading {} rather than
-// passing model: undefined keeps the frontmatter default authoritative.
+// The intelligence dial. Three positions, each NAMING the judging tier rather than inheriting
+// it: `low` is sonnet, `normal` is opus, `max` is fable. Naming opus instead of spreading {}
+// makes this table the authority on what a judge costs — a `{}` meaning "whatever the
+// frontmatter says" prices a run correctly only until somebody edits an agent file, while the
+// tier the run RECORDS in its envelope comes from here either way.
 //
-// `low` moves the judging tier the other way and moves nothing else: the planner, the
-// reviewers and the nested survey's analysts drop to sonnet, while the coder, the verifier,
-// the scouts and the courier stay exactly where their frontmatter puts them. It is the one
-// position no session derives for itself — the skills derive `max` and `normal` from the
-// model they are running — because it puts the judges on the same model as the coder, which
-// `docs/2026-08-17-intelligence-tiering.md` §2 argues against by name: a defective work order
-// implemented faithfully clears verification and clears a review fenced to the same defective
-// criteria, so nothing downstream is left to catch it. That is a trade a user may want and a
-// session may not make on their behalf.
-const JUDGE_TIER = { low: { model: 'sonnet' }, normal: {}, max: { model: 'fable' } }
+// The dial is derived from the model the calling session runs, never chosen by it — the
+// skills' `intelligence-tier` block maps fable → max, opus → normal, sonnet and below → low —
+// unless the user names a position outright. So a sonnet session judges with sonnet, which
+// puts the judges on the same model as the coder and leaves open the hole
+// `docs/2026-08-17-intelligence-tiering.md` §2 names: a defective work order implemented
+// faithfully clears verification, then clears a review fenced to the same defective criteria.
+// That is the honest reading of "judged at the tier of the session driving it". The
+// alternative — a cheap session quietly buying opus judgment — is the self-assessment the
+// derivation rule exists to forbid, and the develop skill owes the user a sentence about the
+// cost instead.
+//
+// `coderTier` is deliberately NOT this table, and it does not follow the judges up. At `max`
+// the coder goes to OPUS, not fable: the tiering doc's §3 step 1 calls fable-judged,
+// opus-implemented "the coherent one the coupled dial cannot currently express", and the field
+// praise the coder tier rests on was of opus as implementer, not of fable. Doubling the price
+// of the pipeline's volume tier bought nothing that praise ever described.
+//
+// Below `max` it spreads {} and the coder keeps its frontmatter model, which is what lets the
+// doc's other half — pinning agents/coder.md to opus — land later without touching this line.
+// The coder's output is gated by the verifier and by fresh adversarial reviewers rather than
+// by its own brilliance; what it must not be is `inherit`, which in the field billed every
+// coding agent at whatever model the interactive session happened to run.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
 const tierOf = (value) => (Object.hasOwn(JUDGE_TIER, value) ? value : 'normal')
 
 let intelligence = 'normal'
@@ -665,7 +677,7 @@ let coderTier = {}
 function applyIntelligence(value) {
   intelligence = tierOf(value)
   judge = JUDGE_TIER[intelligence]
-  coderTier = intelligence === 'max' ? { model: 'fable' } : {}
+  coderTier = intelligence === 'max' ? { model: 'opus' } : {}
 }
 
 applyIntelligence(input.intelligence)

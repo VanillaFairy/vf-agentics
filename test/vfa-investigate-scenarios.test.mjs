@@ -40,6 +40,27 @@ test('a survey resolving under neither name is reported as a broken plugin refer
   assert.equal(prompts.length, 0)
 })
 
+// The dial reaches here because every skill derives its position from one shared rule — fable
+// → max, opus → normal, sonnet and below → low — so a sonnet session sends `low` to this
+// workflow as readily as it sends it to develop. A script that recognised only two positions
+// would serve the third as `normal` while the caller reported the tier it derived.
+test('the judging tier follows the dial through all three positions', async () => {
+  const modelAt = async (intelligence) => {
+    const { prompts } = await runWorkflow(WF, {
+      args: { question: 'how does X work', intelligence },
+      agent: scriptedAgents({ synthesize: 'the answer' }),
+      workflow: () => surveyResult(),
+    })
+    return prompts.find((p) => p.opts.label === 'synthesize').opts.model
+  }
+
+  assert.equal(await modelAt('low'), 'sonnet')
+  assert.equal(await modelAt('normal'), 'opus')
+  assert.equal(await modelAt('max'), 'fable')
+  assert.equal(await modelAt(undefined), 'opus', 'an absent dial is the derived `normal`')
+  assert.equal(await modelAt('cheap'), 'opus', 'and so is a position nobody defined')
+})
+
 test('report mode hands back the synthesis verbatim with the survey coverage', async () => {
   const { result } = await runWorkflow(WF, {
     args: { question: 'how does X work' },

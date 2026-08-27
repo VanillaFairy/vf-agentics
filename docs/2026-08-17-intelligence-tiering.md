@@ -229,24 +229,49 @@ uses for carried evidence: measured on eva, ruled by the user, never assumed.
 
 ---
 
-## 7. Addendum, 2026-08-27 — the `low` position
+## 7. Addendum, 2026-08-27 — a third position, an explicit `normal`, and step 1.2
 
-A third dial position ships in 0.18.0: `low`, which puts the judging agents — planner,
-reviewers, and the nested survey's analysts — on Sonnet and moves nothing else. The coder
-keeps its frontmatter, and so do the verifier, the scouts and the courier.
+0.18.0 widens the dial to three positions, stops inheriting the middle one, and applies the
+back half of §3's step 1:
 
-This is in direct tension with §2's principle and §6.2's "never weaken the generator and the
-judge together": step 1's coder pin was never applied, so `agents/coder.md` still reads
-`model: sonnet`, and a `low` run therefore has Sonnet on both sides of the loop. The hole §2
-describes is real and unchanged — a defective work order implemented faithfully clears
-verification, then clears a review fenced to the same defective criteria.
+| Tier | planner · reviewer · analyst | coder |
+|---|---|---|
+| `low` | sonnet | frontmatter (sonnet) |
+| `normal` | **opus, named** — no longer read off frontmatter | frontmatter (sonnet) |
+| `max` | fable | **opus** — no longer dragged to fable |
 
-What makes it shippable is that nothing *derives* it. The `intelligence-tier` verbatim block
-still derives only `max` and `normal` from the session model; `low` is a downshift the user
-asks for by name, and `skills/develop/SKILL.md` requires the skill to say what it costs when
-they do. The ruling in §6.2 stands as advice to sessions, not as a configuration the dial
-refuses to express.
+**Step 1.2 is done.** `max` raises the judging tier to Fable and stops there; the coder rises
+to Opus instead of following it. That is the "Fable-judged, Opus-implemented" configuration §3
+called the coherent one the coupled dial could not express, and the argument holds as written:
+the field praise the coder tier rests on was of Opus as implementer, not of Fable, so the old
+coupling doubled the price of the pipeline's highest-volume agent and bought nothing that
+praise ever described.
 
-If step 1 is ever applied (coder → `opus`), `low` becomes the coherent cheap tier §2 would
-have endorsed: Sonnet judges over an Opus coder, generator strong and judge cheap, which is
-the safe half of the asymmetry rather than both halves weakened.
+**Step 1.1 is still open.** `agents/coder.md` still reads `model: sonnet`, and the dial spreads
+`{}` for the coder below `max` precisely so that pinning it later needs no change to the
+workflow. Until it is pinned, `normal` is Opus judges over a Sonnet coder — the safe asymmetry
+§2 permits — and `low` is Sonnet on both sides, which is the one §2 and §6.2 rule against.
+
+The derivation rule widened too — **fable → `max`; opus → `normal`; sonnet and everything below
+it → `low`** — and it lives in the `intelligence-tier` block, shared verbatim by every skill
+that passes the dial. So `low` reaches `vfa-survey`, `vfa-investigate` and
+`vfa-find-existing-solutions` as readily as `vfa-develop`, and all four honour it.
+
+**What `low` costs, said plainly.** With step 1.1 open it puts Sonnet on both sides of the loop
+and the hole §2 describes is fully open: a defective work order implemented faithfully clears
+verification, then clears a review fenced to the same defective criteria. What the design buys
+instead of avoiding that is honesty about who pays for judgment — under the old two-position
+rule a Sonnet session claimed `normal` and billed the user for Opus judges nobody asked it for,
+where now it is judged by the model the user is actually talking to, and
+`skills/develop/SKILL.md` requires the skill to say what that costs before a long run rather
+than dial itself back up. §6.2 stands as advice about which configurations are sound, not as a
+shape the dial refuses to express.
+
+Naming `opus` at `normal` pulls the other way and is the smaller half: the dial is now the
+authority on what a judge costs, so a run's recorded tier and its actual spend cannot drift
+apart when somebody edits an agent file.
+
+Once step 1.1 lands, `low` becomes the cheap tier §2 would have endorsed — Sonnet judges over
+an Opus coder, generator strong and judge cheap, the safe half of the asymmetry rather than
+both halves weakened. Until then, `low` is the configuration §5's inverted metrics were written
+for, and a quiet `low` run is the suspicious one.

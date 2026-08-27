@@ -56,15 +56,27 @@ test('`low` puts the analysts on sonnet and leaves the search tier alone', async
   assert.equal(modelOf('scout:a'), undefined, 'search never moves with the dial')
 })
 
+test('`normal` names opus rather than inheriting it', async () => {
+  const { prompts } = await run(
+    { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
+    { intelligence: 'normal' },
+  )
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'opus')
+  assert.equal(modelOf('analyze:a'), 'opus')
+  assert.equal(modelOf('scout:a'), undefined, 'the search tier is not on the dial')
+})
+
 test('a tier this script does not define is served as normal, not as itself', async () => {
   const { prompts } = await run(
     { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
     { intelligence: 'cheap' },
   )
 
-  assert.equal(prompts.find((p) => p.opts.label === 'plan').opts.model, undefined,
-    'an unrecognised tier that dispatches at the frontmatter default while the caller reports ' +
-    'the tier it typed is a run billed at one price and described at another')
+  assert.equal(prompts.find((p) => p.opts.label === 'plan').opts.model, 'opus',
+    'an unrecognised tier that dispatches at one tier while the caller reports the one it ' +
+    'typed is a run billed at one price and described at another')
 })
 
 // ------------------------------------------- a requested channel that produced nothing
