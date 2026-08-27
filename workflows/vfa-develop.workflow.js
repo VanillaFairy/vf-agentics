@@ -2874,7 +2874,10 @@ try {
         landed.add(row.id)
         // A merge git holds that no wave line mentions still needs its line written, or `runs`
         // reports the order unreached forever and the next resume asks git the same question.
-        if (row.stage_note && row.stage_note.slice(0, 9) === 'already i') {
+        // Keyed on the typed field rather than on the wording of `stage_note`: that note is
+        // prose for a human, and coupling a durable write to a sentence somebody may improve is
+        // how the only line an invocation writes goes quietly missing.
+        if (row.merged_source === 'git') {
           reconciled.push(row.id)
           if (!integration.merged.includes(row.id)) integration.merged.push(row.id)
         }

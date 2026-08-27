@@ -136,7 +136,24 @@ test('an order the log says merged is done, and is not re-examined', () => {
   const row = actionFor('W1', { state: [waveLine({ merged: ['W1'] })] })
 
   assert.equal(row.next_action, 'none')
+  assert.equal(row.merged_source, 'log', 'the log already records it; no corrective line is owed')
   assert.match(row.stage_note, /merged by an earlier invocation/)
+})
+
+test('merged_source is a typed field, not a phrase the caller has to recognise', () => {
+  // The caller writes a corrective wave line for a merge only git knows about, and keys that
+  // write on this field. An earlier draft sniffed a prefix of `stage_note` instead, which made
+  // a durable write depend on the wording of a sentence written for a human — and the note is
+  // free to be reworded, which is exactly what would have made reconciled merges stop being
+  // recorded with nothing failing.
+  const fromGit = actionFor('W1', {
+    state: [stageLine('order-approved')],
+    branches: { W1: branchRow('W1', { already_merged: true }) },
+  })
+  const notMerged = actionFor('W1', { branches: { W1: branchRow('W1') } })
+
+  assert.equal(fromGit.merged_source, 'git')
+  assert.equal(notMerged.merged_source, '', 'an unmerged order names no merge source')
 })
 
 test('an approval git still corroborates is merged as it stands', () => {

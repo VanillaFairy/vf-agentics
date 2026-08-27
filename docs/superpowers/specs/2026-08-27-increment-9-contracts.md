@@ -118,6 +118,12 @@ planned before increment 9 has commits and no `coder-done` anywhere. So the rung
 some *other* order in the same run recorded one; otherwise the older, safe reading applies and
 the series is measured as it stands.
 
+**A merged order names how it is known to be merged.** `merged_source` is `log` when a wave
+line records the merge and `git` when only git holds it — in which case the caller owes the run
+a corrective wave line, or `runs` reports the order unreached forever. It is a typed field
+because a durable write keys on it; `stage_note` beside it is prose for a human and is free to
+be reworded.
+
 **Escalations are reported, never acted on.** The payload carries `escalated`, `escalated_wave`
 and `escalated_seq` alongside the action the order would otherwise take. Whether an escalation
 is retried is the caller's policy (`retry_escalated`), and the underlying stage must survive so
