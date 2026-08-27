@@ -522,11 +522,40 @@ test('an unreadable plan is a fact about the reader, not an empty run', () => {
 
 // --- the small pure helpers --------------------------------------------------------------------
 
-test('measured records what was mechanically checked, and is never a verdict', () => {
+test('measured records what was mechanically CHECKED, and absent is not a check', () => {
   assert.deepEqual(measuredOf(verifyObserved()), ['build', 'suite', 'discriminator:1'])
-  assert.deepEqual(measuredOf(verifyObserved({ build: 'failed', suite: 'failed', discriminator: [] })), [])
+  assert.deepEqual(measuredOf(verifyObserved({ build: 'failed', suite: 'failed', discriminator: [] })),
+    ['build', 'suite'], 'a check that ran and failed still ran')
+
+  // The case that matters, and the one an earlier version of this file got backwards. A
+  // docs-only order in a repository with no build and no suite has had NOTHING mechanically
+  // verified, and `measured: []` is what the caller's vacuity check reads to say so. Returning
+  // ['build','suite'] here cleared that check and let such an order come back inside a run
+  // reporting `complete: true` — IRON LAW §4 exactly, a partial result wearing a complete
+  // one's label.
   assert.deepEqual(measuredOf(verifyObserved({ build: 'absent', suite: 'absent', discriminator: [] })),
-    ['build', 'suite'])
+    [], 'an absent build is a fact about the repository, not a check that ran')
+})
+
+test('the workflow copy of measuredOf treats absent the same way this one does', async () => {
+  // The two live in separate files because a workflow script cannot import, and they disagreed
+  // once — invisibly. The same verifier observation produced `[]` on the fresh path and
+  // `['build','suite']` on the resume path, which flipped coverage.complete between them.
+  //
+  // Pinned by reading the predicate rather than by executing it: the divergence was entirely in
+  // how `absent` is treated, so that is the thing worth holding, and evaluating source text
+  // pulled out of another file is a habit worth not having even in a test.
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../workflows/vfa-develop.workflow.js', import.meta.url), 'utf8')
+  const body = /const measuredOf = \(v\) => \[[\s\S]*?\]\.filter\(Boolean\)/.exec(src)
+
+  assert.ok(body, 'the workflow still defines measuredOf where this test can find it')
+  assert.match(body[0], /v\.build !== 'absent'/,
+    'an absent build must not count as a check that ran, on either side')
+  assert.match(body[0], /v\.suite !== 'absent'/,
+    'and neither must an absent suite')
+  assert.doesNotMatch(body[0], /=== 'absent'/,
+    'the inverted form is what the two copies drifted into last time')
 })
 
 test('nextActionFor only ever names a value ACTIONS declares', () => {
