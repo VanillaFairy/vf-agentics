@@ -186,3 +186,53 @@ test('a slice missing from the file survives one retry, then halts as not carrie
   assert.ok(result.coverage.unreached.some((u) => /W2: no order W2 in plan\.json/.test(u)))
   assert.equal(result.coverage.complete, false)
 })
+
+
+// ── the index's own ladder ──────────────────────────────────────────────────────────────
+//
+// The fan bounded every ORDER by its own size, but the index that opens the fan was still
+// dispatched once at the frontmatter tier with nothing checking what came back. Seen three
+// times running on one repo in 2026-08: the courier damaged the escaping in `partition_raw`,
+// which carries no digest, so it parsed as "no waves" and the run degraded to "every order is
+// coupled" — handing four orders that were already built, reviewed and merged back to the
+// session to be reimplemented. The third attempt lost the index outright. The index now gets
+// the same ladder its slices have, and `partition_raw` gets the one check it can be given
+// without a stored digest: the waves plus the coupled list must name every order, once each.
+
+const firstTierFails = (broken) => (prompt, opts) =>
+  /#2$/.test(opts.label || '') ? index() : index(broken)
+
+test('a partition mangled in transit is healed by the retry, not treated as no waves', async () => {
+  // `{\"waves\":[[\"W1\"]` — escaping damage, the exact shape observed in the field.
+  const { result, prompts, logs } = await resumed({
+    'resume-index': firstTierFails({ partition_raw: '{\\"waves\\":[[\\"W1\\"]' }),
+  })
+
+  assert.ok(prompts.some((p) => p.opts.label === 'resume-index#2'),
+    'the damaged copy must buy a second tier rather than a degraded run')
+  assert.ok(!result.coverage.failed_channels.includes('partition'),
+    'a healed partition is not a failed channel')
+  assert.match(logs.join(' '), /did not survive the trip/)
+})
+
+test('a partition the CLI refused is carried intact, never retried as if it were damage', async () => {
+  // A refusal is the partition working: a dependency cycle, a dep naming no order. Retrying
+  // it one tier up buys the same honest answer at a higher price.
+  const { prompts } = await resumed({
+    'resume-index': index({ partition_raw: JSON.stringify({ error: 'dependency cycle W1 -> W2 -> W1' }) }),
+  })
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'resume-index#2'),
+    'a planning defect is not a transcription defect')
+})
+
+test('an index no tier can carry halts, and never reports the plan as all-coupled', async () => {
+  const { result } = await resumed({
+    'resume-index': (prompt, opts) => index({ partition_raw: 'not json at all' }),
+  })
+
+  assert.ok(result.coverage.failed_channels.includes('run-state'))
+  assert.equal(result.coupled.length, 0,
+    'handing every order to the session is the damage this halt exists to prevent')
+  assert.ok(!result.coverage.complete)
+})

@@ -219,6 +219,43 @@ const RESUME_INDEX = {
   },
 }
 
+// What is wrong with a returned index, or null when nothing is.
+//
+// `partition_raw` is the one field a resume cannot re-derive and the only one with no
+// digest behind it, so this is where it gets checked. The test is not a checksum but a
+// coverage identity: the waves plus the coupled list must name every order the plan holds,
+// each exactly once. That catches a string mangled in transit, and it also catches the case
+// a checksum would miss — a partition that parses cleanly and quietly drops an order.
+//
+// The scar: the index used to be dispatched once at the frontmatter tier with nothing
+// checking what came back. A courier that damaged the escaping in `partition_raw` produced
+// a plan that parsed as "no waves", which degraded the whole run to "every order is
+// coupled" — handing orders that were already built, reviewed and merged back to the
+// session to be reimplemented. Seen three times running on one repo, worsening as
+// state.jsonl grew: transcription fidelity falls off with payload length, which is the
+// same lesson the order fan-out was built on.
+function indexProblem(index) {
+  if (!index) return 'the dispatch returned nothing'
+  if (index.stop_reason !== 'loaded') {
+    return index.notes || 'the loader reported it could not read the run'
+  }
+
+  // ONLY what no later check can see. The id sets, the manifest coverage and each order's
+  // digest are all verified downstream, with halts whose messages name the damage precisely
+  // — and those halts must be REACHED. An earlier draft of this function also compared the
+  // partition's ids against `order_ids`, which preempted two of them and, worse, retried a
+  // genuine plan defect until it went quiet. `partition_raw` is checked here for one reason:
+  // it is the only field whose corruption nothing downstream notices, because a partition
+  // that will not parse is read as "no waves" and silently couples the entire run.
+  try {
+    JSON.parse(index.partition_raw)
+  } catch (e) {
+    return 'partition_raw did not survive transcription: ' + (e && e.message)
+  }
+
+  return null
+}
+
 // One order back from disk. `orders` is a list for the same reason SCAVENGE's `found` is:
 // empty is a real answer — the id was not in the file — and a closed object shape cannot
 // say "present or absent" without a field whose absence nobody notices. On success it
@@ -2759,16 +2796,32 @@ try {
     // replaced was asked for a 118KB byte-exact copy and paraphrased 13 of 14 orders — the
     // digest gate caught it, and the lesson is structural: no dispatch carries the whole
     // plan, ever. Each order travels alone, bounded by its own size rather than the plan's.
-    const index = await agent(indexPrompt(), {
+    // The index gets the same ladder the order slices get below, for the same reason: a
+    // fidelity failure should cost one targeted re-fetch, not the run. See indexProblem.
+    const fetchIndex = (label, opts) => agent(indexPrompt(), {
       agentType: 'vf-agentics:run-state', effort: 'low', schema: RESUME_INDEX,
-      phase: 'Plan', label: 'resume-index',
+      phase: 'Plan', label, ...opts,
     }).catch((e) => {
       log(`WARNING: the run-state index failed: ${e && e.message}`)
       return null
     })
 
-    if (!index || index.stop_reason !== 'loaded') {
-      const why = index && index.notes ? index.notes : 'the loader returned no readable plan'
+    let index = await fetchIndex('resume-index', {})
+    let indexWhy = indexProblem(index)
+    if (indexWhy) {
+      log(`The run-state index did not survive the trip (${indexWhy}); retrying one tier up.`)
+      const second = await fetchIndex('resume-index#2', { model: 'sonnet' })
+      const secondWhy = indexProblem(second)
+      if (!secondWhy) {
+        index = second
+        indexWhy = null
+      } else {
+        log(`The second courier tier failed too (${secondWhy}).`)
+      }
+    }
+
+    if (indexWhy) {
+      const why = indexWhy
       log(`The run directory could not be read: ${why}`)
       return developResult({
         planPath: resumePath,
@@ -3478,8 +3531,9 @@ try {
   try {
     partition = JSON.parse(planned.partition_raw)
   } catch (e) {
-    partitionNote = 'partition_raw is not JSON — the planner paraphrased the CLI output ' +
-      'instead of pasting it (' + (e && e.message) + ')'
+    partitionNote = 'partition_raw is not JSON (' + (e && e.message) + ') — either the ' +
+      'planner paraphrased the CLI output instead of pasting it, or, on a resume, the ' +
+      'courier carrying it off disk did not reproduce it intact'
   }
 
   if (!partitionNote && partition && partition.error) {
