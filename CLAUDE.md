@@ -5,8 +5,8 @@ this plugin defines.
 
 ## What this is
 
-A Claude Code plugin providing workflow-orchestrated design, investigation, diagnosis, and
-development over a generic codebase. Its runtime artifacts are declarative — agent markdown,
+A Claude Code plugin providing workflow-orchestrated design, investigation, and development
+over a generic codebase. Its runtime artifacts are declarative — agent markdown,
 workflow JS, `SKILL.md` — and are validated in three layers: `tools/lint.mjs` judges form, the
 scenario harness (`test/harness/workflow-host.mjs`) executes the workflows' orchestration
 arithmetic with scripted agents, and `test/verbatim-blocks.test.mjs` diffs every contract that

@@ -579,9 +579,21 @@ let present = []
 
 if (repo.result) {
   present = repo.result.hits || []
-  if ((repo.result.not_reached || '').trim()) {
+
+  // Gated on stop_reason, not on not_reached alone — the same test the angle loop applies.
+  // A scan that stopped unfinished and left not_reached blank was reading as a finished one,
+  // and this is the channel whose answer the skill calls the cheapest and most decisive in
+  // the workflow: "you already depend on something that does this". Reported complete when
+  // it is not, it sends the user to adopt an external dependency they already had.
+  const repoDone = repo.result.stop_reason === 'exhausted'
+  const repoRemainder = (repo.result.not_reached || '').trim()
+
+  if (!repoDone || repoRemainder) {
     partial.push('repo')
-    unreached.push(`the repository scan never reached: ${repo.result.not_reached.trim()}`)
+    unreached.push(repoRemainder
+      ? `the repository scan never reached: ${repoRemainder}`
+      : `the repository scan stopped "${repo.result.stop_reason || 'unstated'}" without ` +
+        `naming what it missed, so what the tree already provides is only partly known`)
   }
 } else {
   failedChannels.push('repo')
@@ -654,6 +666,26 @@ if (gathered.length > 0) {
   // that genuinely needs a model, and it stays the assessor's job.
   const nameKey = (name) => (name || '').trim().toLowerCase()
 
+  // The assessor is told to copy disqualifiers VERBATIM and never to invent one. Obedience
+  // is not a mechanism: an invented ground — or a paraphrase of a real one that quietly
+  // widens it — rules a candidate out just as effectively as a declared one, and the only
+  // viable library in the sweep can vanish on a rule nobody wrote. So membership is checked
+  // here, against the frame the user actually settled. An entry that matches nothing does
+  // not rule anything out; it is reported as an unsettled observation instead.
+  const declared = new Map(
+    (frame.disqualifiers || []).map((d) => [String(d).trim().toLowerCase(), true]))
+  const invented = []
+
+  function disqualifiersHitOf(candidate) {
+    const hits = candidate.disqualifiers_hit || []
+    const kept = []
+    for (const hit of hits) {
+      if (declared.has(String(hit).trim().toLowerCase())) kept.push(hit)
+      else invented.push(`${candidate.name}: ${hit}`)
+    }
+    return kept
+  }
+
   function distinctByName(rows) {
     const seen = new Set()
     const out = []
@@ -666,7 +698,13 @@ if (gathered.length > 0) {
     return out
   }
 
+  // Whether anyone measured these candidates at all. The verdict below is computed from
+  // `disqualifiers_hit`, and on this path that array is something this script wrote, not
+  // something an assessor observed — so the verdict must not be computed from it.
+  let assessMeasured = true
+
   if (!assessment || !assessment.assessed) {
+    assessMeasured = false
     failedChannels.push('assess')
     unreached.push(
       'the candidates were found but never measured against the disqualifiers, so nothing ' +
@@ -700,12 +738,32 @@ if (gathered.length > 0) {
   // The verdict, computed here and nowhere else. `disqualifiers_hit` is a list of facts the
   // assessor was asked to copy verbatim; viability is what this line does with them. A
   // schema field called `suitable` would have moved this decision into a model's taste.
-  viable = assessed.filter((c) => (c.disqualifiers_hit || []).length === 0).map((c) => c.name)
-  ruledOut = assessed
-    .filter((c) => (c.disqualifiers_hit || []).length > 0)
-    .map((c) => ({ name: c.name, why: c.disqualifiers_hit.join('; ') }))
+  //
+  // With no assessor there are no such facts, and an empty `disqualifiers_hit` this script
+  // wrote itself would name EVERY candidate viable — a licence the user's own policy would
+  // have killed, presented as cleared — and the empty ruled_out would then suppress the
+  // incomplete-sweep warning below, which fires only when nothing is viable. Both lists stay
+  // empty instead: the candidates still ride in `assessed`, and failed_channels says why
+  // nobody ruled on them. This is the one place the script could mint a partial result into
+  // a whole one entirely on its own.
+  if (assessMeasured) {
+    viable = assessed.filter((c) => disqualifiersHitOf(c).length === 0).map((c) => c.name)
+    ruledOut = assessed
+      .filter((c) => disqualifiersHitOf(c).length > 0)
+      .map((c) => ({ name: c.name, why: disqualifiersHitOf(c).join('; ') }))
 
-  log(`Assessed ${assessed.length} distinct candidate(s): ${viable.length} hit no disqualifier, ${ruledOut.length} ruled out.`)
+    log(`Assessed ${assessed.length} distinct candidate(s): ${viable.length} hit no disqualifier, ${ruledOut.length} ruled out.`)
+
+    if (invented.length > 0) {
+      log(`WARNING: ${invented.length} ground(s) cited that nobody declared — not counted.`)
+      unreached.push(
+        `ruled out on grounds nobody declared, so not counted against them: ` +
+        `${invented.join('; ')} — these may be real objections, but they are not in the ` +
+        `frame's disqualifier list and no candidate was rejected for them here`)
+    }
+  } else {
+    log(`${assessed.length} candidate(s) carried through unmeasured — neither viable nor ruled out.`)
+  }
 }
 
 // ---------------------------------------------------------------- 4. account

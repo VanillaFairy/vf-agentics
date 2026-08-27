@@ -1,7 +1,7 @@
 export const meta = {
   name: 'vfa-survey',
   description: 'Gather evidence about a question across the local repos, git history, and vendor documentation. Returns structured findings plus a coverage block — never a conclusion.',
-  whenToUse: 'The shared evidence phase for investigate, diagnose, develop and ue-develop. Call it via workflow("vfa-survey", args) as a nested step; it is rarely invoked directly.',
+  whenToUse: 'The shared evidence phase for investigate, develop, find-existing-solutions and design. Call it via workflow("vfa-survey", args) as a nested step; it is rarely invoked directly.',
   phases: [
     { title: 'Plan' },
     { title: 'Scout' },
