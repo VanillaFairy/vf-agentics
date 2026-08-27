@@ -644,7 +644,18 @@ let envelopeBase = { branch: '', sha: '' }
 // in the field billed every coding agent at whatever model the interactive session happened
 // to run. `max` overrides the judging tier and the coder to fable. Spreading {} rather than
 // passing model: undefined keeps the frontmatter default authoritative.
-const tierOf = (value) => (value === 'max' ? 'max' : 'normal')
+//
+// `low` moves the judging tier the other way and moves nothing else: the planner, the
+// reviewers and the nested survey's analysts drop to sonnet, while the coder, the verifier,
+// the scouts and the courier stay exactly where their frontmatter puts them. It is the one
+// position no session derives for itself — the skills derive `max` and `normal` from the
+// model they are running — because it puts the judges on the same model as the coder, which
+// `docs/2026-08-17-intelligence-tiering.md` §2 argues against by name: a defective work order
+// implemented faithfully clears verification and clears a review fenced to the same defective
+// criteria, so nothing downstream is left to catch it. That is a trade a user may want and a
+// session may not make on their behalf.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: {}, max: { model: 'fable' } }
+const tierOf = (value) => (Object.hasOwn(JUDGE_TIER, value) ? value : 'normal')
 
 let intelligence = 'normal'
 let judge = {}
@@ -653,7 +664,7 @@ let coderTier = {}
 /** Set the dial and re-derive the model tiers from it. */
 function applyIntelligence(value) {
   intelligence = tierOf(value)
-  judge = intelligence === 'max' ? { model: 'fable' } : {}
+  judge = JUDGE_TIER[intelligence]
   coderTier = intelligence === 'max' ? { model: 'fable' } : {}
 }
 
@@ -718,8 +729,28 @@ const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Work
 // partition emitted that matches no order still travels, as a stub naming only itself.
 let orderById = new Map()
 
-const coupledOrder = (id) => orderById.get(id) ||
-  { id, title: '', locus: [], acceptance: [], context: '', deps: [], contract: false }
+// A coupled order, as the session receives it. The session implements these itself, so it needs
+// the criteria and the context — and on a RESUME this script does not hold them: the verdict
+// carries an order's arithmetic and leaves its prose on disk (increment 9 §2c). So the entry
+// carries a `fetch` command instead of silently arriving with `acceptance` absent, which is how
+// a session ends up implementing against a title and a locus.
+const coupledOrder = (id) => {
+  const wo = orderById.get(id) ||
+    { id, title: '', locus: [], acceptance: [], context: '', deps: [], contract: false }
+
+  if (wo.acceptance !== undefined) return wo
+
+  return {
+    ...wo,
+    acceptance: [],
+    context: '',
+    fetch: `node "${pluginRoot}/lib/ledger.mjs" order "${planPath}" "${id}"`,
+    fetch_note: 'this order is resumed from disk, so its acceptance criteria and context were ' +
+      'deliberately not carried through the run. Run the command in `fetch` to read them ' +
+      'verbatim, and confirm the digest it prints is ' + (wo.digest || '(none recorded)') +
+      ' before implementing anything against them.',
+  }
+}
 
 // The integration handle. Every field is observed rather than assumed: `head_sha` is what a
 // verifier read after each merge, and `wave_verify` records what the build and suite actually
@@ -746,6 +777,18 @@ let integration = {
 // It is fed ONLY by approved orders — an escalated order's discoveries are unreviewed claims
 // about a repository that rejected its work.
 const knowledge = new Set()
+
+// What has already been written to a wave line. A wave line used to carry the WHOLE accumulated
+// set every time, so a run's discoveries were re-serialized once per wave — in one field run
+// that duplication was the majority of state.jsonl by volume, and the file a resume has to read
+// is the last file that should grow quadratically. Each line now carries only what that wave
+// added; the verdict unions them back, which it already did.
+const knowledgeRecorded = new Set()
+const newKnowledge = () => {
+  const fresh = [...knowledge].filter((k) => !knowledgeRecorded.has(k))
+  for (const k of fresh) knowledgeRecorded.add(k)
+  return fresh
+}
 
 // Coders only. The verifier deliberately does NOT receive this, and the asymmetry is the
 // point: a `discovered` entry is a model's report, while the verifier's build and suite
@@ -1137,8 +1180,15 @@ function verdictPrompt() {
     `paste its output; you decide nothing and you interpret nothing.\n\n` +
     `RUN DIRECTORY (absolute):\n${resumePath}\n\n` +
     `Run exactly this, from anywhere:\n\n` +
-    `   node "${pluginRoot}/lib/run-verdict.mjs" "${roots}" "${resumePath}"\n` +
+    `   node "${pluginRoot}/lib/run-verdict.mjs" "${resumePath}" "${resumePath}"\n` +
     rootWarning +
+    `Both arguments are the run directory, and that is not a typo. The repository this run ` +
+    `belongs to is recorded INSIDE its own plan, and the command works it out from there — ` +
+    `the second argument is only a fallback for a run directory in an unusual place. Do not ` +
+    `substitute a path of your own, and do not "correct" it to the repository you happen to be ` +
+    `standing in: this used to be handed the caller's working directory, which on a resume of a ` +
+    `plan written elsewhere pointed git at the wrong tree entirely and reported every order as ` +
+    `never started.\n\n` +
     `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, ` +
     `do not reformat it, do not pretty-print it, do not summarise it, and do not fix anything ` +
     `in it that looks wrong. It is one line of JSON carrying its own digest: your caller ` +
@@ -1407,7 +1457,6 @@ function coderPrompt(wo, branch) {
       'that, so an invocation that dies after you do not have to guess whether you were done.',
       JSON.stringify({
         kind: 'coder-done', seq: nextSeq(), order: wo.id, branch,
-        worktree: '<the absolute worktree path>', base_sha: '<your base_sha>',
         head_sha: '<your final head_sha>',
         commits: [{ sha: '<sha>', subject: '<subject>' }],
       })) +
@@ -1454,7 +1503,6 @@ function coderContinuePrompt(wo, facts) {
       'Record that the series is finished, now that you have finished it.',
       JSON.stringify({
         kind: 'coder-done', seq: nextSeq(), order: wo.id, branch: facts.branch,
-        worktree: facts.worktree, base_sha: facts.base_sha,
         head_sha: '<your final head_sha>',
         commits: [{ sha: '<sha>', subject: '<subject>' }],
       })) +
@@ -1780,7 +1828,7 @@ const escalationLine = (wave, wo, reason) => ({
 // re-derives the same verdict from them. Logs written by the older version are still read —
 // dropping the reader would make an upgrade rebuild work its own predecessor had finished.
 
-function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
+function reviewerPrompt(wo, state, advisories, concerns, priorBlockers, round) {
   const followUp = priorBlockers.length > 0
 
   const prior = !followUp ? '' :
@@ -1897,7 +1945,18 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
     `"consider". Before returning, drop any draft finding that is owned by the build and ` +
     `suite the verifier already ran, that a re-read with context shows is not a defect, or ` +
     `that a principal engineer would not raise. Finding nothing new after an honest attack ` +
-    `IS your report — do not pad the round.`
+    `IS your report — do not pad the round.
+
+` +
+    journalSection(
+      'Record that this round happened, whatever it found. A resume otherwise reopens review ' +
+      'at round one on an order that has already survived three, which is how a review loop ' +
+      'costs its whole price again.',
+      JSON.stringify({
+        kind: 'review-observed', seq: nextSeq(), order: wo.id, round,
+        branch: state.branch, head_sha: state.head_sha,
+        findings: [{ id: '<finding id>', severity: '<critical|major|minor|advisory>' }],
+      }))
 }
 
 function integrationReviewPrompt(merged) {
@@ -2235,7 +2294,7 @@ async function reviewLoop(wo, state, trail) {
 
     const call = await dispatch(wo, state, trail, 'reviewer round ' + round + ' for ' + wo.id,
       openBlockers,
-      () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorBlockers), {
+      () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorBlockers, round), {
         agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
         phase: 'Review', label: `review:${wo.id}#${round}`, ...judge,
       }))
@@ -2540,6 +2599,9 @@ let deferred = []
 let blocked = []
 let surveyCoverage = null
 let partitionNote = ''
+// The partition verdict lib/run-verdict.mjs already reached on disk, carried rather than
+// re-derived. '' on a fresh run, where the planner's raw string is genuinely parsed here.
+let resumePartitionNote = ''
 let planPath = ''
 // The run's identity in git. Every branch this run creates is named from it, which is what
 // makes an interrupted run's work findable rather than merely present.
@@ -2767,7 +2829,11 @@ try {
     // script over records that had each crossed a model to get here.
     for (const row of verdict.orders || []) {
       if (row.escalated) {
-        escalatedPrior.set(row.id, { wave: row.escalated_wave || 0, seq: row.escalated_seq || 0 })
+        escalatedPrior.set(row.id, {
+          wave: row.escalated_wave || 0,
+          seq: row.escalated_seq || 0,
+          reason: row.escalated_reason || '',
+        })
       }
 
       // Facts about the branch, in the shape the chain below already consumes. Only an order
@@ -2820,7 +2886,13 @@ try {
       }
     }
 
-    for (const item of verdict.knowledge || []) knowledge.add(item)
+    // Seeded into both sets. The run already wrote these down, so this invocation's first wave
+    // line must not write them again — which is the duplication the delta exists to stop, and a
+    // resume is exactly where it would otherwise reappear.
+    for (const item of verdict.knowledge || []) {
+      knowledge.add(item)
+      knowledgeRecorded.add(item)
+    }
     integration.base_sha = (verdict.integration || {}).base_sha || ''
     integration.head_sha = (verdict.integration || {}).head_sha || ''
     // The counter continues where the run left it. Restarting at zero would mint numbers this
@@ -2849,18 +2921,24 @@ try {
       // Already parsed on disk, by code. It is re-serialized here only because the partition
       // step below is shared with the fresh path, where the planner really does hand back a raw
       // string that has to be parsed and can genuinely be a paraphrase.
-      partition_raw: (verdict.partition || {}).note
-        ? JSON.stringify({ error: (verdict.partition || {}).note })
-        : JSON.stringify({
-          waves: (verdict.partition || {}).waves || [],
-          coupled: (verdict.partition || {}).coupled || [],
-        }),
+      //
+      // A note is carried WITHOUT being wrapped as `{error: ...}`. That wrapper reached the
+      // "the partition refused the plan" branch below, which then told a human that a parse
+      // failure was "a planning defect, not a parse failure" — the exact conflation IRON LAW §7
+      // forbids, printed in the same sentence as the parse error it contradicted. The three
+      // labels are decided on disk by `partitionOf`, and `resumePartitionNote` below is how
+      // they are preserved through a step written for the fresh path.
+      partition_raw: JSON.stringify({
+        waves: (verdict.partition || {}).waves || [],
+        coupled: (verdict.partition || {}).coupled || [],
+      }),
       blocking_gaps: (verdict.plan || {}).blocking_gaps || [],
       plan_path: verdict.plan_path || resumePath,
       notes: '',
     }
     planPath = planned.plan_path || resumePath
     runstamp = verdict.runstamp || runstampOf(planPath)
+    resumePartitionNote = (verdict.partition || {}).note || ''
 
     // ------------------------------------------------- 1c. adopt the envelope
     //
@@ -3226,12 +3304,20 @@ try {
   // in coverage.unreached, not only in this log stream.
   let partition = null
 
-  try {
-    partition = JSON.parse(planned.partition_raw)
-  } catch (e) {
-    partitionNote = 'partition_raw is not JSON (' + (e && e.message) + ') — either the ' +
-      'planner paraphrased the CLI output instead of pasting it, or, on a resume, the ' +
-      'courier carrying it off disk did not reproduce it intact'
+  // On a resume the three labels were already decided on disk, by lib/run-verdict.mjs reading
+  // plan.json. Carrying that verdict through rather than re-deriving one keeps the reason
+  // precise: a partition the CLI REFUSED is a planning defect, and a partition that would not
+  // parse is a paraphrased plan, and telling a human the second story about the first sends
+  // them hunting a dependency cycle that does not exist.
+  if (resumePartitionNote) {
+    partitionNote = resumePartitionNote
+  } else {
+    try {
+      partition = JSON.parse(planned.partition_raw)
+    } catch (e) {
+      partitionNote = 'partition_raw is not JSON (' + (e && e.message) + ') — the planner ' +
+        'paraphrased the CLI output instead of pasting it'
+    }
   }
 
   if (!partitionNote && partition && partition.error) {
@@ -3244,9 +3330,16 @@ try {
   }
 
   if (partitionNote) {
-    log(`WARNING: ${partitionNote}; every order goes to the session.`)
+    // Every order the run has NOT already landed. The filter is the whole lesson of the field
+    // incident: when the partition could not be read, this branch used to hand the session the
+    // entire plan — including four orders that were built, reviewed and merged, in the same
+    // result that reported them as merged. A caller acting on that list reimplements finished
+    // work by hand. The rework removed the transport cause; this removes the damage.
+    coupled = orders.map((wo) => wo.id).filter((id) => !landed.has(id))
+    const held = orders.length - coupled.length
+    log(`WARNING: ${partitionNote}; ${coupled.length} order(s) go to the session` +
+      (held > 0 ? `, and the ${held} already merged are left alone.` : '.'))
     failedChannels.push('partition')
-    coupled = orders.map((wo) => wo.id)
   } else {
     waves = partition.waves.map((wave) => wave.filter((id) => orderById.has(id)))
     coupled = (partition.coupled || []).slice()
@@ -3513,6 +3606,16 @@ try {
 
     log(`Integration worktree ${integration.worktree} on ${integration.branch} at ${integration.head_sha}.`)
 
+    // Everything an order's salvage consists of, dropped together. The two failure branches
+    // below used to clear different subsets, so one of them left a stage record naming a
+    // worktree nobody had managed to create.
+    const dropSalvage = (id) => {
+      scavenged.delete(id)
+      salvagedApproved.delete(id)
+      verifiedOnDisk.delete(id)
+      continueSeries.delete(id)
+    }
+
     // ------------------------------------------------ 3c-bis. materialize worktrees
     //
     // Every question about what an interrupted predecessor left was answered on disk, before
@@ -3526,9 +3629,16 @@ try {
     //
     // This fires only for orders that need a tree and have none. On a resume whose worktrees
     // survived — the ordinary case — it does not fire at all.
+    //
+    // An order at the MERGE rung is excluded, and that exclusion is load-bearing. Its review
+    // closed in an earlier invocation and the merging agent works from the branch, so it needs
+    // no tree at all — and including it meant that a worktree the agent could not cut deleted
+    // its salvage below, sending a reviewed, approved series back to a fresh coder that
+    // re-anchors the branch over it. The comment above says losing a worktree loses nothing;
+    // this is what makes that true rather than aspirational.
     const needTrees = [...scavenged.entries()]
       .filter(([id, f]) => !f.worktree && !landed.has(id) && !escalatedPrior.has(id) &&
-        !staleWithheldIds.includes(id))
+        !salvagedApproved.has(id) && !staleWithheldIds.includes(id))
       .map(([id, f]) => ({ id, branch: f.branch }))
 
     if (needTrees.length > 0) {
@@ -3549,7 +3659,7 @@ try {
         const why = made && made.notes ? made.notes : 'the worktree pass returned no result'
         log(`WARNING: no worktree could be cut (${why}); those orders are implemented afresh.`)
         if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
-        for (const n of needTrees) scavenged.delete(n.id)
+        for (const n of needTrees) dropSalvage(n.id)
       } else {
         const paths = new Map((made.made || []).map((m) => [m.id, m.worktree]))
         for (const n of needTrees) {
@@ -3561,10 +3671,7 @@ try {
             // is the safe reading: the order is rebuilt, and its commits stay on the branch
             // for a human or a later resume to find.
             log(`No worktree could be made for ${n.id}; it is implemented from scratch.`)
-            scavenged.delete(n.id)
-            salvagedApproved.delete(n.id)
-            verifiedOnDisk.delete(n.id)
-            continueSeries.delete(n.id)
+            dropSalvage(n.id)
           }
         }
       }
@@ -3596,7 +3703,7 @@ try {
       escalated: [...escalatedPrior.keys()],
       integration_base: integration.base_sha,
       integration_head: integration.head_sha,
-      discovered: [...knowledge],
+      discovered: newKnowledge(),
     }), 'record:reconcile')
 
     // IRON LAW §5, and the same treatment the wave loop's own write gets. A resume can finish
@@ -3699,14 +3806,26 @@ try {
           'before this run recorded one. If a retry measured it green and was interrupted ' +
           'before its review, this is finished work waiting on that lever'
 
+    // The cause, where the ledger recorded one. An `order-escalated` line carries `reason` for
+    // exactly this moment, and reporting "the run state carries ids, not trails" over the top
+    // of it sent a human to a transcript from a session that may be gone while the answer sat
+    // on disk. Older logs genuinely have no reason, and there the honest sentence is the old
+    // one — so which is said depends on what was actually recorded.
+    const why = prior.reason
+      ? 'the earlier invocation recorded the cause as ' + JSON.stringify(prior.reason) +
+        '. The findings behind it were not made durable, so re-invoke with retry_escalated: ["' +
+        id + '"] once that cause has been dealt with'
+      : 'the findings themselves were not recorded — this run\'s log carries ids, not trails, ' +
+        'because it predates the order-escalated record. Read that invocation\'s report, or ' +
+        're-invoke with retry_escalated: ["' + id + '"] to dispatch it again once the cause ' +
+        'has been dealt with'
+
     escalations.push({
       id,
       reason: 'carried_forward',
       unresolved: [runtimeFinding(id + '-carried',
         'an earlier invocation of this run escalated this order in wave ' + wave,
-        'the findings themselves were not recorded — the run state carries ids, not trails. ' +
-        'Read that invocation\'s report, or re-invoke with retry_escalated: ["' + id + '"] to ' +
-        'dispatch it again once the cause has been dealt with' + greenNote)],
+        why + greenNote)],
       trail: [],
       branch: orderBranch(id),
       worktree: '',
@@ -3975,7 +4094,7 @@ try {
         integration_head: integration.head_sha,
         // Persisted so a resume inherits it. Without this the accumulator is per-invocation
         // and a run picked up next week starts as ignorant as a fresh one.
-        discovered: [...knowledge],
+        discovered: newKnowledge(),
       }), `record:wave-${waveNumber}`)
 
       if (!recorded || recorded.stop_reason !== 'recorded') {

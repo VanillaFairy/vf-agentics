@@ -450,10 +450,43 @@ test('a resume points the verdict at its own run directory, and at the CLI', asy
 
   assert.match(verdict, /C:\/repo\/\.claude\/vfa\/runs\/20260816-143005/,
     'the run directory the branch names are derived from')
-  assert.match(verdict, /node "C:\/plugin\/lib\/run-verdict\.mjs" "\." "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005"/,
-    'one command, with the roots and the run directory already resolved for it')
+  assert.match(verdict, /node "C:\/plugin\/lib\/run-verdict\.mjs" "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005" "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005"/,
+    'the run directory twice: the repository is recorded inside the plan, and the CLI reads it')
   assert.ok(!/vfa\/20260816-143005-W[12]/.test(verdict),
     'no branch is enumerated into the prompt — enumerating them is the CLI\'s job')
+})
+
+test('the verdict is never pointed at the CALLER\'s directory', async () => {
+  // The bug this pins, found by review before it shipped. `roots` is adopted from the plan
+  // envelope AFTER the verdict returns, so interpolating it into the command handed the CLI
+  // whatever the caller happened to pass — on the documented resume invocation (change +
+  // plugin_root + resume_path, no roots) that is ".". Resuming a plan written against another
+  // repository then ran `git -C .` in the wrong tree, found no branches, and reported every
+  // unmerged order as never started — after which each coder re-anchored its branch and the
+  // committed work survived only in the reflog. Silently: nothing said git had been asked
+  // about the wrong repository.
+  //
+  // The run directory is the fix because it needs nothing to be known first: the repository is
+  // recorded inside the plan the CLI is about to read, and the layout gives the root away.
+  const { prompts } = await runWorkflow(WF, {
+    args: { change: 'add the thing', plugin_root: 'C:/plugin', resume_path: RUN_DIR },
+    workflow: surveyResult,
+    agent: cast({
+      ...resumeVerdict(loaded({ envelope: envelope({ roots: 'C:/somewhere/else' }) })),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  const verdict = promptFor(prompts, 'resume-verdict')
+  assert.doesNotMatch(verdict, /run-verdict\.mjs" "\."/,
+    'the caller passed no roots; "." is the cwd, not this run\'s repository')
+  assert.doesNotMatch(verdict, /C:\/somewhere\/else/,
+    'and not the recorded roots either — that value is not known until the verdict returns')
+
+  // The recorded roots still govern everything dispatched afterwards, which is the half of
+  // this that was always working.
+  assert.match(promptFor(prompts, 'code:W2'), /C:\/somewhere\/else/)
 })
 
 test('adopted commits skip the coder and go straight to verification', async () => {
