@@ -141,8 +141,10 @@ The payload for a nine-order run measures ~13KB against the 118KB the old loader
 
 ### 2d. Derivation is duplicated, deliberately
 
-`verifyOk` and the journal parser exist in both `lib/run-verdict.mjs` and the workflow script,
-which cannot import. A resume must re-derive a measurement's verdict with the *same* function
+`verifyOk` and its predicates exist in both `lib/run-verdict.mjs` and the workflow script,
+which cannot import. The workflow judges LIVE verifier results with them; the lib judges
+recorded ones. (The journal PARSER is not duplicated — neither ledger is read in the workflow
+any more.) A resume must re-derive a measurement's verdict with the *same* function
 that derived it the first time, or an order green in one invocation is red in the next for no
 visible reason. The copies are pinned by `test/run-verdict.test.mjs`, exactly as the plan digest
 is pinned across its two homes.

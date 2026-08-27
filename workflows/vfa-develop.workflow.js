@@ -332,11 +332,6 @@ const failuresOutside = (failing, allowed) => {
 // re-measurement rather than buy a pass.
 const seriesClean = (v) => !(v.series_findings || []).some(f => !f || f.blocking)
 
-// The three answers a build or a suite can have. Named because a journal line is not schema
-// validated: a field that went missing must be told apart from `absent`, which is a fact the
-// verifier stated about the repository.
-const OUTCOME = new Set(['passed', 'failed', 'absent'])
-
 // ------------------------------------------------------------------ the journal
 //
 // state.jsonl records what the WORKFLOW decided. journal.jsonl records what an AGENT observed,
@@ -350,112 +345,17 @@ const OUTCOME = new Set(['passed', 'failed', 'absent'])
 // describes are the same execution.
 //
 // What stayed behind is deliberate. A verdict is never journalled, because no agent in this
-// pipeline gets to certify its own work — the verifier reports facts and `verifyOk` below
-// decides, the reviewer reports findings and the empty open set decides. So the journal holds
-// measurements and merges, both of which are things that HAPPENED, and the derivation runs
-// over them here, on resume, exactly as it ran the first time.
-
-/**
- * Parse journal.jsonl. Malformed lines are dropped and counted rather than halting: this file
- * is appended to by several agents while a kill can land mid-write, so a torn last line is an
- * expected shape of it, not corruption of the run. Everything the journal carries is either an
- * optimization (skip a re-measurement) or corroboration for a fact git also holds, so losing a
- * line costs tokens and never correctness.
- */
-function parseJournal(raw) {
-  const lines = String(raw || '').split('\n').map((l) => l.trim()).filter(Boolean)
-  const entries = []
-  let torn = 0
-
-  // Every field is normalized to its declared type on the way in, because the predicates that
-  // read these entries are written against a SCHEMA-VALIDATED verifier result where the arrays
-  // are `required`. A journal line has no schema behind it, and one that parses as JSON while
-  // missing `discriminator` would reach `verifyOk` as `undefined.every(...)` and throw — out
-  // of the replay loop, through the top-level catch, ending a resume before it dispatched
-  // anything. A file whose whole job is making an interrupted run cheaper must not end one.
-  //
-  // Normalizing is not the same as accepting, and `measured` says which. A missing field and
-  // an empty one are different answers: `discriminator: []` is a verifier saying it found
-  // nothing to discriminate, and no `discriminator` key at all is a line that never said. The
-  // second must not be read as the first — `plainVerifyOk` passes vacuously on an empty
-  // discriminator, so silently supplying one turns an incomplete line into a green verdict.
-  // Elements too, not only the containers. `null` is the one JSON scalar that throws on
-  // property access, and the predicates reach into these elements — so an array that survives
-  // `Array.isArray` while holding a null is the same defect as a missing array, wearing a
-  // shape that passes the check for it.
-  const arr = (v) => (Array.isArray(v) ? v.filter((e) => e && typeof e === 'object') : [])
-  const str = (v) => (typeof v === 'string' ? v : '')
-  const has = (o, k, test) => Object.prototype.hasOwnProperty.call(o, k) && test(o[k])
-
-  // A well-formed array is one whose every element carries the FIELDS the predicates read —
-  // not merely one whose every element is an object. Checking objecthood alone was the first
-  // version of this and it protected the wrong thing: the crash it prevented was real, but
-  // every field a predicate reaches for is missing in the PERMISSIVE direction.
-  //
-  //   a series finding with no `blocking`   -> undefined is falsy -> the series reads CLEAN
-  //   a discriminator with no `passes_now`  -> !undefined is true -> the test reads validly red
-  //
-  // So a line recording a blocking finding, minus the one key that says it blocks, comes back
-  // green and skips the verification that had actually failed. The live VERIFY schema marks
-  // both of those fields `required`; the journal has no schema, and this is where that gap is
-  // closed. Same rule as the fields above: what is missing must not be read as what is empty.
-  const field = (e, k, type) =>
-    Object.prototype.hasOwnProperty.call(e, k) && typeof e[k] === type
-  const elements = (spec) => (v) => Array.isArray(v) &&
-    v.every((e) => e && typeof e === 'object' &&
-      spec.every(([k, type]) => field(e, k, type)))
-
-  const wholeFindings = elements([['blocking', 'boolean']])
-  const wholeDiscriminator = elements([['failed_on_base', 'boolean'], ['passes_now', 'boolean']])
-  const wholeFailures = elements([['file', 'string']])
-
-  for (const line of lines) {
-    let parsed = null
-    try {
-      parsed = JSON.parse(line)
-    } catch (e) {
-      torn += 1
-      continue
-    }
-
-    if (!parsed || typeof parsed !== 'object' || !parsed.kind) {
-      torn += 1
-      continue
-    }
-
-    entries.push({
-      kind: str(parsed.kind),
-      // `0` for a line written before the counter existed — true rather than defaulted: such
-      // a line does predate every stamped one. Anything non-numeric is treated the same way,
-      // which loses an ordering rather than inventing one.
-      seq: Number.isInteger(parsed.seq) ? parsed.seq : 0,
-      order: str(parsed.order),
-      branch: str(parsed.branch),
-      worktree: str(parsed.worktree),
-      base_sha: str(parsed.base_sha),
-      head_sha: str(parsed.head_sha),
-      stop_reason: str(parsed.stop_reason),
-      build: str(parsed.build),
-      suite: str(parsed.suite),
-      failing_tests: arr(parsed.failing_tests),
-      discriminator: arr(parsed.discriminator),
-      series_findings: arr(parsed.series_findings),
-      // Whether this line recorded EVERYTHING the derivation reads, with the two outcomes
-      // drawn from the enum a verifier is allowed to report. `''` and `'absent'` are the case
-      // it separates — `absent` is an observed fact about the repository and keeps its
-      // meaning, `''` is a field that went missing and must not inherit it. Named apart from
-      // the state line's own `measured`, which is an array of what was mechanically checked.
-      recorded: has(parsed, 'stop_reason', (v) => typeof v === 'string') &&
-        has(parsed, 'build', (v) => OUTCOME.has(v)) &&
-        has(parsed, 'suite', (v) => OUTCOME.has(v)) &&
-        has(parsed, 'failing_tests', wholeFailures) &&
-        has(parsed, 'discriminator', wholeDiscriminator) &&
-        has(parsed, 'series_findings', wholeFindings),
-    })
-  }
-
-  return { entries, torn }
-}
+// pipeline gets to certify its own work — the verifier reports facts and the predicates below
+// decide, the reviewer reports findings and the empty open set decides.
+//
+// NEITHER FILE IS PARSED HERE ANY MORE. This script used to hold a lenient journal parser and
+// replay the whole log in-script, because the log arrived as a string carried back by a
+// courier. Both files are read off disk by lib/run-verdict.mjs now, and what crosses into this
+// script is the derived answer under a digest. The predicates below stay, because they judge
+// LIVE verifier results during the run — and the lib holds a behavioural copy of them so that a
+// resume re-derives a measurement's verdict with the same function that derived it the first
+// time. An order green in one invocation and red in the next, for no visible reason, is what
+// that duplication exists to prevent.
 
 // What every role needs before its own question is even worth asking: the verifier finished,
 // the tree builds, and no commit broke its locus. A build that failed makes every downstream
