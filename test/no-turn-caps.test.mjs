@@ -49,15 +49,20 @@ test('flags a prose stop tied to an effort unit', () => {
   assert.equal(check('stop after 3 turns', SKILL).length, 1)
 })
 
-test('does NOT flag MAX_ROUNDS — resume rounds implement IRON LAW §3', () => {
+test('flags MAX_ROUNDS — the resume loops are progress-gated, not counted', () => {
   const src = [
     'const MAX_ROUNDS = 3',
     'while (round < MAX_ROUNDS) {',
     '}',
   ].join('\n')
 
-  assert.deepEqual(check(src, WF), [])
-  assert.deepEqual(check('  maxRounds: 3,', WF), [])
+  assert.equal(check(src, WF).length, 2, 'both mentions should be flagged')
+  assert.equal(check('  maxRounds: 3,', WF).length, 1)
+})
+
+test('a bare round counter used only for labels is not a cap', () => {
+  assert.deepEqual(check('  const label = `scout round ${round}`', WF), [])
+  assert.deepEqual(check('  round += 1', WF), [])
 })
 
 test('does NOT flag a convergence self-check', () => {
