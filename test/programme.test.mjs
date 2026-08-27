@@ -406,6 +406,37 @@ test('unknown: an attributed run cannot be read', () => {
   assert.match(sliceIn(derived, 'walk').label, /unmeasured/)
 })
 
+// The fixture above carries tags, and a genuinely unreadable run cannot: `run-status` reads
+// the tags OUT of plan.json, so the file that failed to parse is the file the tags live in.
+// Every real unreadable row arrives blank, which used to drop it on the untagged line and
+// leave the branch above unreachable — a torn plan.json read as "no run here at all", and the
+// slice as ready to dispatch over work that may already have merged.
+test('unknown: an unreadable run in the programme worktree freezes the programme', () => {
+  const torn = {
+    runstamp: '20260817-091412', change: '', programme: '', slice: '',
+    status: 'unreadable', label: 'unreadable', in_programme_tree: true,
+  }
+  const derived = derive({ designed: { walk: true }, runs: [torn] })
+
+  assert.ok(derived.slices.every((s) => s.status === 'unknown'),
+    'an unreadable run names no slice, so its blast radius is undecidable')
+  assert.match(derived.degraded, /cannot be read/)
+  assert.match(derived.degraded, /20260817-091412/)
+  assert.equal(derived.complete, false)
+})
+
+test('an unreadable run OUTSIDE the programme worktree is not this layer/s business', () => {
+  const foreign = {
+    runstamp: '20260817-091412', change: '', programme: '', slice: '',
+    status: 'unreadable', label: 'unreadable',
+  }
+  const derived = derive({ designed: { walk: true }, runs: [foreign] })
+
+  assert.equal(derived.degraded, '',
+    'a torn run in the user/s own runs dir belongs to the `runs` skill, not to a programme')
+  assert.equal(sliceIn(derived, 'walk').status, 'ready')
+})
+
 test('unknown: a degraded event log freezes every slice', () => {
   const derived = derive({ degraded: 'state.jsonl line 4 is not JSON' })
 

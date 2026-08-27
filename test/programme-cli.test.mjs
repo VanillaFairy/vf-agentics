@@ -289,6 +289,52 @@ test('--notes concatenates the marked sections and names the predecessors', (t) 
   assert.match(out, /walk delivered at 4f2a91c/)
 })
 
+test('--change prints the marked change section byte-exact', (t) => {
+  const { root } = fixture()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  const { out, status } = cli(root, '--change', 'walk')
+
+  assert.equal(status, 0)
+  // Byte-exact is the whole point: develop's existing_run guard compares this string exactly,
+  // so a session retyping it — a rewrapped line, a normalized dash — plans the slice twice.
+  assert.equal(out, 'Deliver walk.')
+})
+
+test('--change fails by name when the leaf carries no change section', (t) => {
+  const { root, dir } = fixture()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  writeFileSync(join(dir, 'slices', 'walk.md'), '# walk\n\nstill drafting', 'utf8')
+  const { out, status } = cli(root, '--change', 'walk')
+
+  assert.equal(status, 1)
+  assert.match(JSON.parse(out).error, /not a finished design/)
+})
+
+test('--append-delivered refuses a run that is visibly still in flight', (t) => {
+  const { root } = fixture()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  // A run sitting in the programme's own worktree, planned and never finished.
+  const runDir = join(root, '.claude', 'worktrees', 'programme-' + NAME,
+    '.claude', 'vfa', 'runs', '20260817-091412')
+  mkdirSync(runDir, { recursive: true })
+  writeFileSync(join(runDir, 'plan.json'), JSON.stringify({
+    change: 'Deliver walk.', programme: NAME, slice: 'walk',
+    partition_raw: JSON.stringify({ waves: [['W1']], coupled: [] }),
+  }), 'utf8')
+
+  const { out, status } = cli(root, '--append-delivered', '--slice', 'walk',
+    '--run', '20260817-091412', '--merged-sha', 'abc',
+    '--coverage', coverageFile(root, COMPLETE))
+
+  assert.equal(status, 1)
+  // `delivered` is terminal for a slice, so a premature one can never be corrected by a
+  // later append — the real delivery has nowhere to go.
+  assert.match(JSON.parse(out).error, /A delivery is terminal/)
+})
+
 test('--notes fails loudly and by name when a marker is missing', (t) => {
   const { root } = fixture({ root: '# system\n\nno markers here' })
   t.after(() => rmSync(root, { recursive: true, force: true }))
