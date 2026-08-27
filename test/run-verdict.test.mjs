@@ -15,7 +15,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  deriveVerdict, measuredOf, nextActionFor, parseJournal, parseState, partitionOf, replay, verifyOk,
+  ACTIONS, deriveVerdict, measuredOf, nextActionFor, parseJournal, parseState, partitionOf,
+  replay, verifyOk,
 } from '../lib/run-verdict.mjs'
 import { digestOrder } from '../lib/plan-digest.mjs'
 
@@ -528,12 +529,36 @@ test('measured records what was mechanically checked, and is never a verdict', (
     ['build', 'suite'])
 })
 
-test('nextActionFor names an action from the fixed lifecycle, or none', () => {
-  const ALLOWED = new Set(['none', 'merge', 'review', 'verify', 'continue-series', 'code'])
+test('nextActionFor only ever names a value ACTIONS declares', () => {
+  // Checked against the exported set rather than a list written here, so a rung added to the
+  // ladder without being declared fails this test instead of reaching a caller that switches
+  // on a value it has never heard of.
+  const allowed = new Set(ACTIONS)
   const r = replay([], { entries: [], torn: 0 }, new Map([['W1', order('W1')]]))
 
   for (const branches of [{}, { W1: branchRow('W1') }, { W1: branchRow('W1', { commits: [] }) }]) {
     const { next_action } = nextActionFor('W1', order('W1'), r, git(branches))
-    assert.ok(ALLOWED.has(next_action), next_action + ' is not a lifecycle action')
+    assert.ok(allowed.has(next_action), next_action + ' is not a declared action')
   }
+})
+
+test('every rung the ladder can reach is a declared action', () => {
+  const allowed = new Set(ACTIONS)
+  const reached = new Set()
+  const fixtures = [
+    {},
+    { state: [waveLine({ merged: ['W1'] })] },
+    { state: [stageLine('order-approved')], branches: { W1: branchRow('W1') } },
+    { journal: [verifyObserved()], branches: { W1: branchRow('W1') } },
+    { branches: { W1: branchRow('W1') } },
+    { branches: { W1: branchRow('W1', { commits: [] }) } },
+    { orders: [order('W1'), order('W2')],
+      journal: [{ kind: 'coder-done', seq: 5, order: 'W2', head_sha: B40, commits: [] }],
+      branches: { W1: branchRow('W1') } },
+  ]
+
+  for (const f of fixtures) reached.add(actionFor('W1', f).next_action)
+
+  for (const action of reached) assert.ok(allowed.has(action), action + ' is undeclared')
+  assert.equal(reached.size, 6, 'every one of the six rungs is exercised above')
 })
