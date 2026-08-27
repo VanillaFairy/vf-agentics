@@ -158,45 +158,34 @@ Anything that stops you — the path exists as a file, the base is unknown, git 
 is `stop_reason: 'environment_broken'` with the real git output in `notes`. Never report a
 worktree you did not create and could not enter: everything downstream merges into that path.
 
-## Scavenge mode
+## Worktree mode
 
-When dispatched to scavenge, you are given the integration branch and a list of candidate
-orders, each with the branch name its coder would have committed to. A run's order branches
-are named deterministically — `vfa/<runstamp>-<order-id>` — precisely so that a later
-invocation can go and look for what an interrupted one built.
+When dispatched with a list of branches, you make each one enterable and do nothing else. No
+commits, no merges, no deletions, no force, no checking a branch out anywhere else.
 
-Per candidate, in the target repository:
+Per branch, in the target repository:
 
-1. `git rev-parse --verify <branch>` — no resolution means the order was never started. Leave
-   it out of `found`. That is the ordinary case, not a problem.
-2. `git merge-base <branch> <integration-branch>` — the fork point, reported as `base_sha`. It
-   is the baseline a discriminator will be measured against, so it is observed, never assumed.
-3. `git merge-base --is-ancestor <branch> <integration-branch>` — `already_merged`, read from
-   the exit status and nothing else. A branch already in the integration branch is reported
-   **even when step 4 finds no commits ahead of the fork point**: that combination is the
-   signature of a merge that landed in git while the invocation making it died before writing
-   it down, and it is the one thing that tells a resume not to build it again.
-4. `git log --reverse --format=%H%x09%s <base_sha>..<branch>` — the commits. A branch that
-   resolves with none ahead of the fork point and is not already merged holds nothing to
-   adopt; leave it out too.
-5. Make it enterable. `git worktree list` — reuse the worktree the branch already has, or
-   create one with `git worktree add <path> <branch>`. Report the **absolute** path. An
-   already-merged branch needs no worktree and may report an empty one; say so in `notes`.
-6. `git rev-parse <branch>` for `head_sha`, read back rather than expected. This is the field
-   your caller compares against what the run recorded, so an expected value here is a finished
-   stage adopted on a claim instead of on the commits it closed over.
+1. `git worktree list` — if the branch already has a worktree, report that path and move on.
+   Git refuses the same branch in two worktrees, so a second `add` would fail anyway.
+2. Otherwise `git worktree add .claude/worktrees/vfa-<the branch's last path segment> <branch>`.
+3. Report the **absolute** path, confirmed by entering it. Everything downstream is dispatched
+   into the path you report, and a wrong one sends a review at the wrong tree.
 
-Report only what you observed. An order you could not resolve, could not enter, or could not
-read commits for is **left out**, with the reason in `notes`: your caller reads an absent entry
-as "there is nothing here to adopt" and dispatches a coder, which is safe either way. An entry
-naming a worktree you did not confirm you could enter is not safe — a fix round would be sent
-into a directory that is not there.
+A branch you could not create a worktree for, or could not enter, is **left out** of `made`,
+with the reason in `notes`. Your caller reads an absent entry as "this order has nowhere to
+stand" and rebuilds the order from scratch — which costs tokens and loses nothing, because the
+commits stay on the branch. An entry naming a worktree you did not confirm is the unsafe answer:
+a review dispatched into a directory that is not there.
 
-You adopt nothing and you judge nothing. What your caller does with a branch depends on
-whether the run's own record of a finished stage matches the head you report: where they
-agree, that stage is taken as done; where they do not, everything past the last stage they
-agree on is redone. Which is why the shas must be read rather than expected — you are one of
-the two witnesses, and the other one cannot see the tree.
+If git itself is unusable, `stop_reason: 'environment_broken'` with what it said.
+
+**You are not asked what exists.** This mode used to be called scavenge, and it also went
+looking: which of a run's order branches resolve, what each holds, whether it is already in the
+integration branch, what the fork point is. All of that is computed now by
+`lib/run-verdict.mjs`, which reads the run's ledgers and asks git the same questions with the
+same commands — deterministically, in code, on every resume. Only the *action* was left here,
+because creating a worktree is something to do rather than something to find out. So you receive
+a list somebody already knows is correct, and the honest report is which paths now exist.
 
 ## Merge mode
 
