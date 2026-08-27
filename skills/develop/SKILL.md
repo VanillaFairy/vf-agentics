@@ -81,10 +81,11 @@ user is the one who knows. What you must not do is silently plan the same change
   cache and only what died re-runs. This is the cheap one, and it is available only inside the
   conversation that launched the run.
 - **`resume_path`**, the durable one, otherwise. It crosses sessions and machines-with-the-same-
-  checkout. It pays for the loader fan — one small index courier plus one courier per work
-  order, each verified against the plan's stored digests — and for nothing else: no survey,
-  no planning, and no re-doing of any stage the run recorded and git still corroborates
-  (step 3e's ladder).
+  checkout. It pays for ONE courier — which runs `lib/run-verdict.mjs` and pastes its stdout,
+  a small payload carrying its own digest — and for nothing else: no survey, no planning, and
+  no re-doing of any stage the run recorded and git still corroborates (step 3e's ladder).
+  A run whose ledger is empty and whose order branches do not exist is recognised as having
+  nothing to salvage *by definition*, and opens for the cost of one `git branch --list`.
 
 Reach for the first when you can and the second when you cannot. The field incident used
 neither, because until now no skill said when to use which.
@@ -330,8 +331,9 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
 
       **Records are written by whoever did the thing.** A verifier appends its measurements to
       the run's `journal.jsonl` inside the dispatch that measured; the agent that performs a
-      merge appends the merge inside the dispatch that merged. `state.jsonl` keeps what the
-      workflow itself decided — an order's approval the moment its review closes, and each
+      merge appends the merge inside the dispatch that merged; a coder appends the fact that
+      its series is finished. `state.jsonl` keeps what the workflow itself decided — an order's
+      approval the moment its review closes, an escalation the moment it happens, and each
       wave's outcome when it ends. The split has a scar behind it: every record used to be
       written by a separate courier dispatched afterwards, and a usage limit killed the courier
       for a wave whose merges had already happened, so the work was in the branch and nothing
@@ -341,6 +343,20 @@ refusal is a stop, and passing `resume_path` up front is the version of it that 
       the wave. Nothing an agent writes is a verdict — the facts are re-derived on resume by
       the same computation that judged them the first time — so a journalled line can never
       wave through work that was not actually measured.
+
+      **Every append goes through `lib/ledger.mjs`,** which parses the line, checks it against
+      the digest its caller minted, and refuses what does not match. A run in the field once
+      wrote five unreadable records because an agent un-escaped some Windows paths while typing
+      the append command; a refused line costs one retry, an unreadable one costs the next
+      invocation a re-measurement it cannot see it needs.
+
+      **A resume resumes each order at its next undone action,** never earlier. The lifecycle is
+      `code → verify → review → merge`, the records say which steps closed, git says whether the
+      commits they closed over are still there, and `lib/run-verdict.mjs` names the one action
+      that comes next. Committed work is salvageable by right — commits live on the branch, so
+      a pruned worktree loses nothing — while uncommitted changes are reported as a fact and
+      adopted by nobody automatically. A series whose coder never recorded finishing is
+      *continued* from its last commit rather than measured as if complete.
 
       **Escalations carry forward.** An order an earlier invocation escalated is not silently
       dispatched again: it comes back in `escalations` with `reason: 'carried_forward'`, and

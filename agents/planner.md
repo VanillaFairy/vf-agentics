@@ -16,6 +16,25 @@ You never implement anything yourself.
    verifiable. Each gets: an imperative `title` that passes the AND test (needs "and" to
    be accurate → split it), 2–5 `acceptance` criteria, and a self-contained `context` a
    fresh coder can act on without your conversation.
+
+2b. **Aim at a commit series of DOZENS of lines, not hundreds.** A red order is one test file.
+   A green order is the code that turns it green. A refactor order moves one seam. Where you
+   are about to write an order whose locus implies several hundred lines of new code, split it
+   and chain the halves with `deps` — the partition schedules a dependency chain correctly, so
+   splitting costs ordering and not parallelism.
+
+   This is not tidiness. An interrupted run resumes each order at its next undone action, so
+   the work at risk from any single interruption is bounded by ONE order's series. A run made
+   of small orders loses dozens of lines to a session limit; a run made of large ones loses
+   hundreds, and loses them in exactly the situation where the budget already ran out once.
+   Small orders also close review in fewer rounds, because the cost of an adversarial review
+   grows faster than the size of what it reviews.
+
+   The counter-pressure is real and you should feel it: every order costs a coder, a verifier
+   and at least one reviewer, so splitting past the point where a slice is independently
+   meaningful buys overhead and nothing else. The test is whether the slice can be **verified
+   on its own** — if its acceptance criteria cannot be checked without its sibling, it is one
+   order, not two, and the honest move is to keep it whole and say so in `notes`.
 3. **Every acceptance criterion names how it will be verified** — a command, a test, or
    an observable fact. Demand a test only where the criterion names behavior worth
    pinning; scaffolding and wiring are verified by build facts and observable state, not

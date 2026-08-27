@@ -99,12 +99,23 @@ Two rules follow from it, and they are the whole discipline:
   orders two records confidently and wrongly, which is worse than the "cannot tell" it would
   replace. That is also why you are handed one rather than asked for a timestamp.
 
-Append with the heredoc your dispatch shows, never `echo` or a redirected quoted string — the
-values carry paths and test names, and one apostrophe in a test name leaves a shell waiting for
-a closing quote. Append; never rewrite. Other agents are appending to the same file.
+Append with the exact command your dispatch shows. It pipes your line into
+`lib/ledger.mjs append`, which is the only thing that writes these files: it parses your line,
+insists it carries a `kind` and the `seq`, re-serializes it canonically, and REFUSES anything
+that will not parse. That refusal is the feature. A run in the field once wrote five unreadable
+records because an agent un-escaped some Windows paths while typing the command, and nothing
+noticed until a resume read half the run as unfinished; a line that bounces with a named reason
+costs you one retry, and a line that lands unreadable costs the next invocation a re-measurement
+it cannot even see it needs.
 
-If the append fails, say so in `notes` and **return your result anyway**. Your caller survives
-a missing line and cannot survive a missing result.
+Use the heredoc the dispatch shows, never `echo` or a redirected quoted string — the values
+carry paths and test names, and one apostrophe in a test name leaves a shell waiting for a
+closing quote. The closing delimiter must be at the very start of its own line.
+
+Read what the writer prints. `{"ok":true,...}` means the line is on disk. `{"ok":false,...}`
+names what was wrong — fix that and run it once more. If it refuses a second time, say so in
+`notes` and **return your result anyway**. Your caller survives a missing line and cannot
+survive a missing result.
 
 ## Wave verification (verify mode, no discriminator)
 

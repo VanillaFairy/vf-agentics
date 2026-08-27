@@ -54,25 +54,42 @@ and look at what an interrupted invocation actually built.
 A record produced by a separate dispatch after the fact has a window where the work exists and
 nothing on disk says so, and a usage limit has landed in that window in the field. So agents
 append what they observed to `journal.jsonl` themselves — the verifier its measurements, the
-merging agent its merges — while `state.jsonl` holds what the *workflow* decided, approvals and
-wave outcomes, written by a recorder that now truly appends rather than rewriting. No agent
-journals a verdict: verdicts are re-derived from the recorded facts on resume, by the same
-functions that derived them the first time, which is what makes agent-written durability safe.
-Both files share one monotonic `seq`, minted here and copied by the writer — a counter rather
-than a clock, because an agent that can read a clock can invent one, and a fabricated
-timestamp orders two records confidently and wrongly.
+merging agent its merges, the coder the fact that its series is finished — while `state.jsonl`
+holds what the *workflow* decided: approvals, escalations, wave outcomes. No agent journals a
+verdict: verdicts are re-derived from the recorded facts on resume, by the same functions that
+derived them the first time, which is what makes agent-written durability safe. Both files
+share one monotonic `seq`, minted here and copied by the writer — a counter rather than a
+clock, because an agent that can read a clock can invent one, and a fabricated timestamp orders
+two records confidently and wrongly.
 
-A resume then **salvages by stage**. It trusts a stage exactly as far as two independent
-records agree: the run said the stage closed, and git still holds the head it closed over.
-Where they agree the stage is adopted whole — an order approved and unchanged is merged as it
-stands, an order verified and unchanged goes straight to review, a merge git already holds is
-recorded rather than rebuilt. Where they disagree, everything past the last stage they agree
-on is redone. Rebuilding from scratch is the bottom of that ladder, not the top: an
-interrupted run re-buying its own finished work is the failure the ladder exists to prevent,
-and it is at its most expensive in exactly the situation where the budget already ran out
-once. Escalations are carried forward rather than silently retried — `retry_escalated` names
-the ids whose cause has been dealt with. Salvage is always reported: a run that says
-"implemented W4" about work it adopted rather than did is describing work it did not do.
+**Bytes never ride a model; references and digests do.** A workflow script has no filesystem, so
+everything crossing between disk and the script used to ride an agent's OUTPUT, which is where
+corruption lives — a loader paraphrased 13 of 14 orders, a recorder wrote five unparseable
+lines, and a courier mangled `partition_raw` three times running, each time degrading a
+half-built run to "every order is coupled". Reading is the safe direction: a tool result enters
+an agent's context byte-exact. So `lib/run-verdict.mjs` computes the entire resume decision on
+disk and prints it with its own digest, a courier pastes that stdout, and the script recomputes
+the digest before believing a word of it. `lib/ledger.mjs` is the only writer: it parses, checks
+the caller's digest, and refuses a line it cannot prove intact. Order prose is never
+transported — a coder fetches its own order with `ledger.mjs order` and confirms the digest.
+Contract: `docs/superpowers/specs/2026-08-27-increment-9-contracts.md`.
+
+A resume then **salvages to the action**. Each order's lifecycle is a fixed sequence —
+`code → verify → review → merge` — and the verdict names the single **next undone action** per
+order, trusting a stage exactly as far as two independent sources agree: the run recorded that
+it closed, and git still holds the head it closed over. Rebuilding from scratch is the bottom of
+that ladder, not the top. Committed work is scavengeable by right, since commits live on the
+branch and survive a lost worktree; uncommitted work is reported as a fact and adopted by
+nobody automatically. Two regimes, deliberately asymmetric: a **clean** run — empty ledger, no
+`vfa/<runstamp>-*` branches — has nothing to salvage *by definition* and opens for the cost of
+one `git branch --list`, while a **dirty** one resumes each order exactly where it stopped.
+Escalations are carried forward rather than silently retried — `retry_escalated` names the ids
+whose cause has been dealt with. Salvage is always reported: a run that says "implemented W4"
+about work it adopted rather than did is describing work it did not do.
+
+Because the recovery surface is one order's series, **order grain is a correctness property, not
+tidiness**: the planner aims at commit series of dozens of lines rather than hundreds, so a
+session limit costs dozens.
 
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,

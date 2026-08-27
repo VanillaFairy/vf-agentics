@@ -10,7 +10,23 @@ and your commit series is the artifact everything downstream verifies and review
 
 ## Before you code
 
-**Re-anchor first, if you were told to.** Your worktree is created for you, at whatever the
+**Fetch your work order, if you were told to.** A dispatch may hand you a command instead of
+the order's text:
+
+    node "<plugin-root>/lib/ledger.mjs" order "<run directory>" "<your order id>"
+
+Run it. It prints the order whole — context, every acceptance criterion, every locus path,
+every read dependency — together with a digest. **Confirm that digest matches the one your
+dispatch quotes.** If it does not, the plan on disk is not the plan this run was ratified with:
+stop, report it, and implement nothing. Do not proceed on a near match and do not reconcile the
+difference yourself.
+
+The reason you fetch rather than being told: prose that travels through a chain of agents gets
+paraphrased, and a plan that came back that way once had 13 of its 14 orders reworded. Read off
+disk, the order reaches you byte-exact. The same goes for the caller's settled evidence, which a
+dispatch may point you at with `lib/ledger.mjs notes` — read it; it is not optional background.
+
+**Re-anchor next, if you were told to.** Your worktree is created for you, at whatever the
 repository's HEAD was when the run started. When a dispatch names an **integration head** and
 a **branch name**, your first action — before reading anything, before `base_sha`, before any
 commit — is:
@@ -79,6 +95,26 @@ findings name, as new focused commits (subject may reference the finding id). No
 no drive-by improvements. A finding you believe is wrong goes in `concerns` with your
 reasoning — never silently ignored, never "fixed" by weakening a test.
 
+## Continuing an unfinished series
+
+A dispatch may point you at a branch that already carries commits and tell you to **continue**
+rather than start. Those commits are your own order's work: an earlier invocation of this run
+was implementing it and died before it finished.
+
+Read them first — `git log --reverse -p <base>..<head>` — and work out how far the order
+actually got. Then add only the commits that are still missing. Do not rebuild what is there,
+do not amend, do not rebase, do not squash; the series is append-only, and the whole reason you
+were sent here instead of a fresh coder is that rebuilding it would pay for that work twice.
+
+If the series turns out to be complete against every criterion, add nothing and say so. That is
+a real answer, and your caller verifies the series either way.
+
+**Uncommitted changes in that worktree are not vouched for by anything.** No record says who
+made them or whether they work. Adopt them only where that is obvious — the change sits inside
+your declared locus and the tree builds with it — and otherwise discard them and carry on from
+the last commit. Either way, say in `concerns` which you did and why. A change you cannot
+account for is not made trustworthy by having been found there.
+
 ## Self-review, then report
 
 Re-read your series with fresh eyes before returning:
@@ -92,3 +128,12 @@ honest review is as valuable as a long list. Then report the typed result: statu
 happened (`done` | `done_with_concerns` | `blocked` | `needs_context` — for the last two,
 what you tried and what you need), commits, SHAs, worktree, discovered gotchas. You never
 declare your work correct — that verdict is computed elsewhere.
+
+**Record that the series is finished, if your dispatch asks you to.** It gives you the exact
+command and the exact line. Run it after your last commit and before you return.
+
+This is not a claim that the work is good — it says only that you stopped because you were
+done, not because something stopped you. Nothing else can tell those apart: git shows commits
+on a branch either way, and the difference decides whether the next invocation measures your
+series as it stands or sends a coder to carry it on. An interrupted run with no such line has
+to guess, and it guesses in the expensive direction.
