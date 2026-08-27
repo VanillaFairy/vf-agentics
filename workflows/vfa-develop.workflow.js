@@ -79,193 +79,55 @@ const WORK_ORDERS = {
   },
 }
 
-// The resume load is a FAN, not a single transcription. On 2026-08-19 one loader was asked
-// to re-emit a 118KB plan byte-exact through a schema and paraphrased 13 of 14 orders — the
-// digest gate caught it, but the halt cost a diagnosis and a relaunch. The failure was
-// output length, not comprehension: the first order came back faithful and the rest drifted.
-// So no dispatch carries the whole plan anymore. RESUME_INDEX is everything EXCEPT the
-// orders — envelope, manifest, state, the plan's scalars, and the bare order id list — all
-// small enough for the frontmatter tier. Each order then travels alone through ORDER_SLICE,
-// bounded by the largest order rather than by the plan, verified per slice against its
-// manifest digest, and retried one tier up when its copy fails. The manifest is the fan-out
-// index: it already names every order the plan contained when it was written.
-const RESUME_INDEX = {
+// The resume load is ONE payload, computed rather than transcribed.
+//
+// Two earlier designs failed the same way and are both gone. A single loader asked to re-emit
+// a 118KB plan byte-exact paraphrased 13 of 14 orders. The fan that replaced it bounded every
+// ORDER by its own size, but left the index it opened with — envelope, manifest, state,
+// journal, and `partition_raw`, the one field with no digest behind it — riding a model's
+// output unchecked. A courier that damaged that field's escaping parsed as "no waves", which
+// degraded the run to "every order is coupled" and offered four already-merged orders back to
+// the session to be reimplemented. Three times running on one repository, in 2026-08.
+//
+// The lesson both times was the same and it was structural: bytes must not ride a model.
+// Reading is safe — a tool result enters an agent's context byte-exact — so `lib/run-verdict.mjs`
+// does the whole computation on disk and prints it, and the courier's entire job is to run one
+// command and paste its stdout. What arrives is small, and every byte of it is covered by a
+// digest this script recomputes itself: a corrupted copy costs one re-fetch, and no corrupted
+// copy can pass.
+const VERDICT = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'order_ids', 'shared_files', 'partition_raw', 'blocking_gaps',
-             'plan_path', 'plan_notes', 'envelope', 'manifest', 'state', 'journal_raw', 'notes'],
+  required: ['stop_reason', 'payload_raw', 'notes'],
   properties: {
-    stop_reason: { type: 'string', enum: ['loaded', 'unreadable'] },
-    // The ids of plan.json's work_orders, in file order, and NOTHING else of them. This is
-    // the one direction the manifest cannot check alone: an order present in the file but
-    // absent from the manifest would otherwise never be fetched and never be missed.
-    order_ids: { type: 'array', items: { type: 'string' } },
-    shared_files: { type: 'array', items: { type: 'string' } },
-    partition_raw: { type: 'string' },   // VERBATIM, exactly as plan.json stores it
-    blocking_gaps: { type: 'array', items: { type: 'string' } },
-    plan_path: { type: 'string' },
-    plan_notes: { type: 'string' },      // plan.json's own `notes`, whole
-    // The conditions the run was planned under — a SIBLING of the plan, never a member of
-    // it, so a loader returning `roots` or `base_sha` inside the plan's own closed shape
-    // would fail validation outright, and one returning them nowhere would make recording
-    // them pointless.
-    //
-    // Without this, a run resumed a week later re-derives its constraints from whatever the
-    // caller still remembers. `caller_notes` is the acute case: it carries the settled
-    // evidence a design phase produced, and losing it does not fail loudly — it quietly
-    // re-opens questions someone already answered.
-    //
-    // ENVELOPE REGISTRY: this is one live copy of the envelope field list. Every other copy is
-    // named in the increment-5 contracts doc's registry section, and any change to this list
-    // cites it. There is no mechanism that finds the copies for you.
-    envelope: {
-      type: 'object', additionalProperties: false,
-      required: ['change', 'roots', 'caller_notes', 'intelligence', 'base_branch', 'base_sha',
-                 'programme', 'slice'],
-      properties: {
-        change: { type: 'string' },
-        roots: { type: 'string' },
-        caller_notes: { type: 'string' },
-        intelligence: { type: 'string' },
-        base_branch: { type: 'string' },   // observed at plan time, not assumed
-        base_sha: { type: 'string' },      // the drift anchor for a parked plan
-        // Which programme and which of its slices this run implements — copied from
-        // programme.json by the dispatching skill, never retyped. They are what makes a run
-        // attributable: without them a programme's own runs are indistinguishable from every
-        // other run in the repository, and progress has to be stored as a claim somewhere
-        // instead of derived from the runs that exist. Both are '' for an ordinary run, and
-        // '' is a real answer — a run that belongs to no programme is not this layer's
-        // business, which is a different fact from a run whose tags could not be read.
-        programme: { type: 'string' },
-        slice: { type: 'string' },
-      },
-    },
-    manifest: { type: 'array', items: {
-      type: 'object', additionalProperties: false,
-      required: ['id', 'locus_n', 'acceptance_n', 'digest'],
-      properties: {
-        id: { type: 'string' },
-        locus_n: { type: 'integer' },
-        acceptance_n: { type: 'integer' },
-        digest: { type: 'string' },   // FNV-1a over the canonical order, from lib/plan-digest.mjs
-      } } },
-    // Three line types in one append-only log, and one TOTAL shape carrying all of them. The
-    // schema is `additionalProperties: false` over a closed `required`, so a union is not
-    // expressible here; the alternative — making most of the fields optional — would mean a
-    // wave line missing `merged` and an order line legitimately without one are the same
-    // value, which is the absence nobody notices. So every line carries every field, and
-    // `kind` says which part is load-bearing. A line written before this contract carries no
-    // `kind`; it comes back as `wave`, which is not a guess — every line ever written before
-    // that version was one. A line written before `measured` existed comes back with `[]`,
-    // which reads as "nothing was recorded", not as "nothing was measured".
-    state: { type: 'array', items: {
-      type: 'object', additionalProperties: false,
-      required: ['kind', 'seq', 'wave', 'merged', 'approved_unmerged', 'escalated',
-                 'integration_base', 'integration_head', 'discovered',
-                 'order', 'branch', 'worktree', 'head_sha', 'measured'],
-      properties: {
-        kind: { type: 'string', enum: ['wave', 'order-approved', 'order-verified'] },
-        // Where this line falls in the run's single ordering, shared with journal.jsonl so a
-        // decision recorded here can be placed against an observation recorded there. `0` for
-        // a line written before the counter existed, which is not a guess: such a line does
-        // predate every stamped one.
-        seq: { type: 'integer' },
-        wave: { type: 'integer' },
-        merged: { type: 'array', items: { type: 'string' } },
-        approved_unmerged: { type: 'array', items: { type: 'string' } },
-        escalated: { type: 'array', items: { type: 'string' } },
-        // What this run's approved coders had learned by the end of this wave. Carried so a
-        // resume starts knowing it rather than rediscovering it one coder at a time.
-        discovered: { type: 'array', items: { type: 'string' } },
-        // Where this change started. Without it a resumed run has no way to know what the
-        // whole change's diff is, and its integration review would silently cover only the
-        // waves that ran after the interruption.
-        integration_base: { type: 'string' },
-        integration_head: { type: 'string' },
-        // The per-order half, shared by `order-approved` and `order-verified`: one line per
-        // order at the moment that stage closed, written long before the wave it belongs to
-        // ends. A usage limit lands in the middle of a wave — the longest single stretch this
-        // pipeline has — and without these lines every order already implemented, verified and
-        // approved but not yet merged is invisible to the resume, which re-implements all of
-        // it. '' on a wave line.
-        //
-        // `head_sha` is what makes the line usable rather than merely informative: a resume
-        // compares it against the branch git actually holds, and adopts the stage only when
-        // they agree. A line is a claim about a stage that closed; the sha is what ties the
-        // claim to the commits it closed over.
-        order: { type: 'string' },
-        branch: { type: 'string' },
-        worktree: { type: 'string' },
-        head_sha: { type: 'string' },
-        // What the verifier mechanically measured when this order went green — 'build',
-        // 'suite', 'discriminator:<n>'. Recorded so an order salvaged at its verified or
-        // approved stage can report what was measured without re-measuring it, and so an
-        // empty measurement stays visible as the vacuous verification it was. `[]` on a wave
-        // line, and on every line written before this field existed.
-        measured: { type: 'array', items: { type: 'string' } },
-      } } },
-    // journal.jsonl, VERBATIM — the whole file as one string, newlines and all, exactly as
-    // `partition_raw` travels. It is parsed here in JS rather than re-emitted through a
-    // schema, and that is the point: the journal is written by the agents that DID the work,
-    // one line per observation, so it is the longest and least structured thing a resume
-    // carries. Asking a courier to re-emit thirty measurement objects field by field is the
-    // 118KB transcription failure with the numbers changed. A verbatim string has one honest
-    // failure mode — a line that will not parse — and JSON.parse finds it, where a paraphrase
-    // of prose would not be found by anything.
-    //
-    // Empty string is a real answer and the ordinary one for a run whose agents predate the
-    // journal, or that has not measured anything yet.
-    journal_raw: { type: 'string' },
+    // `failed` is the CLI running and refusing, which is a different answer from the courier
+    // being unable to run it — and IRON LAW §7 says those must not be conflated.
+    stop_reason: { type: 'string', enum: ['loaded', 'failed'] },
+    // The CLI's stdout, verbatim and whole. ONE string rather than a mirrored object shape,
+    // deliberately: a schema that re-declared every field would ask the model to re-emit the
+    // payload field by field, which is the transcription failure above with the nesting
+    // changed. One string has one honest failure mode, and the digest inside it sees that mode.
+    payload_raw: { type: 'string' },
     notes: { type: 'string' },
   },
 }
 
-// What is wrong with a returned index, or null when nothing is.
-//
-// `partition_raw` is the one field a resume cannot re-derive and the only one with no
-// digest behind it, so this is where it gets checked. The test is not a checksum but a
-// coverage identity: the waves plus the coupled list must name every order the plan holds,
-// each exactly once. That catches a string mangled in transit, and it also catches the case
-// a checksum would miss — a partition that parses cleanly and quietly drops an order.
-//
-// The scar: the index used to be dispatched once at the frontmatter tier with nothing
-// checking what came back. A courier that damaged the escaping in `partition_raw` produced
-// a plan that parsed as "no waves", which degraded the whole run to "every order is
-// coupled" — handing orders that were already built, reviewed and merged back to the
-// session to be reimplemented. Seen three times running on one repo, worsening as
-// state.jsonl grew: transcription fidelity falls off with payload length, which is the
-// same lesson the order fan-out was built on.
-function indexProblem(index) {
-  if (!index) return 'the dispatch returned nothing'
-  if (index.stop_reason !== 'loaded') {
-    return index.notes || 'the loader reported it could not read the run'
-  }
-
-  // ONLY what no later check can see. The id sets, the manifest coverage and each order's
-  // digest are all verified downstream, with halts whose messages name the damage precisely
-  // — and those halts must be REACHED. An earlier draft of this function also compared the
-  // partition's ids against `order_ids`, which preempted two of them and, worse, retried a
-  // genuine plan defect until it went quiet. `partition_raw` is checked here for one reason:
-  // it is the only field whose corruption nothing downstream notices, because a partition
-  // that will not parse is read as "no waves" and silently couples the entire run.
-  try {
-    JSON.parse(index.partition_raw)
-  } catch (e) {
-    return 'partition_raw did not survive transcription: ' + (e && e.message)
-  }
-
-  return null
-}
-
-// One order back from disk. `orders` is a list for the same reason SCAVENGE's `found` is:
-// empty is a real answer — the id was not in the file — and a closed object shape cannot
-// say "present or absent" without a field whose absence nobody notices. On success it
-// carries exactly one element, and the caller treats any other count as a failed copy.
-const ORDER_SLICE = {
+// Worktrees for branches that have commits and nowhere to stand. Narrow on purpose: this is
+// an ACTION, and the reconnaissance that used to surround it — which branches exist, what they
+// hold, whether they are already merged — is computed on disk now and never asked of an agent.
+// It fires only for an order that actually needs a tree and does not have one, which on most
+// resumes is no order at all.
+const WORKTREES = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'orders', 'notes'],
+  required: ['stop_reason', 'made', 'notes'],
   properties: {
-    stop_reason: { type: 'string', enum: ['loaded', 'not_found', 'unreadable'] },
-    orders: { type: 'array', items: WORK_ORDER_ITEM },
+    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
+    made: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['id', 'worktree'],
+      properties: {
+        id: { type: 'string' },
+        worktree: { type: 'string' },   // absolute, and confirmed enterable — observed
+      } } },
     notes: { type: 'string' },
   },
 }
@@ -340,40 +202,6 @@ const INTEGRATION_SETUP = {
 // FIND the work its predecessor did — which is the whole reason the naming is deterministic
 // rather than incidental.
 //
-// The shape carries everything a coder result would have carried, because that is exactly
-// what these commits are about to be treated as: adopted, then routed through the ordinary
-// verify and review machinery. Nothing is trusted because it was found and nothing is
-// discarded because it was interrupted.
-const SCAVENGE = {
-  type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'found', 'notes'],
-  properties: {
-    stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
-    found: { type: 'array', items: {
-      type: 'object', additionalProperties: false,
-      required: ['id', 'branch', 'worktree', 'base_sha', 'head_sha', 'commits', 'already_merged'],
-      properties: {
-        id: { type: 'string' },
-        branch: { type: 'string' },
-        worktree: { type: 'string' },   // absolute, and it must be enterable — observed
-        base_sha: { type: 'string' },   // the fork point, observed with git merge-base
-        head_sha: { type: 'string' },
-        // Whether this branch's head is already an ancestor of the integration branch —
-        // observed with git merge-base --is-ancestor, never inferred. The merge itself is
-        // durable in git the instant it happens, while the state line recording it is written
-        // only when the whole wave ends: an invocation that died in between left a merge that
-        // no record mentions, and without this question a resume rebuilds and re-merges work
-        // the integration branch already carries.
-        already_merged: { type: 'boolean' },
-        commits: { type: 'array', items: {
-          type: 'object', additionalProperties: false,
-          required: ['sha', 'subject'],
-          properties: { sha: { type: 'string' }, subject: { type: 'string' } } } },
-      } } },
-    notes: { type: 'string' },
-  },
-}
-
 const CODER_RESULT = {
   type: 'object', additionalProperties: false,
   required: ['status', 'worktree', 'branch', 'base_sha', 'head_sha', 'commits',
@@ -695,17 +523,29 @@ const waveVerifyOk = (v, excused) => v.stop_reason === 'completed'
   && v.build !== 'failed'
   && (v.suite !== 'failed' || failuresConfinedTo(v, excused))
 
-// ------------------------------------------------------------- the plan digest
+// ------------------------------------------------------------- the two digests
 //
-// A byte-for-byte behavioural copy of lib/plan-digest.mjs, which the planner runs as a CLI
-// when it writes the plan. The plan travels back through a loader agent on resume, so the
-// digest has to be computable on both sides of that trip — and a workflow script has no
-// imports and no node:crypto. FNV-1a over a key-sorted canonical serialization is thirty
-// characters of integer arithmetic and is identical wherever it is written.
+// A byte-for-byte behavioural copy of the same pair in lib/plan-digest.mjs, which a workflow
+// script cannot import — it has no imports and no node:crypto. FNV-1a over a key-sorted
+// canonical serialization is thirty characters of integer arithmetic and is identical wherever
+// it is written. Key sorting is what lets an object re-emitted with its keys in another order
+// digest the same: that difference changes nothing about the record and must not read as damage.
 //
-// If these ever diverge from lib/plan-digest.mjs, every resume halts on a false mismatch.
-// test/vfa-develop-scenarios.test.mjs pins them together by feeding this workflow a manifest
-// the library computed and asserting the run proceeds.
+// Two things are digested here, both about TRANSPORT rather than about the plan:
+//
+//   the resume verdict — computed by lib/run-verdict.mjs, which prints the number beside the
+//     payload. This script recomputes it over what the courier actually handed back, which is
+//     what makes every field of that payload — the wave layout above all — impossible to
+//     corrupt undetected.
+//   each state line — minted here, handed to the recorder with its digest, and refused by
+//     lib/ledger.mjs if what arrives does not match.
+//
+// The per-ORDER digest is no longer computed in this script. It used to be, because the plan
+// came back through a courier and had to be checked on arrival; orders no longer travel at all,
+// so the number is computed by the CLI off the same disk the plan sits on and confirmed by the
+// agent that fetches the order. If these two functions ever diverge from lib/plan-digest.mjs,
+// every resume halts on a false digest mismatch — test/run-verdict.test.mjs and
+// test/ledger.test.mjs pin them together.
 
 function canonical(value) {
   if (value === undefined) return 'null'
@@ -726,63 +566,6 @@ function fnv1a(text) {
   }
 
   return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
-const ORDER_FIELDS = ['id', 'title', 'locus', 'acceptance', 'context', 'deps', 'contract']
-
-function digestOrder(order) {
-  const picked = {}
-  for (const field of ORDER_FIELDS) picked[field] = order[field]
-
-  // Conditional on purpose, and this file and lib/plan-digest.mjs must agree exactly or every
-  // resume halts on a false mismatch. `role` decides how an order is verified, so a role
-  // altered in transit must stop the run — but an explicit 'none' has to digest identically
-  // to an absent field, because manifests written before roles existed carry neither.
-  if (order.role && order.role !== 'none') picked.role = order.role
-  // Same conditional treatment, same reason: a plan written before `reads` existed carries
-  // none, and an empty list must digest identically to an absent field.
-  if ((order.reads || []).length > 0) picked.reads = order.reads
-
-  return fnv1a(canonical(picked))
-}
-
-// The tripwire. A count-and-ids check would pass a paraphrased `context` and a rewritten
-// `locus` — and a wrong locus does not surface as "the plan was corrupted", it surfaces two
-// stages later as a blocking locus breach charged to an honest coder. Every note here names
-// the order, because "the plan is corrupt" is not an actionable halt.
-function planIntegrity(orders, manifest) {
-  const notes = []
-  const covered = new Map((manifest || []).map((entry) => [entry.id, entry]))
-
-  for (const wo of orders) {
-    const entry = covered.get(wo.id)
-    if (!entry) {
-      notes.push(wo.id + ': the loaded plan carries an order the manifest never covered')
-      continue
-    }
-
-    const locusN = (wo.locus || []).length
-    const acceptanceN = (wo.acceptance || []).length
-
-    if (locusN !== entry.locus_n) {
-      notes.push(wo.id + ': locus has ' + locusN + ' entries, the manifest recorded ' + entry.locus_n)
-    } else if (acceptanceN !== entry.acceptance_n) {
-      notes.push(wo.id + ': acceptance has ' + acceptanceN + ' criteria, the manifest recorded ' +
-        entry.acceptance_n)
-    } else if (digestOrder(wo) !== entry.digest) {
-      notes.push(wo.id + ': content digest ' + digestOrder(wo) + ' does not match the recorded ' +
-        entry.digest + ' — a field was reworded in transit, at the same shape')
-    }
-  }
-
-  const loaded = new Set(orders.map((wo) => wo.id))
-  for (const entry of manifest || []) {
-    if (!loaded.has(entry.id)) {
-      notes.push(entry.id + ': the manifest covers an order the loaded plan does not carry')
-    }
-  }
-
-  return notes
 }
 
 // ---------------------------------------------------------------- result coherence
@@ -1270,7 +1053,52 @@ const acceptanceNote =
 // and a constant computed at module scope would freeze the value the caller happened to pass
 // — which on a resume is usually nothing, silently dropping the settled evidence the plan was
 // written under and re-litigating questions a design phase already closed.
-const callerNotes = () => (notes ? `NOTES FROM THE CALLER:\n${notes}\n\n` : '')
+// The caller's settled evidence, inline while this script still holds it and BY REFERENCE once
+// it is on disk. A resume never holds the text at all: it is the largest string in the plan
+// envelope and every consumer of it is an agent with a shell, so carrying it through a courier
+// bought nothing but a chance to paraphrase it.
+const callerNotes = () => {
+  if (notesOnDisk) {
+    return `NOTES FROM THE CALLER — settled evidence this plan was written against. Read them ` +
+      `before you start; they are not optional context:\n\n` +
+      `   node "${pluginRoot}/lib/ledger.mjs" notes "${planPath}"\n` +
+      rootWarning + `\n`
+  }
+  return notes ? `NOTES FROM THE CALLER:\n${notes}\n\n` : ''
+}
+
+// The work order itself, fetched rather than quoted.
+//
+// The prose of an order — its context, its acceptance criteria, its read dependencies — is the
+// bulk of a plan and the part that has to arrive VERBATIM. Quoting it into a prompt means the
+// bytes travelled disk -> courier -> this script -> dispatch, paraphrasing at every hop; a plan
+// that came back that way once had 13 of its 14 orders reworded. Read from disk by the agent
+// that consumes it, the order travels disk -> tool result -> context, which is the one
+// direction that cannot corrupt.
+//
+// The digest is the pin. plan.json is a file somebody can edit, and a coder implementing
+// against an order the plan was not ratified with is exactly the damage the manifest was built
+// to catch — so the number is quoted here and confirmed there.
+//
+// This returns null on a FRESH run, and that asymmetry is the point rather than an oversight.
+// A fresh run's orders arrive in the planner's own return: they were AUTHORED there, not copied
+// from anywhere, so quoting them carries no transcription risk and a digest computed over them
+// would be a claim about a file this script never read. A resume's orders come off disk with a
+// digest computed off the same disk, so the two agree by construction and the pin catches the
+// one real hazard left — plan.json edited between the verdict and the dispatch.
+function orderFetch(wo) {
+  if (!planPath || !wo.digest) return null
+
+  return `YOUR WORK ORDER IS ON DISK. Fetch it before you read anything else:\n\n` +
+    `   node "${pluginRoot}/lib/ledger.mjs" order "${planPath}" "${wo.id}"\n` +
+    rootWarning +
+    `It prints the order whole — context, every acceptance criterion, every locus path, every ` +
+    `read dependency — together with a digest. CONFIRM that digest reads exactly ` +
+    `${wo.digest}. If it does not, the plan on disk is not the plan this run was ratified ` +
+    `with: stop and report that, and implement nothing. Do not proceed on a near match.\n\n` +
+    `The acceptance criteria you read there are the contract, in the planner's words. ` +
+    `${acceptanceNote}\n\n`
+}
 
 function plannerPrompt(surveyEvidence) {
   return `Decompose this change into work orders other agents will implement.\n\n` +
@@ -1390,92 +1218,51 @@ function envelopeSection() {
   return base + tags
 }
 
-function indexPrompt() {
-  return `Load a vf-agentics run's durable state — everything EXCEPT the work orders. ` +
-    `INDEX MODE.\n\n` +
+function verdictPrompt() {
+  return `Compute this run's resume verdict and return it verbatim. You run one command and ` +
+    `paste its output; you decide nothing and you interpret nothing.\n\n` +
     `RUN DIRECTORY (absolute):\n${resumePath}\n\n` +
-    `Read plan.json, state.jsonl and journal.jsonl from that directory.\n\n` +
-    `From plan.json return: order_ids — the id of every entry in work_orders, in file ` +
-    `order, and NOTHING ELSE of the orders (each order travels separately, through a ` +
-    `dispatch built for it); shared_files, partition_raw (VERBATIM — it is parsed, and a ` +
-    `paraphrase dies at JSON.parse), blocking_gaps, and the plan's notes field whole as ` +
-    `plan_notes. Return the stored manifest array exactly as it is written — your caller ` +
-    `fans one courier per manifest row and verifies each against its digest, so a row you ` +
-    `dropped is an order that silently never loads.\n\n` +
-    `Return the ENVELOPE separately: change, roots, caller_notes, intelligence, ` +
-    `base_branch, base_sha, programme and slice, exactly as plan.json records them. These ` +
-    `are the conditions this run was planned under — your caller adopts them, so a resumed ` +
-    `run implements under the same roots, the same intelligence tier and the same settled ` +
-    `evidence as the original. caller_notes especially: return it whole, however long. A ` +
-    `field an older plan file simply does not have comes back as an empty string; never ` +
-    `fill one in from this dispatch, and never guess a sha.\n\n` +
-    `Return the state.jsonl entries parsed, in file order, oldest first; a missing or empty ` +
-    `state.jsonl means no wave completed, which is a fact — return an empty list and say so ` +
-    `in notes. Every line comes back carrying every field of the line shape, because there ` +
-    `are two line types and one shape holds both. A line with a "kind" uses it. A line ` +
-    `WITHOUT one is a wave line — every line written before this format existed was — so ` +
-    `return kind "wave" for it, wave/merged/approved_unmerged/escalated/discovered/` +
-    `integration_base/integration_head as the file has them, and order, branch, worktree and ` +
-    `head_sha as empty strings. An "order-approved" line is the mirror: its own four fields ` +
-    `from the file, and the wave-line fields empty — wave 0, the four arrays empty, the two ` +
-    `integration strings empty. This is a fixed mapping between two shapes, not a repair: ` +
-    `never carry a value across from the other half.\n\n` +
-    `Return journal.jsonl as journal_raw: the WHOLE FILE as one string, byte for byte, ` +
-    `newlines and all. Do not parse it, do not reformat it, do not fix a line that looks ` +
-    `broken and do not drop one — your caller parses it itself, and a line that will not ` +
-    `parse is information it needs (an interrupted append looks exactly like that). If the ` +
-    `file does not exist, return an empty string, which is the ordinary answer for a run ` +
-    `whose agents never wrote one.\n\n` +
-    `Set plan_path to ${resumePath} — the directory you actually read.\n\n` +
-    `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
-    `with what you found in notes. Never invent an index and never return a partial one as ` +
-    `loaded — an id list missing two orders looks exactly like a plan that had five.`
+    `Run exactly this, from anywhere:\n\n` +
+    `   node "${pluginRoot}/lib/run-verdict.mjs" "${roots}" "${resumePath}"\n` +
+    rootWarning +
+    `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, ` +
+    `do not reformat it, do not pretty-print it, do not summarise it, and do not fix anything ` +
+    `in it that looks wrong. It is one line of JSON carrying its own digest: your caller ` +
+    `recomputes that digest over what arrives, so a copy that drifted by a single character is ` +
+    `detected and refetched rather than believed. Editing it helpfully is the one thing that ` +
+    `turns a detectable problem into an undetectable one.\n\n` +
+    `If the command prints an object with an "error" key, that is still its stdout and still ` +
+    `goes into payload_raw unchanged — your caller reads the error and reports it precisely. ` +
+    `Return stop_reason failed ONLY when the command could not be run at all: node missing, ` +
+    `the path unreadable. Say in notes exactly what the shell reported. A command that ran and ` +
+    `refused is a different answer from a command that never ran, and your caller acts ` +
+    `differently on each.`
 }
 
-function slicePrompt(id) {
-  return `Load ONE work order from a vf-agentics run's plan. SLICE MODE.\n\n` +
-    `RUN DIRECTORY (absolute):\n${resumePath}\n` +
-    `ORDER ID: ${id}\n\n` +
-    `Read plan.json in that directory, find the work order whose id is exactly "${id}", ` +
-    `and return it as the single element of orders — WHOLE and CHARACTER FOR CHARACTER: ` +
-    `id, title, role, every locus path, every read, every acceptance criterion, the full ` +
-    `context string, deps, contract.\n\n` +
-    `Your caller recomputes a content digest over what you return and compares it against ` +
-    `the manifest recorded when the plan was written; one reworded sentence discards your ` +
-    `copy. So do not tidy a path, do not shorten a long context, do not drop a criterion ` +
-    `that looks redundant, and do not repair a field that looks wrong. You are a courier ` +
-    `for one order — the whole-plan copy this dispatch replaced failed precisely by ` +
-    `carrying more than this.\n\n` +
-    `If plan.json is missing, unreadable, or not valid JSON, return stop_reason unreadable ` +
-    `with what you found in notes. If no order carries the id "${id}", return not_found ` +
-    `with an empty orders list, naming in notes the ids you did see. Never return a ` +
-    `nearest match.`
-}
+// Worktrees, and nothing else. Every question about WHAT EXISTS was answered on disk before
+// this ran — which branches this run holds, what they carry, whether they are already merged.
+// This dispatch performs one action: making a branch enterable, so a verifier or a reviewer
+// has a directory to stand in. It fires only for an order that needs a tree and has none,
+// which on most resumes is no order at all.
+function worktreePrompt(needed) {
+  const lines = needed.map((n) => '   ' + n.id + '   branch ' + n.branch).join('\n')
 
-// One slice of the resume fan: dispatch a courier for one order and verify its copy against
-// that order's manifest row — planIntegrity over a list of one, so the whole plan and a
-// single slice pass through the same authority. Returns { wo, why }: a verified order, or
-// null with a note that already names the order. The TIER is the caller's choice, which is
-// the point — the first pass runs at the frontmatter default and a failed copy is re-fetched
-// one tier up, so fidelity failures cost a retry instead of a halt.
-async function fetchSlice(entry, label, tier) {
-  const res = await agent(slicePrompt(entry.id), {
-    agentType: 'vf-agentics:run-state', effort: 'low', schema: ORDER_SLICE,
-    phase: 'Plan', label, ...tier,
-  }).catch((e) => {
-    log(`WARNING: the slice courier for ${entry.id} failed: ${e && e.message}`)
-    return null
-  })
-
-  if (!res || res.stop_reason !== 'loaded' ||
-      !Array.isArray(res.orders) || res.orders.length !== 1) {
-    const why = res && res.notes ? res.notes : 'the courier returned no usable copy'
-    return { wo: null, why: entry.id + ': ' + why }
-  }
-
-  const flaws = planIntegrity(res.orders, [entry])
-  if (flaws.length > 0) return { wo: null, why: flaws.join('; ') }
-  return { wo: res.orders[0], why: '' }
+  return `Make these branches enterable. You create worktrees and nothing else — no commits, ` +
+    `no merges, no deletions, no force, no checkout anywhere else.\n\n` +
+    `REPOSITORY: ${roots}\n\n` +
+    `BRANCHES:\n${lines}\n\n` +
+    `For each one, in the target repository:\n\n` +
+    `1. git worktree list — if that branch already has a worktree, report that path and move ` +
+    `on. Git refuses the same branch in two worktrees, so a second add would fail anyway.\n` +
+    `2. Otherwise: git worktree add .claude/worktrees/vfa-<the branch's last path segment> ` +
+    `<branch>\n` +
+    `3. Report the ABSOLUTE path, confirmed by entering it. Everything downstream is ` +
+    `dispatched into the path you report, and a wrong one sends a review at the wrong tree.\n\n` +
+    `An entry you could not create or could not enter is LEFT OUT of made, with the reason in ` +
+    `notes. Your caller reads an absent entry as "this order has no tree" and implements it ` +
+    `from scratch, which costs tokens and loses nothing. What must never happen is a path you ` +
+    `did not confirm.\n\n` +
+    `If git itself is unusable, return stop_reason environment_broken with what it said.`
 }
 
 function driftPrompt(anchor, branch) {
@@ -1560,21 +1347,34 @@ function setupPrompt(runstamp) {
  * Returns '' when this run has no directory to write into, which is the plan-less path — there
  * is nothing to resume from anyway, so there is nothing to journal for.
  */
+// An agent's own observation, appended by the agent that observed it. The values are not known
+// until the observation is made, so this line cannot travel under a digest the way a
+// workflow-minted state line does — but it goes through the same writer, which parses it,
+// checks that it carries the two fields every reader indexes on, normalizes it, and refuses it
+// outright if it will not parse. That is the whole of the F35 fix: a mangled line bounces with
+// a named reason instead of landing as invalid JSON in the file whose job is surviving a run
+// that dies.
 function journalSection(what, fields) {
   if (!planPath) return ''
 
   return `RECORD WHAT YOU OBSERVED, BEFORE YOU RETURN. ${what}\n\n` +
-    `Append ONE line to ${planPath}/journal.jsonl, exactly like this, as a single line of ` +
-    `JSON — the redirect creates the file if it is not there. Run these three lines with NO ` +
-    `leading whitespace on any of them; a heredoc delimiter that is indented never matches, ` +
-    `and the shell swallows the rest of your session looking for it:\n\n` +
-    `cat >> "${planPath}/journal.jsonl" <<'VFAJOURNAL'\n` +
+    `Append ONE line to this run's journal by piping it into the ledger writer. Run these ` +
+    `lines with NO leading whitespace on any of them; a heredoc delimiter that is indented ` +
+    `never matches, and the shell swallows the rest of your session looking for it:\n\n` +
+    `node "${pluginRoot}/lib/ledger.mjs" append "${planPath}" --file journal <<'VFAJOURNAL'\n` +
     `${fields}\n` +
-    `VFAJOURNAL\n\n` +
-    `Use the heredoc, not echo and not a redirect of a quoted string: the values below carry ` +
-    `paths and test names, and one apostrophe in a test name turns a quoted append into a ` +
-    `shell that hangs waiting for a closing quote. Append; never rewrite the file. Every ` +
-    `earlier line is another agent's observation and several of us write here.\n\n` +
+    `VFAJOURNAL\n` +
+    rootWarning +
+    `The writer is the only thing that appends to these files. It parses your line before ` +
+    `writing it and REFUSES anything that is not valid JSON carrying a kind and a seq, then ` +
+    `re-serializes what it accepted — so a line that reaches the disk is always readable. It ` +
+    `prints {"ok":true,...} on success and {"ok":false,"error":...} on refusal. Read that ` +
+    `output. If it refused, fix what it named and run it once more; if it refuses again, say ` +
+    `so in notes and return your result anyway — your caller can survive a missing line and ` +
+    `cannot survive a missing result.\n\n` +
+    `The heredoc rather than echo or a quoted string: the values below carry paths and test ` +
+    `names, and one apostrophe in a test name turns a quoted append into a shell that hangs ` +
+    `waiting for a closing quote.\n\n` +
     `The "seq" number is already filled in. Copy it exactly as it stands — it is this run's ` +
     `own ordering, minted by your caller, and it is what lets a record written here be placed ` +
     `against one written elsewhere. Do not renumber it, do not increment it, and never ` +
@@ -1583,61 +1383,7 @@ function journalSection(what, fields) {
     `Write it ONCE, after you have finished observing and with the values you actually ` +
     `observed. This line is why an interrupted run does not have to buy this work again — a ` +
     `line written before you measured, or carrying what you expected rather than what you ` +
-    `saw, is worse than no line at all. If the append fails, say so in notes and return your ` +
-    `result anyway: your caller can survive a missing line and cannot survive a missing ` +
-    `result.\n\n`
-}
-
-// What an interrupted invocation of THIS run left in git, if anything. Read-only reconnaissance
-// plus, where there is something to adopt, a worktree to hold it — the verifier and the
-// reviewer are dispatched into a directory, and a bare branch is not one.
-function scavengePrompt(candidates) {
-  const lines = candidates
-    .map((c) => '   ' + c.id + '   branch ' + c.branch +
-      (c.worktree ? '   last known worktree ' + c.worktree : ''))
-    .join('\n')
-
-  return `SCAVENGE MODE. Find out what an interrupted earlier invocation of this run already ` +
-    `built, and make it reachable. You judge nothing and you fix nothing.\n\n` +
-    `REPOSITORY: ${roots}\n` +
-    `INTEGRATION BRANCH: ${integration.branch}\n\n` +
-    `CANDIDATE ORDERS — each names the branch its coder would have committed to:\n${lines}\n\n` +
-    `For each candidate, in the target repository:\n\n` +
-    `1. git rev-parse --verify <branch>   — if it does not resolve, this order was never ` +
-    `started. Leave it out of found entirely; that is the ordinary case and not a problem.\n` +
-    `2. git merge-base <branch> ${integration.branch}   — the fork point. Report it as ` +
-    `base_sha. It is the baseline the discriminator will be measured against, so it must be ` +
-    `observed rather than assumed.\n` +
-    `3. git merge-base --is-ancestor <branch> ${integration.branch}   — report already_merged ` +
-    `from the exit status: 0 means this branch is ALREADY IN the integration branch, anything ` +
-    `else means it is not. Read it from the exit code and nothing else. A branch that is ` +
-    `already merged goes into found WITH already_merged true even when step 4 finds no ` +
-    `commits ahead of the fork point — that combination is the signature of a merge that ` +
-    `landed in git while the invocation died before recording it, and it is precisely what ` +
-    `your caller needs to hear about.\n` +
-    `4. git log --reverse --format=%H%x09%s <base_sha>..<branch>   — the commits. A branch ` +
-    `that resolves with NO commits ahead of the fork point and is not already merged holds ` +
-    `nothing to adopt: leave it out too.\n` +
-    `5. Make it enterable. git worktree list — if that branch already has a worktree, use ` +
-    `that path. If it does not, create one:\n\n` +
-    `   git worktree add .claude/worktrees/vfa-<the branch's last path segment> <branch>\n\n` +
-    `   Report the ABSOLUTE path. Do not delete, do not force, and do not check the branch ` +
-    `out anywhere else — everything downstream is dispatched into the path you report, and a ` +
-    `wrong one sends a fix round at the wrong tree.\n` +
-    `6. Report head_sha as git rev-parse <branch>, read back rather than expected. Your ` +
-    `caller compares it against what this run recorded for that order, so an expected value ` +
-    `here is a stage adopted on a claim rather than on the commits it closed over.\n\n` +
-    `An already-merged branch that has no worktree and needs none is the one case where you ` +
-    `may report an empty worktree: say so in notes. Nothing is dispatched into it — its work ` +
-    `is already in the integration branch.\n\n` +
-    `Report only what you OBSERVED. An order you could not resolve, could not enter, or ` +
-    `could not read commits for is left out of found, with the reason in notes — your caller ` +
-    `treats an absent entry as "there is nothing here to adopt" and dispatches a coder, which ` +
-    `is the safe reading either way. What must never happen is an entry naming a worktree ` +
-    `you did not confirm you could enter.\n\n` +
-    `If git itself is unusable, return stop_reason environment_broken with what it said. ` +
-    `Your caller then implements every candidate from scratch, which costs tokens and loses ` +
-    `nothing.`
+    `saw, is worse than no line at all.\n\n`
 }
 
 // The red-green-refactor cycle, as instructions. Each role's charge is written against the
@@ -1705,10 +1451,10 @@ function coderPrompt(wo, branch) {
       `commit your first change actually sits on.\n\n`
     : ''
 
-  return `Implement exactly this work order, and nothing else.\n\n` +
-    `WORK ORDER ${wo.id}: ${wo.title}\n` +
-    `REPOSITORY: ${roots}\n\n` +
-    anchor +
+  const fetched = orderFetch(wo)
+
+  // Quoted when this script authored it, fetched when it did not. See orderFetch.
+  const body = fetched || (
     `CONTEXT (self-contained — there is no conversation behind it to go looking for):\n` +
     `${wo.context}\n\n` +
     `DECLARED LOCUS — the only files you may create or modify:\n${listOf(wo.locus)}\n\n` +
@@ -1720,7 +1466,19 @@ function coderPrompt(wo, branch) {
         `${listOf(wo.reads)}\n\n`
       : '') +
     `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n` +
-    `${acceptanceNote} Implement toward it; do not invent a test that pretends to check it.\n\n` +
+    `${acceptanceNote} Implement toward it; do not invent a test that pretends to check it.\n\n`)
+
+  const fence = fetched
+    ? `DECLARED LOCUS — the only files you may create or modify. The fetched order carries ` +
+      `these too, and they must agree:\n${listOf(wo.locus)}\n\n`
+    : ''
+
+  return `Implement exactly this work order, and nothing else.\n\n` +
+    `WORK ORDER ${wo.id}: ${wo.title}\n` +
+    `REPOSITORY: ${roots}\n\n` +
+    anchor +
+    body +
+    fence +
     roleSection(wo) +
     callerNotes() +
     knowledgeSection() +
@@ -1730,9 +1488,64 @@ function coderPrompt(wo, branch) {
     `before your first commit, then commit each single-concern unit as it goes green. Work ` +
     `that genuinely needs a file outside the locus is blocked — return that, saying what you ` +
     `needed and why, rather than widening the fence.\n\n` +
+    journalSection(
+      'Your series is finished when you have made your last commit for this order. Record ' +
+      'that, so an invocation that dies after you do not have to guess whether you were done.',
+      JSON.stringify({
+        kind: 'coder-done', seq: nextSeq(), order: wo.id, branch,
+        worktree: '<the absolute worktree path>', base_sha: '<your base_sha>',
+        head_sha: '<your final head_sha>',
+        commits: [{ sha: '<sha>', subject: '<subject>' }],
+      })) +
     `Report the typed result with the ABSOLUTE worktree path and the branch name: the ` +
     `verifier and the reviewer are dispatched against them, and a wrong path sends them to ` +
     `the wrong tree.`
+}
+
+// Carrying on a series an interrupted invocation left unfinished. Not a fix round — nothing has
+// been reviewed yet — and not a fresh start: the commits on the branch are this order's own
+// work, and rebuilding over them is the re-buy the whole ledger exists to prevent.
+function coderContinuePrompt(wo, facts) {
+  const dirty = (facts.dirty || []).length > 0
+    ? `THE WORKTREE HAS UNCOMMITTED CHANGES:\n${listOf(facts.dirty)}\n\n` +
+      `Nothing recorded vouches for them, so they are yours to rule on rather than to trust. ` +
+      `Adopt them ONLY where that is obvious — the change sits inside your declared locus and ` +
+      `the tree builds with it. Otherwise discard them with git checkout -- and carry on from ` +
+      `the last commit; say in concerns which you did and why. Never commit a change you ` +
+      `cannot account for just because you found it there.\n\n`
+    : ''
+
+  return `CONTINUE an unfinished commit series. It is your order's own work: an earlier ` +
+    `invocation of this run was implementing it and died before reporting it finished.\n\n` +
+    `WORKTREE: ${facts.worktree}\n` +
+    `BRANCH: ${facts.branch}\n` +
+    `BASE SHA: ${facts.base_sha}\n` +
+    `HEAD: ${facts.head_sha}\n\n` +
+    `COMMITS ALREADY ON THE BRANCH, oldest first:\n${commitLines(facts.commits)}\n\n` +
+    `Read them before anything else — git log --reverse -p ${facts.base_sha}..${facts.head_sha} ` +
+    `— and work out how far the order actually got. Do NOT rebuild what is there, do not ` +
+    `amend, do not rebase, do not squash. The series is append-only: you add the commits that ` +
+    `are still missing.\n\n` +
+    dirty +
+    `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
+    (orderFetch(wo) || `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n`) +
+    `DECLARED LOCUS — still the fence:\n${listOf(wo.locus)}\n\n` +
+    roleSection(wo) +
+    callerNotes() +
+    knowledgeSection() +
+    `If the series is in fact already complete against every criterion, add nothing and say so ` +
+    `in your summary — that is a real and useful answer, and your caller verifies the series ` +
+    `either way.\n\n` +
+    journalSection(
+      'Record that the series is finished, now that you have finished it.',
+      JSON.stringify({
+        kind: 'coder-done', seq: nextSeq(), order: wo.id, branch: facts.branch,
+        worktree: facts.worktree, base_sha: facts.base_sha,
+        head_sha: '<your final head_sha>',
+        commits: [{ sha: '<sha>', subject: '<subject>' }],
+      })) +
+    `Return the typed result with base_sha unchanged at ${facts.base_sha}, the new head_sha, ` +
+    `and the WHOLE series — the commits you found plus the commits you added.`
 }
 
 function coderFixPrompt(wo, state, instruction) {
@@ -1753,7 +1566,7 @@ function coderFixPrompt(wo, state, instruction) {
     `return to it with git switch ${state.branch}.\n\n` +
     `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
     `DECLARED LOCUS — still the fence:\n${listOf(wo.locus)}\n\n` +
-    `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n` +
+    (orderFetch(wo) || `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n`) +
     knowledgeSection() +
     `${instruction}\n\n` +
     `Fix only what is named above, as new focused commits — no drive-by improvements. ` +
@@ -1881,18 +1694,36 @@ function waveVerifyPrompt(waveNumber) {
     `own orders' defects.`
 }
 
-function recorderPrompt(runDir, entry) {
+// A workflow decision, minted here and copied there. Unlike a journal line, every byte of this
+// one is known before it is handed over — so it travels under a digest, and the writer refuses
+// it unless what arrives digests to the same thing.
+//
+// The scar: on 2026-08-20 a recorder was handed an exact `JSON.stringify` line and un-escaped
+// its Windows paths while typing the Bash command. Five of ten state lines landed as invalid
+// JSON, and which ones broke depended on which form of the path that dispatch happened to
+// receive. Those five were all `order-approved`, so three orders that had genuinely closed
+// review read as unfinished — a re-review bought for work already reviewed. The instruction to
+// copy carefully was already there and was already being followed; faithful transcription is a
+// capability, not a diligence, and the only fix that holds is a writer that can tell.
+function recorderPrompt(runDir, entry, digest) {
   return `RECORD MODE. Append one outcome line to this run's state log.\n\n` +
     `RUN DIRECTORY (absolute):\n${runDir}\n\n` +
-    `APPEND this exact object to state.jsonl as one line of JSON. Run exactly this — the ` +
-    `closing delimiter must be at the very start of its own line, with nothing before it:\n\n` +
-    `cat >> "${runDir}/state.jsonl" <<'VFASTATE'\n` +
+    `Run exactly this. The closing delimiter must be at the very start of its own line, with ` +
+    `nothing before it:\n\n` +
+    `node "${pluginRoot}/lib/ledger.mjs" append "${runDir}" --file state --digest ${digest} <<'VFASTATE'\n` +
     `${JSON.stringify(entry)}\n` +
-    `VFASTATE\n\n` +
-    `Append. Do NOT read the file and write it back. A rewrite has a window where the file is ` +
-    `truncated, and a run that dies inside it loses every line rather than one — on the one ` +
-    `file whose whole purpose is surviving a run that dies. The redirect creates the file if ` +
-    `it is not there, so there is no case that needs a read first.\n\n` +
+    `VFASTATE\n` +
+    rootWarning +
+    `The object between the delimiters is complete. Copy it EXACTLY — every brace, every ` +
+    `backslash, every quote. The digest above was computed over it before you were handed it, ` +
+    `and the writer recomputes that digest over what actually arrives: a line that changed by ` +
+    `one character is REFUSED, not written. That is deliberate, and it is why you cannot ` +
+    `corrupt this file even by accident.\n\n` +
+    `Read the writer's output. {"ok":true,...} means the line is on disk — return ` +
+    `stop_reason recorded with the path it printed. {"ok":false,"error":...} means it refused; ` +
+    `the error names what was wrong. Copy the object again and run it once more. If it refuses ` +
+    `a second time, return stop_reason unwritable with the error verbatim in notes — your ` +
+    `caller treats that as a degraded side channel and keeps going.\n\n` +
     `The heredoc rather than echo or a redirected quoted string: the object carries paths and ` +
     `free text, and a single apostrophe in it turns a quoted append into a shell waiting for ` +
     `a closing quote.\n\n` +
@@ -1945,8 +1776,13 @@ const nextSeq = () => ++seq
 function appendState(entry, label) {
   if (!planPath) return Promise.resolve(null)
 
+  // The digest is minted over the line as it will be written, which is why the separators are
+  // normalized in the builders below rather than here: a value normalized after digesting
+  // would arrive at a writer computing a different number over the same record.
+  const digest = fnv1a(canonical(entry))
+
   const next = stateWrites.then(() =>
-    agent(recorderPrompt(planPath, entry), {
+    agent(recorderPrompt(planPath, entry, digest), {
       agentType: 'vf-agentics:run-state', effort: 'low', schema: RECORDED,
       phase: 'Integrate', label,
     }).catch((e) => {
@@ -1960,10 +1796,20 @@ function appendState(entry, label) {
   return next
 }
 
-// One line shape, three line types. Every field appears on every line because the loader's
-// schema is closed over a total `required` set (see RESUME_INDEX.state), and these three
-// builders are the only places the shape is written — so the emptiness is deliberate in one
-// place rather than forgotten in several.
+// One line shape, four line types. These builders are the only places it is written, so the
+// emptiness on each type is deliberate in one place rather than forgotten in several.
+//
+// The uniformity used to be forced: a loader schema closed over a total `required` set had to
+// receive every field on every line. That schema is gone — the ledger is read off disk by a
+// tolerant parser now, and lib/ledger.mjs carries fields it does not recognise rather than
+// rejecting them. The shape stays uniform anyway, because a reader that can tell "this line
+// type does not record a worktree" from "this line lost its worktree" is worth more than the
+// bytes saved, and `order-escalated` adds `reason` on top rather than trading anything away.
+//
+// Paths are normalized to forward slashes HERE, at the mint, and nowhere else. `C:\work\...`
+// carries `\w`, `\e` and `\c`, none of which is a valid JSON escape, and a run in the field
+// wrote five unparseable lines that way. The digest is computed over the line as minted, so
+// normalizing later would compute it over something other than what the writer checks.
 const waveLine = (parts) => ({
   kind: 'wave',
   seq: nextSeq(),
@@ -1989,12 +1835,30 @@ const orderStageLine = (kind, wave, state) => ({
   integration_base: '', integration_head: '',
   order: state.id,
   branch: state.branch,
-  worktree: state.worktree,
+  worktree: posix(state.worktree),
   head_sha: state.head_sha,
   measured: (state.measured || []).slice(),
 })
 
 const orderLine = (wave, state) => orderStageLine('order-approved', wave, state)
+
+// An escalation recorded where it happens, not only in the wave line that eventually closes
+// over it. A run killed mid-wave loses that wave line, and with it every escalation the
+// invocation had reached — so the resume re-dispatches orders that already defeated a coder,
+// a verifier or a review loop, at full price, to rediscover a verdict the run had already
+// reached. `reason` travels because "carried forward as escalated" with no cause is a fact a
+// human cannot act on.
+const escalationLine = (wave, wo, reason) => ({
+  kind: 'order-escalated',
+  seq: nextSeq(),
+  wave,
+  merged: [], approved_unmerged: [], escalated: [], discovered: [],
+  integration_base: '', integration_head: '',
+  order: wo.id,
+  branch: '', worktree: '', head_sha: '',
+  measured: [],
+  reason: reason || '',
+})
 
 // There is no `order-verified` builder any more, and the reader for that kind stays. Version
 // 0.13.0 wrote it from here, one recorder dispatch after the verification it described; 0.14.0
@@ -2090,11 +1954,12 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers) {
     `not handling it. A commit labeled refactor that changes behavior is visible only in the ` +
     `per-commit diff, which is why you have git at all.\n\n` +
     `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
-    `CONTEXT THE CODER WAS GIVEN:\n${wo.context}\n\n` +
+    (orderFetch(wo) ||
+      `CONTEXT THE CODER WAS GIVEN:\n${wo.context}\n\n` +
+      `ACCEPTANCE CRITERIA, verbatim and in the planner's words. They are the contract, and ` +
+      `they are the only thing you may enforce:\n${listOf(wo.acceptance)}\n\n` +
+      `${acceptanceNote} Do not filter it, do not rewrite it, never raise a finding for it.\n\n`) +
     `DECLARED LOCUS — an edit outside it is critical:\n${listOf(wo.locus)}\n\n` +
-    `ACCEPTANCE CRITERIA, verbatim and in the planner's words. They are the contract, and ` +
-    `they are the only thing you may enforce:\n${listOf(wo.acceptance)}\n\n` +
-    `${acceptanceNote} Do not filter it, do not rewrite it, never raise a finding for it.\n\n` +
     testCharge +
     contractNote +
     `COMMITS, OLDEST FIRST:\n${commitLines(state.commits)}\n\n` +
@@ -2610,6 +2475,47 @@ async function implement(wo) {
       return { wo, state, trail, escalation: null }
     }
 
+    // Rung 2b — the series was never reported finished, so it is CARRIED ON rather than
+    // measured as though it were complete. The distinction costs one coder round and saves the
+    // order: measuring a half-written series fails it, and a failed verification sends the
+    // same coder back anyway, one wasted verification later.
+    if (continueSeries.has(wo.id)) {
+      log(`${wo.id}: ${found.commits.length} commit(s) on ${found.branch} that no coder ` +
+        `reported finishing; continuing the series from its last commit.`)
+
+      try {
+        const call = await dispatch(wo, state, trail, 'the continuation coder for ' + wo.id, [],
+          () => agent(coderContinuePrompt(wo, found), {
+            agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
+            phase: 'Implement', label: `continue:${wo.id}`, ...coderTier,
+          }), coherentCoder)
+
+        if (call.escalation) return { wo, state, trail, escalation: call.escalation }
+
+        const res = call.value
+        // The worktree, branch and base are the ones it was sent to. A continuation that
+        // reports a different tree did not continue this series, and adopting its word would
+        // point the verifier at whatever it happened to open.
+        state.head_sha = res.head_sha || found.head_sha
+        state.commits = (res.commits || []).length > 0 ? res.commits : found.commits
+        state.concerns = res.concerns || []
+        state.discovered = res.discovered || []
+
+        if (res.status === 'blocked' || res.status === 'needs_context') {
+          log(`ESCALATION ${wo.id}: the continuation coder returned ${res.status}.`)
+          return { wo, state, trail, escalation: esc(wo, 'coder_blocked',
+            [runtimeFinding(wo.id + '-blocked', res.summary || ('the coder returned ' + res.status),
+              'status ' + res.status + ' on a continued series')], trail, state) }
+        }
+
+        return { wo, state, trail, escalation: null }
+      } catch (e) {
+        return { wo, state, trail, escalation: esc(wo, 'budget',
+          [runtimeFinding(wo.id + '-threw', 'the continuation stage threw: ' + (e && e.message), '')],
+          trail, state) }
+      }
+    }
+
     log(`${wo.id}: adopting ${found.commits.length} commit(s) an interrupted invocation left ` +
       `on ${found.branch}; they are verified and reviewed as if fresh.`)
     return { wo, state, trail, escalation: null }
@@ -2682,7 +2588,15 @@ async function verifyAndReview(carried, wo, waveNumber) {
     // and mid-wave is the longest single stretch in this pipeline. The field incident died
     // exactly there, with a wave's worth of implemented, verified and approved work on
     // branches, and its retry started from scratch because nothing on disk mentioned any of it.
-    if (!escalation) await appendState(orderLine(waveNumber, held.state), `record:${wo.id}`)
+    if (escalation) {
+      // The mirror of the line above, and it exists for the same reason. An escalation that
+      // only ever reaches the wave line is lost when the invocation dies mid-wave — and a
+      // resume then re-dispatches an order that has already defeated a coder, a verifier or a
+      // review loop, at full price, to rediscover a verdict this run had reached.
+      await appendState(escalationLine(waveNumber, wo, escalation.reason), `escalated:${wo.id}`)
+    } else {
+      await appendState(orderLine(waveNumber, held.state), `record:${wo.id}`)
+    }
 
     return { wo, state: held.state, trail: held.trail, escalation }
   } catch (e) {
@@ -2716,31 +2630,36 @@ let planPath = ''
 // The run's identity in git. Every branch this run creates is named from it, which is what
 // makes an interrupted run's work findable rather than merely present.
 let runstamp = ''
-// What an earlier invocation left on disk and in git, by order id. Populated on a resume:
-// `approvedOnDisk` and `verifiedOnDisk` from the run's own per-order state lines, `scavenged`
-// from branches that actually exist.
+// What an earlier invocation left, by order id. Every one of these is filled from the verdict
+// lib/run-verdict.mjs computed over the run directory and git — this script no longer replays
+// the ledgers itself, and no longer asks an agent what it can see on disk.
 //
-// Together they are the salvage ladder. A resume trusts a stage exactly as far as two
-// independent records agree: the run said the stage closed, and git still holds the head it
-// closed over. Where they agree the stage is adopted whole; where they do not, everything
-// beyond the last stage they agree on is redone. Rebuilding an order from scratch is the
-// bottom of the ladder, not the top — an interrupted run that re-buys its own finished work
-// is the failure this ladder exists to prevent, and it is expensive in exactly the situation
-// where the budget already ran out once.
-const approvedOnDisk = new Map()
+// Together they are the salvage ladder, expressed as one `next_action` per order. A stage is
+// trusted exactly as far as two independent sources agree: the run recorded that it closed, and
+// git still holds the head it closed over. Where they agree the stage is adopted whole; where
+// they do not, everything past the last stage they agree on is redone. Rebuilding an order from
+// scratch is the BOTTOM of that ladder, not the top — an interrupted run re-buying its own
+// finished work is the failure the ladder exists to prevent, and it is most expensive in
+// exactly the situation where the budget already ran out once.
+//
+// `scavenged` — branch facts for any order with commits: the tree, the fork point, the series.
+// `salvagedApproved` — reviewed by an earlier invocation and unchanged in git, so merged as it
+//   stands, with no coder, no verifier and no second review.
+// `verifiedOnDisk` — measured green at exactly this head, so it goes straight to review.
+// `continueSeries` — commits on the branch that no coder ever reported finishing, so the series
+//   is carried on from its last commit rather than measured as complete or thrown away.
 const verifiedOnDisk = new Map()
 const scavenged = new Map()
-// Ids adopted at their approved stage: reviewed by an earlier invocation, unchanged in git,
-// and therefore merged as they stand rather than re-verified and re-reviewed.
 const salvagedApproved = new Map()
+const continueSeries = new Set()
 // Escalations an earlier invocation reported, carried forward rather than silently retried.
 const escalatedPrior = new Map()
-// Merges the merging agent recorded itself, in the dispatch that performed them. The second
-// witness for an order whose approval line never got written.
-const mergeObserved = new Map()
-// journal.jsonl as the loader carried it, held until the orders are loaded and its
-// measurements can be re-derived against the roles and loci they were made under.
-let journalRaw = ''
+// The last wave number the ledger recorded, for the corrective line a reconciled merge needs.
+let lastRecordedWave = 0
+// Whether the run's settled evidence sits in plan.json rather than in this script. On a resume
+// the caller notes are fetched from disk by each agent that needs them, so the text never
+// travels — but the prompts still have to say that they exist.
+let notesOnDisk = false
 // Ids git says are already in the integration branch though no state line records the merge.
 const reconciled = []
 const implemented = []
@@ -2759,7 +2678,6 @@ try {
 
   let survey = null
   let planned = null
-  let resumeState = []
 
   if (resumePath) {
     // ------------------------------------------------------- 1a. resume by reference
@@ -2770,9 +2688,15 @@ try {
     phase('Plan')
     log(`Resuming from ${resumePath}: survey and planning are skipped.`)
 
-    // The one halt shape every load failure exits through. Same coverage block whether the
-    // index was unreadable, the id sets disagree, or a slice defeated both courier tiers —
-    // the caller's contract is "nothing was dispatched, here is why, per order".
+    // The one halt shape every load failure exits through — the plan file missing, unreadable,
+    // or holding something that is not a plan. The caller's contract is the same in all of
+    // them: nothing was dispatched, here is why, in the reader's own words.
+    //
+    // And in particular NOT "every order is coupled". A resume that cannot read its own plan
+    // knows nothing about which orders are already built, reviewed and merged, so handing the
+    // whole plan back as work to do by hand is a confident wrong answer. That is not
+    // hypothetical: it happened three times on one repository in 2026-08 and offered four
+    // merged orders back for reimplementation.
     const corruptHalt = (notes, headline) => {
       log(headline)
       return developResult({
@@ -2783,46 +2707,84 @@ try {
           incomplete: [],
           failed_channels: ['run-state'],
           unreached: notes.map((note) => 'plan integrity: ' + note)
-            .concat(['the plan read back from ' + resumePath + ' is not the plan that was ' +
-                     'written; nothing was dispatched. Read plan.json yourself, or re-plan.']),
+            .concat(['the run directory at ' + resumePath + ' did not yield the plan that was ' +
+                     'written there; nothing was dispatched, and no order was reported as ' +
+                     'coupled. Read plan.json yourself, or re-plan.']),
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
     }
 
-    // Phase 1 of the fan: the index — envelope, manifest, state, plan scalars and the bare
-    // order id list. Everything here is small, so the frontmatter tier carries it. The
-    // orders themselves are deliberately NOT in this dispatch: the single loader this
-    // replaced was asked for a 118KB byte-exact copy and paraphrased 13 of 14 orders — the
-    // digest gate caught it, and the lesson is structural: no dispatch carries the whole
-    // plan, ever. Each order travels alone, bounded by its own size rather than the plan's.
-    // The index gets the same ladder the order slices get below, for the same reason: a
-    // fidelity failure should cost one targeted re-fetch, not the run. See indexProblem.
-    const fetchIndex = (label, opts) => agent(indexPrompt(), {
-      agentType: 'vf-agentics:run-state', effort: 'low', schema: RESUME_INDEX,
+    // ONE dispatch, and its entire job is to run a command and paste the output.
+    //
+    // Everything a resume decides — which orders merged, which were approved, which have
+    // commits nobody verified, what the wave layout is, where the integration branch stands —
+    // is computed by lib/run-verdict.mjs against the files and against git. That computation
+    // used to happen HERE, over state lines, journal lines and a scavenge agent's report, each
+    // of which reached this script through a model's output. Now the only thing crossing that
+    // gap is the answer, and it carries a digest recomputed below.
+    //
+    // The ladder stays, because a courier can still drop a character: a failed digest costs one
+    // re-fetch one tier up, and only a payload no tier can carry halts the run.
+    const fetchVerdict = (label, opts) => agent(verdictPrompt(), {
+      agentType: 'vf-agentics:run-state', effort: 'low', schema: VERDICT,
       phase: 'Plan', label, ...opts,
     }).catch((e) => {
-      log(`WARNING: the run-state index failed: ${e && e.message}`)
+      log(`WARNING: the run-verdict dispatch failed: ${e && e.message}`)
       return null
     })
 
-    let index = await fetchIndex('resume-index', {})
-    let indexWhy = indexProblem(index)
-    if (indexWhy) {
-      log(`The run-state index did not survive the trip (${indexWhy}); retrying one tier up.`)
-      const second = await fetchIndex('resume-index#2', { model: 'sonnet' })
-      const secondWhy = indexProblem(second)
+    // What is wrong with a carried verdict, or null when nothing is. Every check here is about
+    // TRANSPORT — did the answer arrive intact — and none is about the run, because the run was
+    // already judged by the CLI over the real files.
+    const verdictProblem = (held) => {
+      if (!held) return 'the dispatch returned nothing'
+      if (held.stop_reason !== 'loaded') {
+        return held.notes || 'the courier could not run the verdict command'
+      }
+
+      let parsed = null
+      try {
+        parsed = JSON.parse(held.payload_raw)
+      } catch (e) {
+        return 'the payload did not survive transcription: ' + (e && e.message)
+      }
+      // The CLI ran and refused. That is an answer about the run rather than about the trip,
+      // and retrying it one tier up buys the same honest answer at a higher price.
+      if (parsed && parsed.error) return 'REFUSED: ' + parsed.error
+      if (!parsed || !parsed.payload || typeof parsed.payload_digest !== 'string') {
+        return 'the payload is not a verdict envelope'
+      }
+      // The whole point. Recomputed here, over the object that actually arrived, with the same
+      // two functions the CLI used — so no field of this payload can be quietly wrong. The
+      // field that motivated it is the partition: the wave layout used to travel as an
+      // un-digested string, and a courier that damaged its escaping made a fully-planned run
+      // report every order as coupled, including four that were already merged.
+      const actual = fnv1a(canonical(parsed.payload))
+      if (actual !== parsed.payload_digest) {
+        return 'digest mismatch: the verdict was computed as ' + parsed.payload_digest +
+          ', what arrived digests to ' + actual
+      }
+      return null
+    }
+
+    let held = await fetchVerdict('resume-verdict', {})
+    let verdictWhy = verdictProblem(held)
+    if (verdictWhy && verdictWhy.slice(0, 9) !== 'REFUSED: ') {
+      log(`The resume verdict did not survive the trip (${verdictWhy}); retrying one tier up.`)
+      const second = await fetchVerdict('resume-verdict#2', { model: 'sonnet' })
+      const secondWhy = verdictProblem(second)
       if (!secondWhy) {
-        index = second
-        indexWhy = null
+        held = second
+        verdictWhy = null
       } else {
         log(`The second courier tier failed too (${secondWhy}).`)
+        verdictWhy = secondWhy
       }
     }
 
-    if (indexWhy) {
-      const why = indexWhy
-      log(`The run directory could not be read: ${why}`)
+    if (verdictWhy) {
+      log(`The run directory could not be read: ${verdictWhy}`)
       return developResult({
         planPath: resumePath,
         coverage: {
@@ -2831,19 +2793,27 @@ try {
           incomplete: [],
           failed_channels: ['run-state'],
           unreached: [
-            'resume_path ' + resumePath + ' did not yield a readable plan: ' + why +
-            ' — nothing was dispatched. Re-invoke without resume_path to plan afresh, ' +
-            'rather than implementing against a plan nobody could read.',
+            'resume_path ' + resumePath + ' did not yield a readable verdict: ' + verdictWhy +
+            ' — nothing was dispatched, and in particular no order was reported as coupled. ' +
+            'A resume that cannot read its own plan must not hand the whole plan back to the ' +
+            'session as work to do by hand: some of it is already built, reviewed and merged. ' +
+            'Re-invoke to try again, or read plan.json and state.jsonl yourself.',
           ],
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
     }
 
-    // The change guard runs before the fan: the envelope is already in hand, and fetching
-    // every order of a plan that turns out to be feature B's is exactly the spend this
-    // comparison exists to withhold.
-    const envelope = index.envelope || {}
+    const verdict = JSON.parse(held.payload_raw).payload
+
+    if (verdict.stop_reason !== 'loaded') {
+      return corruptHalt(verdict.notes || ['plan.json could not be read'],
+        'HALT: the run directory holds no readable plan.')
+    }
+
+    // The change guard runs before anything is dispatched: implementing feature A's plan under
+    // feature B's description is a wrong run that reports itself as a right one.
+    const envelope = verdict.envelope || {}
     const recordedChange = (envelope.change || '').trim()
 
     if (recordedChange && recordedChange !== change.trim()) {
@@ -2858,100 +2828,134 @@ try {
           unreached: [
             'the plan at ' + resumePath + ' was written for a different change. It records ' +
             JSON.stringify(recordedChange) + '; this invocation supplied ' +
-            JSON.stringify(change.trim()) + '. Nothing was dispatched — implementing one ' +
-            "change's plan under another's description is a wrong run that reports itself " +
-            'as a right one. Re-invoke with the recorded change, or plan afresh.',
+            JSON.stringify(change.trim()) + '. Nothing was dispatched. Re-invoke with the ' +
+            'recorded change, or plan afresh.',
           ],
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
     }
 
-    // The id sets, both directions, before any slice is fetched. The manifest drives the
-    // fan, so an order sitting in the file but missing from the manifest would otherwise
-    // never be fetched and never be missed — and the mirror case would surface later, less
-    // clearly, as a not_found slice.
-    const manifest = index.manifest || []
-    const manifestIds = new Set(manifest.map((entry) => entry.id))
-    const fileIds = new Set(index.order_ids || [])
-    const idNotes = []
-    for (const id of index.order_ids || []) {
-      if (!manifestIds.has(id)) {
-        idNotes.push(id + ': the loaded plan carries an order the manifest never covered')
+    for (const note of verdict.notes || []) log(`Run state: ${note}`)
+
+    if (verdict.clean) {
+      // Said out loud because it is the fast path and it should be visible that it fired: an
+      // empty ledger with no branches for this runstamp means there is nothing to salvage BY
+      // DEFINITION, and the archaeology was skipped rather than run and found empty.
+      log('This run has recorded nothing and holds no order branches, so there is nothing to ' +
+        'salvage: every order is built fresh and no salvage was attempted.')
+    }
+
+    // ------------------------------------------------- 1b. adopt what the verdict found
+    //
+    // The maps below are the ones the wave loop has always read. What changed is where they
+    // come from: a deterministic pass over the files and over git, rather than a replay in this
+    // script over records that had each crossed a model to get here.
+    for (const row of verdict.orders || []) {
+      if (row.escalated) {
+        escalatedPrior.set(row.id, { wave: row.escalated_wave || 0, seq: row.escalated_seq || 0 })
+      }
+
+      // Facts about the branch, in the shape the chain below already consumes. Only an order
+      // with commits carries them: a branch with none is nothing to adopt, whatever the ledger
+      // remembers about it.
+      const facts = (row.commits || []).length > 0 ? {
+        id: row.id,
+        branch: row.branch,
+        worktree: row.worktree,
+        base_sha: row.base_sha,
+        head_sha: row.head_sha,
+        commits: row.commits,
+        already_merged: row.already_merged,
+        dirty: row.dirty || [],
+      } : null
+
+      if (row.next_action === 'none') {
+        landed.add(row.id)
+        // A merge git holds that no wave line mentions still needs its line written, or `runs`
+        // reports the order unreached forever and the next resume asks git the same question.
+        if (row.stage_note && row.stage_note.slice(0, 9) === 'already i') {
+          reconciled.push(row.id)
+          if (!integration.merged.includes(row.id)) integration.merged.push(row.id)
+        }
+        continue
+      }
+
+      if (!facts) continue
+      scavenged.set(row.id, facts)
+
+      if (row.next_action === 'merge') {
+        salvagedApproved.set(row.id, { ...facts, measured: row.measured || [] })
+      } else if (row.next_action === 'review') {
+        verifiedOnDisk.set(row.id, {
+          branch: row.branch,
+          worktree: row.worktree,
+          head_sha: row.head_sha,
+          measured: row.measured || [],
+          seq: row.verified_seq || 0,
+          source: row.verified_source || 'journal',
+        })
+      } else if (row.next_action === 'continue-series') {
+        // Committed work whose coder never reported finishing. It is carried on from its last
+        // commit rather than measured as if complete or discarded and rebuilt — the commits
+        // live on the branch, so even a lost worktree loses none of them.
+        continueSeries.add(row.id)
       }
     }
-    for (const entry of manifest) {
-      if (!fileIds.has(entry.id)) {
-        idNotes.push(entry.id + ': the manifest covers an order the loaded plan does not carry')
-      }
+
+    for (const item of verdict.knowledge || []) knowledge.add(item)
+    integration.base_sha = (verdict.integration || {}).base_sha || ''
+    integration.head_sha = (verdict.integration || {}).head_sha || ''
+    // The counter continues where the run left it. Restarting at zero would mint numbers this
+    // run has already used, so every comparison across an interruption would read the newer
+    // record as the older one — worse than no ordering at all, because it looks like one.
+    seq = Math.max(seq, verdict.seq_max || 0)
+    lastRecordedWave = verdict.last_wave || 0
+
+    // The orders, in the shape the arithmetic below reads. The PROSE — context, acceptance
+    // criteria, the caller's settled evidence — is deliberately absent and is fetched from
+    // plan.json by whichever agent consumes it, pinned to the digest carried here. That is what
+    // keeps this payload the size of a plan's skeleton rather than the size of a plan.
+    planned = {
+      work_orders: (verdict.orders || []).map((row) => ({
+        id: row.id,
+        title: row.title,
+        role: row.role,
+        locus: row.locus || [],
+        reads: row.reads || [],
+        deps: row.deps || [],
+        contract: row.contract === true,
+        digest: row.digest,
+        acceptance_n: row.acceptance_n || 0,
+      })),
+      shared_files: [],
+      // Already parsed on disk, by code. It is re-serialized here only because the partition
+      // step below is shared with the fresh path, where the planner really does hand back a raw
+      // string that has to be parsed and can genuinely be a paraphrase.
+      partition_raw: (verdict.partition || {}).note
+        ? JSON.stringify({ error: (verdict.partition || {}).note })
+        : JSON.stringify({
+          waves: (verdict.partition || {}).waves || [],
+          coupled: (verdict.partition || {}).coupled || [],
+        }),
+      blocking_gaps: (verdict.plan || {}).blocking_gaps || [],
+      plan_path: verdict.plan_path || resumePath,
+      notes: '',
     }
-    if (idNotes.length > 0) {
-      return corruptHalt(idNotes,
-        `HALT: the loaded plan does not match its manifest (${idNotes.length} order(s)).`)
-    }
+    planPath = planned.plan_path || resumePath
+    runstamp = verdict.runstamp || runstampOf(planPath)
 
-    // Phase 2: the fan. One courier per manifest row, each copy verified here against its
-    // recorded digest — planIntegrity over a list of one, the same authority the whole plan
-    // used to pass through at once. A failed copy is retried once, one tier up, under a
-    // round-numbered label. This is what turns the digest gate from a tripwire into a
-    // ladder: a paraphrase costs one targeted re-fetch instead of halting the run, and the
-    // halt is reserved for a slice no tier could carry.
-    const slices = await pipeline(
-      manifest,
-      (entry) => fetchSlice(entry, 'load:' + entry.id, {}),
-      async (first, entry) => {
-        if (first && first.wo) return first
-        const why = first && first.why ? first.why : entry.id + ': the slice stage returned nothing'
-        log(`${entry.id}: the copy failed verification (${why}); retrying one tier up.`)
-        const second = await fetchSlice(entry, 'load:' + entry.id + '#2', { model: 'sonnet' })
-        return second.wo ? { ...second, healed: true } : second
-      },
-    )
-
-    const byId = new Map()
-    const failedSlices = []
-    slices.forEach((slice, i) => {
-      if (slice && slice.wo) byId.set(manifest[i].id, slice.wo)
-      else failedSlices.push((slice && slice.why) || manifest[i].id + ': the slice stage returned nothing')
-    })
-
-    if (failedSlices.length > 0) {
-      return corruptHalt(failedSlices,
-        `HALT: ${failedSlices.length} order(s) could not be carried intact by either courier tier.`)
-    }
-
-    const healed = slices.filter((slice) => slice && slice.healed).map((slice) => slice.wo.id)
-    if (healed.length > 0) {
-      log(`${healed.length} order(s) needed the second-tier courier: ${healed.join(', ')}.`)
-    }
-
-    // Belt and braces over the assembly itself. The per-slice checks make this pass by
-    // construction, so a note here means THIS script assembled wrongly — a different defect
-    // than a courier copying wrongly, exiting through the same honest halt.
-    const workOrders = manifest.map((entry) => byId.get(entry.id))
-    const assembled = planIntegrity(workOrders, manifest)
-    if (assembled.length > 0) {
-      return corruptHalt(assembled,
-        `HALT: the assembled plan does not match its manifest (${assembled.length} note(s)).`)
-    }
-
-    // ------------------------------------------------- 1b. adopt the envelope
+    // ------------------------------------------------- 1c. adopt the envelope
     //
-    // The plan travels with the conditions it was written under, and on a resume those win.
-    // A caller re-invoking a week later has a change description and a path; it does not
-    // have the roots the plan was surveyed against, the intelligence tier it was planned
-    // at, or the settled evidence its design phase produced. Defaulting those to whatever
-    // this invocation happened to pass implements the same plan under different conditions
-    // and reports it as the same run.
+    // The plan travels with the conditions it was written under, and on a resume those win. A
+    // caller re-invoking a week later has a change description and a path; it does not have the
+    // roots the plan was surveyed against, the tier it was planned at, or the settled evidence
+    // its design phase produced. Defaulting those to whatever this invocation happened to pass
+    // implements the same plan under different conditions and reports it as the same run.
     //
-    // `change` is the exception, and deliberately: the workflow guards on it before the
-    // loader runs, so a caller must supply it regardless. That makes it free to compare —
-    // and the comparison, made above the moment the index returned, catches resuming the
-    // wrong run before the fan spends anything on it.
-    //
-    // Explicit caller values still win over the record — a human who passes something has
-    // said something — but an override is logged, because silently disagreeing with the
-    // plan on disk is how a resumed run stops being the run it resumed.
+    // An explicit caller value still wins — a human who passes something has said something —
+    // but the override is logged, because silently disagreeing with the plan on disk is how a
+    // resumed run stops being the run it resumed.
     if (envelope.roots) {
       if (input.roots && input.roots !== envelope.roots) {
         log(`Override: roots ${envelope.roots} recorded, ${input.roots} supplied; using the supplied value.`)
@@ -2959,12 +2963,17 @@ try {
         roots = envelope.roots
       }
     }
-    if (envelope.caller_notes && !input.notes) notes = envelope.caller_notes
 
-    // The tier gets the same treatment, and it needs the log line more than roots does: the
-    // skills derive `intelligence` from the model the calling session happens to be running,
-    // so a resume carries a value whether or not anybody chose one. Adopting it in silence
-    // would re-tier somebody else's plan without a word anywhere.
+    // The settled evidence is DESCRIBED here, not carried. It is the largest string in the
+    // envelope and every consumer of it is an agent that can read it off disk, so it travels by
+    // reference like the order prose does — and the length is logged so a run whose evidence
+    // went missing is visibly different from one that never had any.
+    if (envelope.caller_notes_len > 0 && !input.notes) {
+      notesOnDisk = true
+      log(`Settled evidence: ${envelope.caller_notes_len} character(s) on disk, fetched by ` +
+        `each agent that needs it rather than carried through this script.`)
+    }
+
     if (envelope.intelligence) {
       const supplied = input.intelligence ? tierOf(input.intelligence) : ''
       const recorded = tierOf(envelope.intelligence)
@@ -2978,9 +2987,6 @@ try {
     envelopeBase = { branch: envelope.base_branch || '', sha: envelope.base_sha || '' }
 
     // A run's programme and slice are its identity, not a condition it can be re-run under.
-    // The record wins; an explicit caller value overrides and is logged, exactly as roots is,
-    // because a resume that quietly re-attributes itself makes the programme's derived
-    // progress wrong about the one run it is watching most closely.
     if (envelope.programme) {
       if (programme && programme !== envelope.programme) {
         log(`Override: programme ${envelope.programme} recorded, ${programme} supplied; using the supplied value.`)
@@ -2996,144 +3002,36 @@ try {
       }
     }
 
-    planned = {
-      work_orders: workOrders,
-      shared_files: index.shared_files || [],
-      partition_raw: index.partition_raw || '',
-      blocking_gaps: index.blocking_gaps || [],
-      plan_path: index.plan_path || '',
-      notes: index.plan_notes || '',
-    }
-    planPath = planned.plan_path || resumePath
-    resumeState = index.state || []
-    runstamp = runstampOf(planPath)
-
-    // ONE PASS, IN LOG ORDER. What is known about an order is whatever its LAST line said,
-    // and the only thing that can establish "last" is the order the append-only log is in.
-    //
-    // Resolving this by kind precedence instead is wrong in both directions, and not subtly:
-    // an `order-verified` line is written BEFORE the review loop opens, so every review-stage
-    // escalation is later than a verified line rather than earlier, and treating verified as
-    // the deeper record would cancel exactly the escalations this run most needs to carry. The
-    // reverse case is just as real — an order approved in one invocation can be re-dispatched
-    // and escalate in the next, once its branch has moved.
-    for (const entry of resumeState) {
-      // A line with no `kind` predates the multi-type log and is a wave line — every line
-      // written before that format existed was one. The loader is asked to say so explicitly;
-      // this default covers a loader that did not.
-      const kind = entry.kind || 'wave'
-
-      if (kind === 'order-approved' || kind === 'order-verified') {
-        // A stage that closed, and — unless a later line says otherwise — a stage that never
-        // got further. This is the part of the run the wave-grained log could not see at all.
-        if (!entry.order) continue
-
-        const stage = {
-          branch: entry.branch || '',
-          worktree: entry.worktree || '',
-          head_sha: entry.head_sha || '',
-          measured: entry.measured || [],
-          // Where this record sits in the run's single ordering, and which file it came out
-          // of. The seq is what lets it be compared with a journalled observation at all; the
-          // source is what the report says when the two cannot be compared.
-          seq: Number.isInteger(entry.seq) ? entry.seq : 0,
-          source: 'state',
-        }
-
-        // The two stages are exclusive and this line is the newer word on which one the order
-        // reached, whichever direction that moves it. A success recorded after an escalation
-        // supersedes it: the retry that produced this line is what the escalation was waiting
-        // for, and carrying it anyway would strand finished work.
-        if (kind === 'order-approved') {
-          approvedOnDisk.set(entry.order, stage)
-          verifiedOnDisk.delete(entry.order)
-        } else {
-          verifiedOnDisk.set(entry.order, stage)
-          approvedOnDisk.delete(entry.order)
-        }
-        escalatedPrior.delete(entry.order)
-        continue
-      }
-
-      for (const id of entry.merged || []) {
-        landed.add(id)
-        approvedOnDisk.delete(id)
-        verifiedOnDisk.delete(id)
-        escalatedPrior.delete(id)
-      }
-      // Carried forward, not re-bought. An order escalates because something about it
-      // defeated a coder, a verifier or a review loop, and a resume that quietly dispatches
-      // it again pays the full price of rediscovering a verdict that is already on disk.
-      // `retry_escalated` is how a caller says the reason is gone.
-      //
-      // A wave line's `escalated` is cumulative within its invocation, so wave 4's line
-      // re-lists what escalated in wave 2, and every later invocation re-lists it again.
-      //
-      // The two facts kept about an escalation are therefore aggregated in OPPOSITE
-      // directions, and conflating them is a real defect rather than a tidiness question:
-      //
-      //   `wave` — FIRST line wins. The first line naming an id is the wave it actually
-      //            escalated in; last-wins would report a wave the order was never in, and
-      //            the number would drift further with every resume.
-      //   `seq`  — LAST line wins. This is the ordering, and the question it answers is
-      //            "is this escalation still the newest word about the order?". Holding the
-      //            first line's seq answers a different question and answers it wrongly: an
-      //            order escalated, retried, and escalated AGAIN would be compared against
-      //            the seq of the first escalation, so the retry's green — later than that
-      //            and earlier than the re-escalation — would clear a verdict the run had
-      //            just reached for the second time, on this resume and every one after it.
-      //
-      // A success line between two such lines still clears the id outright, so a genuine
-      // re-escalation after one records its own wave rather than inheriting the old one.
-      //
-      // The stage maps are deliberately NOT cleared here. An escalation does not unmake the
-      // verification that preceded it, and `retry_escalated` needs that record to salvage
-      // from; every gate below consults `escalatedPrior` first, so the record stays inert
-      // until a caller asks for the retry.
-      for (const id of entry.escalated || []) {
-        if (!id || landed.has(id)) continue
-
-        const already = escalatedPrior.get(id)
-        escalatedPrior.set(id, {
-          wave: already ? already.wave : (entry.wave || 0),
-          seq: Math.max(already ? already.seq : 0,
-            Number.isInteger(entry.seq) ? entry.seq : 0),
-        })
-      }
-      // A resumed run inherits what its own earlier waves learned. Without this the
-      // accumulator is per-invocation, and the wave that runs after an interruption is the
-      // one wave in the run that knows nothing.
-      for (const item of entry.discovered || []) {
-        if (item && item.trim()) knowledge.add(item.trim())
-      }
-      if (entry.integration_base) integration.base_sha = entry.integration_base
-      if (entry.integration_head) integration.head_sha = entry.integration_head
+    // The caller's override, applied last because it outranks the ledger rather than joining
+    // it. Everything above is what the run recorded; this is a human saying the cause is gone.
+    for (const id of retryEscalated) {
+      escalatedPrior.delete(id)
+      // An order held back only by its escalation still has whatever stage the verdict found
+      // for it, so a retry picks up where it stopped instead of rebuilding — which is the whole
+      // reason the stage records are kept for escalated orders rather than cleared.
     }
 
-    // Kept verbatim and replayed further down, once the orders themselves are loaded: a
-    // measurement's verdict is re-derived per order, and the derivation needs the order's role
-    // and locus, which arrive with the slice couriers rather than with the index.
-    journalRaw = index.journal_raw || ''
-
-    // The caller's override, applied last because it outranks the log rather than joining it.
-    for (const id of retryEscalated) escalatedPrior.delete(id)
-
-    // Both lists exclude carried escalations. The stage records for those orders are real and
-    // are kept for a retry, but nothing is going to act on them this invocation — and saying
-    // "W2 goes straight to review" four lines before "W2 is not dispatched again" tells a
-    // human two different things about the same order, on the ordinary path.
-    const unmergedApproved = [...approvedOnDisk.keys()].filter((id) => !escalatedPrior.has(id))
-    const unmergedVerified = [...verifiedOnDisk.keys()].filter((id) => !escalatedPrior.has(id))
+    // Every list below excludes carried escalations. Their stage records are real and are kept
+    // for a retry, but nothing acts on them this invocation, and saying "W2 goes straight to
+    // review" four lines before "W2 is not dispatched again" tells a human two different things
+    // about one order.
+    const live = (ids) => [...ids].filter((id) => !escalatedPrior.has(id))
+    const unmergedApproved = live(salvagedApproved.keys())
+    const unmergedVerified = live(verifiedOnDisk.keys())
+    const carriedOn = live(continueSeries)
 
     log(`Resumed: ${landed.size} order(s) already merged; integration head ${integration.head_sha || '(none recorded)'}.`)
     if (unmergedApproved.length > 0) {
-      log(`The run state records ${unmergedApproved.join(', ')} as approved but not merged — ` +
-        `where git still holds the reviewed head, they are merged as they stand rather than ` +
-        `rebuilt.`)
+      log(`Approved by an earlier invocation and unchanged in git: ${unmergedApproved.join(', ')} — ` +
+        `merged as they stand, with no coder, no verifier and no second review.`)
     }
     if (unmergedVerified.length > 0) {
-      log(`The run state records ${unmergedVerified.join(', ')} as verified but not yet ` +
-        `approved — where git still holds the verified head, they go straight to review.`)
+      log(`Verified green at their exact heads: ${unmergedVerified.join(', ')} — they go ` +
+        `straight to review, and the measurement is not bought again.`)
+    }
+    if (carriedOn.length > 0) {
+      log(`Committed work no coder reported finishing: ${carriedOn.join(', ')} — each is ` +
+        `carried on from its last commit rather than rebuilt.`)
     }
     if (escalatedPrior.size > 0) {
       log(`Carried forward as escalated by an earlier invocation: ${[...escalatedPrior.keys()].join(', ')}. ` +
@@ -3385,133 +3283,16 @@ try {
   orders = planned.work_orders
   orderById = new Map(orders.map((wo) => [wo.id, wo]))
 
-  // ---------------------------------------------------- the observation journal
+  // The observation journal is replayed on disk now, by lib/run-verdict.mjs, together with
+  // state.jsonl and git. It used to be replayed HERE — the raw file carried back as a string by
+  // the index courier, parsed in-script, every measurement re-derived against its order role —
+  // for one reason: the derivation needs the order role and locus, and those arrived with the
+  // slice couriers rather than with the index. Both halves now come off the same disk in the
+  // same pass, so the ordering problem the split created does not exist to be solved.
   //
-  // Replayed here rather than beside state.jsonl, because deriving a measurement's verdict
-  // needs the order's role and locus and those arrive with the slice couriers, not the index.
-  //
-  // It can only ADD. The two files answer different questions — what the workflow decided, and
-  // what an agent saw — so neither overrules the other; where both speak they agree by
-  // construction, because the decision was computed from the observation in the first place.
-  if (resumePath) {
-    const journal = parseJournal(journalRaw)
-
-    // The counter continues where the run left it. Restarting at zero would mint numbers this
-    // run has already used, so every comparison across an interruption would read the newer
-    // record as the older one — which is worse than having no ordering, because it looks like
-    // one. Both files feed the seed; a resume writes to both.
-    seq = Math.max(
-      seq,
-      ...resumeState.map((e) => (Number.isInteger(e.seq) ? e.seq : 0)),
-      ...journal.entries.map((e) => e.seq),
-      0,
-    )
-
-    // Lines that parse but did not record everything the derivation reads. They are dropped
-    // for the same reason a torn one is, and they are counted for the same reason too: a
-    // journal of unreadable lines is otherwise indistinguishable from an empty one, and the
-    // run silently re-buys every measurement while looking like it never had any.
-    let incomplete = 0
-    let unusable = 0
-
-    if (journal.torn > 0) {
-      // Expected, not alarming: several agents append here and a kill can land mid-write. It
-      // is said out loud anyway, because "the journal was shorter than it should have been" is
-      // otherwise indistinguishable from "less work was done".
-      log(`${journal.torn} journal line(s) would not parse and were skipped — a torn line is ` +
-        `what an interrupted append looks like. Anything they held is re-derived or re-bought.`)
-    }
-
-    for (const entry of journal.entries) {
-      // Every way out of this loop that is not "read it" increments something. A line naming
-      // no order, a kind nobody understands, an id this plan does not carry — each parsed, so
-      // none is torn, and each used to leave through its own `continue` counted by nothing.
-      // That is the defect the incomplete counter was added to fix, sitting on the branches
-      // beside it: a journal nothing could use is otherwise indistinguishable from no journal.
-      if (!entry.order ||
-          (entry.kind !== 'merge-observed' && entry.kind !== 'verify-observed') ||
-          !orderById.has(entry.order)) {
-        unusable += 1
-        continue
-      }
-
-      // A merge the merging agent recorded itself. It does not land the order on its own —
-      // git is still asked whether the branch is really in, at the scavenge below — but it is
-      // the witness that survives when the wave line that would have recorded the merge was
-      // never written, which is the case this whole file exists for.
-      if (entry.kind === 'merge-observed') {
-        mergeObserved.set(entry.order, {
-          branch: entry.branch || '',
-          head_sha: entry.head_sha || '',
-        })
-        continue
-      }
-
-      const wo = orderById.get(entry.order)
-
-      if (!entry.recorded) incomplete += 1
-
-      // The verdict is DERIVED here, from the facts the verifier recorded, by the same
-      // function that derived it the first time. Nothing was stored for this side to trust —
-      // which is what lets an agent write the line at all without certifying its own work.
-      //
-      // `recorded` gates it because `verifyOk` reads an absence as a pass: it tests
-      // `!== 'failed'` and `.every()` holds vacuously on an empty array, so an incomplete line
-      // would come out green rather than unreadable. Only a line that recorded everything the
-      // derivation reads gets to answer the question.
-      //
-      // Last line wins per order, in file order: a fix round moves the head and measures
-      // again, and a later red measurement must not be shadowed by an earlier green one.
-      if (entry.recorded && verifyOk(entry, wo)) {
-        verifiedOnDisk.set(entry.order, {
-          branch: entry.branch || '',
-          worktree: entry.worktree || '',
-          head_sha: entry.head_sha || '',
-          measured: measuredOf(entry),
-          seq: entry.seq,
-          source: 'journal',
-        })
-      } else {
-        verifiedOnDisk.delete(entry.order)
-      }
-    }
-
-    if (incomplete > 0) {
-      log(`${incomplete} journalled measurement(s) did not record everything a verdict is ` +
-        `computed from and were not read as one; those orders are measured again.`)
-    }
-    if (unusable > 0) {
-      log(`${unusable} journal line(s) named no order this plan carries, or a kind this ` +
-        `version does not read, and were skipped.`)
-    }
-
-    // A stage the workflow already recorded as closed outranks a measurement of it: an
-    // approved order is not also waiting to be reviewed.
-    for (const id of approvedOnDisk.keys()) verifiedOnDisk.delete(id)
-    for (const id of landed) verifiedOnDisk.delete(id)
-
-    // Increment 6 §1's rule — a recorded success clears an earlier escalation — finally
-    // reaches across the two files. It could only ever be applied WITHIN state.jsonl before,
-    // because a decision there and an observation in the journal had no common ordering to be
-    // compared on; now they share one counter, so the comparison is a comparison rather than
-    // a guess.
-    //
-    // Strictly greater. Equal means neither preceded the other — two lines written before the
-    // counter existed both sit at 0 — and there the honest answer is still that the log cannot
-    // say, so the escalation stands with the ambiguity reported. Zero against a stamped number
-    // is NOT a tie and is not ambiguous: a line carrying no seq was written by a version that
-    // minted none, and a version only moves forward for a given run directory, so it really
-    // does precede every stamped line. Comparing them is reading the log, not guessing at it.
-    for (const [id, prior] of escalatedPrior) {
-      const green = verifiedOnDisk.get(id)
-      if (!green || green.seq <= prior.seq) continue
-
-      escalatedPrior.delete(id)
-      log(`${id}: an earlier invocation escalated it, and a later verification recorded it ` +
-        `green at ${green.head_sha}. The log orders the two, so the escalation is superseded ` +
-        `and the order is picked up rather than carried.`)
-    }
-  }
+  // What the replay decided is unchanged and is still derived rather than stored: no agent
+  // journals a verdict, and pass or fail is computed from the recorded facts by the same
+  // function that computed it the first time.
 
   // ------------------------------------------------------------ 3. partition
   //
@@ -3815,140 +3596,64 @@ try {
 
     log(`Integration worktree ${integration.worktree} on ${integration.branch} at ${integration.head_sha}.`)
 
-    // ---------------------------------------------------- 3c-bis. scavenge
+    // ------------------------------------------------ 3c-bis. materialize worktrees
     //
-    // Only a resume can have a predecessor. On a fresh run every branch this looks for is one
-    // this run is about to create, so asking would be asking whether the future exists.
+    // Every question about what an interrupted predecessor left was answered on disk, before
+    // this invocation dispatched anything: which branches exist, what they carry, whether they
+    // are already merged, whether their worktrees are still there. What remains is the one part
+    // that is an ACTION rather than a question — a branch with commits needs a directory for a
+    // verifier or a reviewer to stand in, and a worktree that was pruned has to be re-cut.
     //
-    // The candidate set is every pending order, not only the ones the state file records as
-    // approved: a run can die between a coder's last commit and the review that would have
-    // approved it, and those commits are exactly as findable and exactly as worth adopting.
-    // The state file narrows what we EXPECT to find; git decides what is actually there.
+    // Commits are the unit of salvage, which is why losing a worktree loses nothing: the work
+    // lives on the branch, and a fresh worktree over the same branch is the same tree.
     //
-    // Carried-forward escalations are left out. Their branches may well hold commits, but
-    // nothing is going to be dispatched at them this invocation, and a worktree created for
-    // an order nobody will enter is litter.
-    if (resumePath && runstamp) {
-      const candidates = waves.flat()
-        .filter((id) => !landed.has(id) && !staleWithheldIds.includes(id) && !escalatedPrior.has(id))
-        .map((id) => ({
-          id,
-          branch: orderBranch(id),
-          worktree: (approvedOnDisk.get(id) || verifiedOnDisk.get(id) || {}).worktree || '',
-        }))
+    // This fires only for orders that need a tree and have none. On a resume whose worktrees
+    // survived — the ordinary case — it does not fire at all.
+    const needTrees = [...scavenged.entries()]
+      .filter(([id, f]) => !f.worktree && !landed.has(id) && !escalatedPrior.has(id) &&
+        !staleWithheldIds.includes(id))
+      .map(([id, f]) => ({ id, branch: f.branch }))
 
-      if (candidates.length > 0) {
-        const found = await agent(scavengePrompt(candidates), {
-          agentType: 'vf-agentics:verifier', effort: 'low', schema: SCAVENGE,
-          phase: 'Implement', label: 'scavenge',
-        }).catch((e) => {
-          log(`WARNING: the scavenge pass failed: ${e && e.message}`)
-          return null
-        })
+    if (needTrees.length > 0) {
+      log(`${needTrees.length} salvaged branch(es) have no worktree; cutting one each so their ` +
+        `commits can be verified and reviewed.`)
 
-        if (!found || found.stop_reason !== 'completed') {
-          // Degraded, never fatal: every candidate is implemented from scratch, which costs
-          // tokens and loses nothing. The cost is named rather than absorbed silently.
-          const why = found && found.notes ? found.notes : 'the scavenge pass returned no result'
-          log(`WARNING: nothing could be scavenged (${why}); every pending order is implemented afresh.`)
-          if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
-        } else {
-          for (const entry of found.found || []) {
-            if (!orderById.has(entry.id)) continue
+      const made = await agent(worktreePrompt(needTrees), {
+        agentType: 'vf-agentics:verifier', effort: 'low', schema: WORKTREES,
+        phase: 'Implement', label: 'worktrees',
+      }).catch((e) => {
+        log(`WARNING: the worktree pass failed: ${e && e.message}`)
+        return null
+      })
 
-            // Rung 1: git says this branch is already in the integration branch, and the run
-            // says its review closed over exactly the head git is pointing at. The merge
-            // happened; only the record of it is missing, because the invocation that made it
-            // died before its wave ended. Nothing needs a worktree, a verifier or a reviewer —
-            // the work is in the branch every later wave is built on.
-            //
-            // The approval record is not decoration here, it is the second witness, and
-            // ancestry alone cannot stand without it: a coder starts by cutting its branch AT
-            // the integration head, so a branch created for an order whose coder then died
-            // before its first commit is an ancestor of the integration branch too. That
-            // branch and a genuinely merged one report identically — same ancestry, no commits
-            // ahead of the fork point — and marking the empty one merged would land an order
-            // nobody implemented and write it into the log for every future resume to believe.
-            //
-            // Every merged order has this record: the approval line is written the instant the
-            // review closes, which is strictly before the merge that follows it. An order
-            // whose approval line was lost too falls to the rungs below and is rebuilt, which
-            // costs tokens rather than correctness.
-            const approvedRecord = approvedOnDisk.get(entry.id)
-            // Either witness will do, and they fail independently. The approval line is
-            // written by the recorder after the review closes; the merge line is written by
-            // the merging agent inside the merge itself. The incident that motivated the
-            // journal killed the recorder, so the run held merges whose only record would
-            // have been the line that never got written — and the merge line is precisely
-            // what survives that, because nothing separate had to run to produce it.
-            const merged = mergeObserved.get(entry.id)
-            const witnessed = (approvedRecord && approvedRecord.head_sha === entry.head_sha) ||
-              (merged && merged.branch === entry.branch)
-
-            if (entry.already_merged === true && entry.branch) {
-              if (witnessed) {
-                landed.add(entry.id)
-                if (!integration.merged.includes(entry.id)) integration.merged.push(entry.id)
-                reconciled.push(entry.id)
-                continue
-              }
-
-              // Loudly, because the two readings are far apart: either both records were
-              // lost, or this is a branch nobody ever committed to. Both are answered by
-              // implementing the order, and only one of them costs anything.
-              log(`Scavenge: ${entry.id}'s branch is already in the integration branch, but ` +
-                `neither the run state nor the journal records anything closing over ` +
-                `${entry.head_sha || '(no head)'} — it is implemented rather than assumed merged.`)
-            }
-
-            // An entry naming no worktree, no base, or no commit cannot be verified or
-            // reviewed, and adopting it would put a fix round in an unknown directory. It is
-            // dropped, loudly, and its order is implemented from scratch.
-            const usable = entry.worktree && entry.branch && SHA_RE.test(entry.base_sha || '') &&
-              SHA_RE.test(entry.head_sha || '') && (entry.commits || []).length > 0
-
-            if (!usable) {
-              log(`Scavenge: ignoring the report for ${entry.id} — it names no usable worktree, base and commit series.`)
-              continue
-            }
-
-            scavenged.set(entry.id, entry)
-
-            // Rungs 2 and 3. The record says a stage closed; git says the branch still holds
-            // exactly the head it closed over. Two independent sources agreeing is what makes
-            // adopting the verdict defensible — and a mismatch is not a problem, it just means
-            // the branch moved after the stage closed, so the stage is redone over what is
-            // there now. The comparison happens here rather than in an agent because it is
-            // deterministic (IRON LAW §8).
-            if (approvedRecord && approvedRecord.head_sha === entry.head_sha) {
-              salvagedApproved.set(entry.id, {
-                ...entry,
-                measured: approvedRecord.measured || [],
-              })
-            }
-          }
-
-          const adopted = [...scavenged.keys()].filter((id) => !salvagedApproved.has(id))
-
-          if (reconciled.length > 0) {
-            log(`Already in the integration branch, merged by an earlier invocation that died ` +
-              `before recording it: ${reconciled.join(', ')}. Recorded now.`)
-          }
-          if (salvagedApproved.size > 0) {
-            log(`Approved by an earlier invocation and unchanged in git: ${[...salvagedApproved.keys()].join(', ')}. ` +
-              `They are merged as they stand — no coder, no verifier, no second review.`)
-          }
-          if (adopted.length > 0) {
-            log(`Scavenged ${adopted.join(', ')} — adopted, and carried on from the last stage ` +
-              `the run recorded for each.`)
-          }
-          if (reconciled.length === 0 && scavenged.size === 0) {
-            log(`Scavenge found nothing on disk; every pending order is implemented from scratch.`)
+      if (!made || made.stop_reason !== 'completed') {
+        // Degraded, never fatal. An order with commits and nowhere to stand is implemented
+        // afresh, which costs tokens and loses nothing — its branch keeps the commits.
+        const why = made && made.notes ? made.notes : 'the worktree pass returned no result'
+        log(`WARNING: no worktree could be cut (${why}); those orders are implemented afresh.`)
+        if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
+        for (const n of needTrees) scavenged.delete(n.id)
+      } else {
+        const paths = new Map((made.made || []).map((m) => [m.id, m.worktree]))
+        for (const n of needTrees) {
+          const path = paths.get(n.id)
+          if (path) {
+            scavenged.get(n.id).worktree = path
+          } else {
+            // Reported as absent rather than as a path nobody confirmed. Dropping the salvage
+            // is the safe reading: the order is rebuilt, and its commits stay on the branch
+            // for a human or a later resume to find.
+            log(`No worktree could be made for ${n.id}; it is implemented from scratch.`)
+            scavenged.delete(n.id)
+            salvagedApproved.delete(n.id)
+            verifiedOnDisk.delete(n.id)
+            continueSeries.delete(n.id)
           }
         }
       }
     }
   }
+
 
   // ------------------------------------- 3c-ter. account for what was salvaged
   //
@@ -3967,10 +3672,8 @@ try {
   // inventing a new number would claim a wave ran that never did. lib/run-status.mjs counts
   // DISTINCT wave numbers for exactly this reason.
   if (reconciled.length > 0 && planPath) {
-    const lastWave = resumeState.reduce((n, e) => Math.max(n, (e.kind || 'wave') === 'wave' ? (e.wave || 0) : 0), 0)
-
     const recorded = await appendState(waveLine({
-      wave: lastWave || 1,
+      wave: lastRecordedWave || 1,
       merged: integration.merged.slice(),
       approved_unmerged: integration.approved_unmerged.slice(),
       escalated: [...escalatedPrior.keys()],
@@ -3996,7 +3699,7 @@ try {
     // that made them died somewhere between the merge and the wave verification that would
     // have measured them. Every later wave is built on this head, so it is measured once here
     // rather than inherited on trust — the same reasoning as step 4b, one invocation later.
-    const wv = await agent(waveVerifyPrompt(lastWave || 1), {
+    const wv = await agent(waveVerifyPrompt(lastRecordedWave || 1), {
       agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
       phase: 'Integrate', label: 'wave-verify:reconciled',
     }).catch((e) => {
@@ -4005,10 +3708,10 @@ try {
     })
 
     if (!wv) {
-      integration.wave_verify.push({ wave: lastWave || 1, build: 'unobserved', suite: 'unobserved' })
+      integration.wave_verify.push({ wave: lastRecordedWave || 1, build: 'unobserved', suite: 'unobserved' })
       log(`WARNING: the reconciled integration head was not verified; the waves below build on it unmeasured.`)
     } else {
-      integration.wave_verify.push({ wave: lastWave || 1, build: wv.build, suite: wv.suite })
+      integration.wave_verify.push({ wave: lastRecordedWave || 1, build: wv.build, suite: wv.suite })
       if (!waveVerifyOk(wv, excusedRedFiles())) {
         lineStopped = 'the integration head merged by an earlier invocation failed verification' +
           ' (build ' + wv.build + ', suite ' + wv.suite + ')'

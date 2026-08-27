@@ -13,35 +13,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
-import { manifestOf } from '../lib/plan-digest.mjs'
+import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
+import { digestOrder } from '../lib/plan-digest.mjs'
 
 /**
- * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
- * 'resume-index' answer (everything but the orders) and a 'load:' prefix responder that
- * serves each order slice out of the same fixture, retry labels included.
+ * A resume's entire dispatch surface, in one scripted answer.
+ *
+ * The fan is gone — there is no 'resume-index' and no 'load:<id>' slice any more. One courier
+ * runs lib/run-verdict.mjs and pastes its stdout, and `resumeVerdict` builds that stdout by
+ * calling the REAL derivation over the fixture, so a scenario pins what the ladder decides
+ * rather than what the test author believed it decides. The optional second argument damages
+ * the payload AFTER its digest is taken, which is how the transport ladder is exercised.
  */
-const resumeLoad = (v) => ({
-  'resume-index': {
-    stop_reason: v.stop_reason,
-    order_ids: v.plan ? (v.plan.work_orders || []).map((o) => o.id) : [],
-    shared_files: v.plan ? v.plan.shared_files : [],
-    partition_raw: v.plan ? v.plan.partition_raw : '',
-    blocking_gaps: v.plan ? v.plan.blocking_gaps : [],
-    plan_path: v.plan ? v.plan.plan_path : '',
-    plan_notes: v.plan ? (v.plan.notes || '') : '',
-    envelope: v.envelope || { change: '', roots: '', caller_notes: '', intelligence: '',
-                              base_branch: '', base_sha: '', programme: '', slice: '' },
-    manifest: v.manifest || [],
-    state: v.state || [],
-    notes: v.notes || '',
-  },
-  'load:': (prompt, opts) => {
-    const id = (opts.label || '').replace(/^load:/, '').replace(/#\d+$/, '')
-    const wo = v.plan && (v.plan.work_orders || []).find((o) => o.id === id)
-    return wo ? { stop_reason: 'loaded', orders: [wo], notes: '' }
-              : { stop_reason: 'not_found', orders: [], notes: 'no order ' + id }
-  },
-})
+const resumeLoad = resumeVerdict
 
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
@@ -140,9 +124,9 @@ const happyAgents = (over = {}) => scriptedAgents({
   // The default resumed world is the world the plan was written against: the branch sits
   // exactly on the anchor and nothing moved. Only a resume dispatches this at all.
   drift: { stop_reason: 'completed', user_head: A40, moved_files: [], notes: 'unchanged' },
-  // Likewise resume-only, and the default answer is the common one: the predecessor left
-  // nothing on any order branch, so every pending order is implemented from scratch.
-  scavenge: { stop_reason: 'completed', found: [], notes: 'no order branch exists' },
+  // There is no `scavenge` answer here any more. What a predecessor left is not something an
+  // agent is asked about: lib/run-verdict.mjs reads it off git, so it is fixture data now —
+  // see `loaded()`'s `git:` below.
   ...integrationCast(),
   'code:': coded(),
   'verify:': verified(),
@@ -778,7 +762,12 @@ const loaded = (orders, over = {}) => ({
   stop_reason: 'loaded',
   plan: loadedPlan(orders),
   envelope: envelope(),
-  manifest: manifestOf(orders),
+  // What git holds for this run — the question the deleted `scavenge` agent used to be sent
+  // out to answer, now read from disk by lib/run-verdict.mjs and therefore fixture data. No
+  // order branch exists, so every pending order is built from scratch. `clean` is false on
+  // purpose: the state line below IS a record, and a run that recorded something is not a
+  // clean one however empty git looks.
+  git: gitFacts([], { clean: false }),
   state: [{ wave: 1, merged: ['W1'], approved_unmerged: [], escalated: [],
             integration_base: A40, integration_head: M40 }],
   notes: 'read plan.json and one state entry',
@@ -843,30 +832,49 @@ test('a branch that moved between invocations is reported, and the tree wins', a
 })
 
 test('an unreadable run directory dispatches nothing and says to re-plan', async () => {
+  // The courier now succeeds — it ran the command and pasted the output faithfully — and the
+  // PAYLOAD is what says the plan could not be read. So this exits through the corrupt halt
+  // rather than through the transport ladder, and the reader's own account of what was wrong
+  // has to survive that hop: "plan.json is not there" is actionable, "the run is corrupt" is not.
   const { result, prompts } = await runWorkflow(WF, {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: scriptedAgents({
-      ...resumeLoad({ stop_reason: 'unreadable', plan: null, manifest: [], state: [],
+      ...resumeLoad({ stop_reason: 'unreadable', plan: null, state: [],
                        notes: 'plan.json is not there' }),
     }),
   })
 
   assert.deepEqual(result.implemented, [])
   assert.ok(result.coverage.failed_channels.includes('run-state'))
-  assert.ok(result.coverage.unreached.some((u) => /plan afresh/.test(u)))
+  assert.ok(result.coverage.unreached.some((u) => /plan integrity: plan\.json is not there/.test(u)),
+    "the reader's own words reach the caller, not a paraphrase of them")
+  assert.ok(result.coverage.unreached.some((u) => /re-plan/.test(u)),
+    'a resume that found no plan has to say what to do instead of resuming')
+  assert.deepEqual(result.coupled, [],
+    'a run whose plan nobody could read knows nothing about what is already built, so it ' +
+    'must hand back nothing to reimplement')
   assert.ok(!prompts.some((p) => p.opts.label === 'integration-setup'))
 })
 
 // --- the content digest tripwire (B3 / AF-8) ---------------------------------------------------
+//
+// The tripwire moved. It used to guard a per-order manifest against a fan of couriers that
+// re-emitted every order's prose; there is no fan and no re-emission any more — the orders
+// never cross a model on a resume at all. What survives of B3 is two things, and both are
+// pinned below: ONE digest over the whole verdict payload, recomputed in-script, and the
+// per-order digest quoted into the prompt of whoever fetches the order off disk.
 
-test('a manifest computed by lib/plan-digest.mjs is accepted by the in-script digest', async () => {
-  // This is the test that pins the two implementations together. The library computes the
-  // manifest; the workflow recomputes it from its own copy of the algorithm. If they ever
-  // diverge, every resume halts on a mismatch that is not there — so the pin is behavioural
-  // rather than a comment asking two files to stay in step.
+test('a digest computed by lib/plan-digest.mjs is accepted by the in-script recomputation', async () => {
+  // This is still the test that pins the two implementations together, one level up. The
+  // library digests the verdict payload with `fnv1a(canonical(...))`; the workflow recomputes
+  // it from its own copy of both functions, which it must carry because a workflow script has
+  // no imports. If they ever diverge, every resume in the world halts on a mismatch that is
+  // not there — so the pin is behavioural rather than a comment asking two files to stay in
+  // step. The punctuation in the context is deliberate: it is what a naive canonicalization
+  // gets wrong.
   const orders = [order('W1'), order('W2', { deps: ['W1'], context: 'a much longer context, with punctuation: commas, colons — and a dash' })]
-  const { result } = await runWorkflow(WF, {
+  const { result, prompts, logs } = await runWorkflow(WF, {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
     agent: happyAgents({
@@ -878,58 +886,84 @@ test('a manifest computed by lib/plan-digest.mjs is accepted by the in-script di
 
   assert.equal(result.coverage.complete, true)
   assert.ok(!result.coverage.unreached.some((u) => /plan integrity/.test(u)))
+  assert.ok(!logs.some((l) => /digest mismatch/.test(l)),
+    'two copies of one hash that disagree turn every healthy resume into a false halt')
+  assert.ok(!prompts.some((p) => p.opts.label === 'resume-verdict#2'),
+    'and buy a second courier tier every time, for nothing')
 })
 
-test('a paraphrased context halts the resume, naming the order', async () => {
-  // The exact corruption a count-and-ids manifest cannot see: same order count, same locus
-  // count, same acceptance count, one sentence reworded.
+test('a paraphrased context cannot reach a coder: the order is fetched under its digest', async () => {
+  // What replaced the manifest comparison. The exact corruption it was built for — same order
+  // count, same locus count, same acceptance count, one sentence reworded — can no longer
+  // happen in transit, because the prose does not travel: the verdict carries the order's
+  // SKELETON and its digest, and the coder is sent to read the words themselves off disk.
+  //
+  // That leaves exactly one hazard, the one the digest is quoted for: plan.json edited between
+  // the verdict and the dispatch. So the pin is on the prompt — the fetch command, the number
+  // to confirm, and the absence of the prose this script must never be the source of.
+  const w2 = order('W2', { deps: ['W1'], context: 'the transport is scp; rsync is absent here' })
+  const { prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RUN_DIR },
+    workflow: () => surveyResult(),
+    agent: happyAgents({
+      ...resumeLoad(loaded([order('W1'), w2])),
+      'integration-setup': setUp({ head_sha: M40 }),
+      'merge:': merged(N40),
+    }),
+  })
+
+  const code = prompts.find((p) => p.opts.label === 'code:W2').prompt
+  assert.ok(code.includes('node "C:/plugin/lib/ledger.mjs" order "' + RUN_DIR + '" "W2"'),
+    'the order travels disk -> tool result -> context, the one direction that cannot corrupt')
+  assert.ok(code.includes('CONFIRM that digest reads exactly ' + digestOrder(w2)),
+    'a coder implementing against an order the plan was not ratified with is the damage the ' +
+    'manifest was built to catch, and the digest is where that catch now lives')
+  assert.ok(!code.includes('the transport is scp; rsync is absent here'),
+    'a prose field this script quotes is a prose field this script can paraphrase')
+})
+
+test('a verdict no courier can carry halts the resume with the shape of the damage', async () => {
+  // The old halt named the order and what differed about it, because "the plan is corrupt" is
+  // not an actionable halt. The same duty survives the rework at the new granularity: when the
+  // payload is damaged the reader has to be able to tell transcription damage from a plan that
+  // really did change, and that means both numbers, not just the word "mismatch".
+  //
+  // The damage is applied after the digest is taken, so the mismatch is real rather than
+  // asserted — and it is applied to both rungs of the ladder, since one retry one tier up is
+  // what a damaged payload buys before the run stops.
   const orders = [order('W1'), order('W2', { deps: ['W1'] })]
-  const asWritten = manifestOf(orders)
-  const asRead = [order('W1'), order('W2', { deps: ['W1'], context: 'ctx, roughly' })]
+  const mangle = (env) => { env.payload.partition.waves = [] }
+  const mangled = resumeLoad(loaded(orders), mangle)['resume-verdict']
+  const sent = JSON.parse(mangled.payload_raw)
 
   const { result, prompts } = await runWorkflow(WF, {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => surveyResult(),
-    agent: scriptedAgents({
-      ...resumeLoad(loaded(asRead, { manifest: asWritten })),
-    }),
+    agent: scriptedAgents({ 'resume-verdict': mangled, 'resume-verdict#2': mangled }),
   })
+
+  const said = result.coverage.unreached.join(' ')
+  assert.ok(said.includes('the verdict was computed as ' + sent.payload_digest),
+    'the digest the run-verdict CLI stamped on its own output')
+  assert.ok(/what arrived digests to [0-9a-f]{8}/.test(said) &&
+    !said.includes('digests to ' + sent.payload_digest),
+    'and the digest of what actually turned up, which is the half that says how far it drifted')
 
   assert.deepEqual(result.implemented, [])
-  assert.ok(result.coverage.unreached.some((u) => /plan integrity: W2: content digest/.test(u)))
+  assert.ok(result.coverage.failed_channels.includes('run-state'))
   assert.ok(!prompts.some((p) => (p.opts.label || '').startsWith('code:')),
     'nothing is dispatched against a plan that is not the plan that was written')
-  assert.ok(result.coverage.failed_channels.includes('run-state'))
 })
 
-test('a dropped acceptance criterion halts the resume with the shape of the damage', async () => {
-  const orders = [order('W1', { acceptance: ['builds', 'tests pass'] })]
-  const asRead = [order('W1', { acceptance: ['builds'] })]
-
-  const { result } = await runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: () => surveyResult(),
-    agent: scriptedAgents({ ...resumeLoad(loaded(asRead, { manifest: manifestOf(orders) }) )}),
-  })
-
-  assert.ok(result.coverage.unreached.some((u) =>
-    /W1: acceptance has 1 criteria, the manifest recorded 2/.test(u)))
-})
-
-test('an order that vanished in transit halts the resume', async () => {
-  const orders = [order('W1'), order('W2', { deps: ['W1'] })]
-
-  const { result } = await runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: () => surveyResult(),
-    agent: scriptedAgents({
-      ...resumeLoad(loaded([order('W1')], { manifest: manifestOf(orders) })),
-    }),
-  })
-
-  assert.ok(result.coverage.unreached.some((u) =>
-    /W2: the manifest covers an order the loaded plan does not carry/.test(u)))
-})
+// DELETED: 'an order that vanished in transit halts the resume'.
+//
+// It pinned the manifest's both-directions id comparison — an order in the manifest that the
+// loaded plan did not carry. Nothing per-order is loaded any more: lib/run-verdict.mjs reads
+// plan.json itself and emits exactly one row per work order, so the two sets cannot disagree,
+// and an order lost between the CLI and this script takes the payload digest with it. That
+// path is pinned end-to-end in test/vfa-develop-resume-verdict.test.mjs ('a payload no tier
+// can carry halts, and never reports the plan as all-coupled'), and the halt it produces is
+// the test directly above.
 
 // --- the integration handle survives every exit path (AF-6) -------------------------------------
 
@@ -974,16 +1008,22 @@ test('every exit path returns the integration handle, even the ones that dispatc
 // proceeds and quietly re-opens questions somebody already answered.
 
 test('a resumed run adopts the notes and tier its plan was written under', async () => {
+  // The notes half changed mechanism and kept its whole point. Settled evidence is the largest
+  // string in the envelope, so it is DESCRIBED in the verdict — a length and a digest — and
+  // never carried; the coder is handed the command that reads it off disk. What still has to
+  // be true is that the evidence REACHES the coder on a week-later resume, which is why the
+  // reference and the announced length are both pinned: a run whose evidence went missing must
+  // look different from one that never had any.
   const orders = [order('W1'), order('W2', { deps: ['W1'] })]
-  const { prompts } = await runWorkflow(WF, {
+  const settled = 'rsync is absent; transport is scp'
+  const { prompts, logs } = await runWorkflow(WF, {
     // The caller passes neither notes nor intelligence — exactly the week-later resume.
     args: { change: 'add the thing', resume_path: RUN_DIR, plugin_root: 'C:/plugin' },
     workflow: () => surveyResult(),
     agent: happyAgents({
       ...resumeLoad(loaded(orders, {
         envelope: envelope({
-          roots: 'C:/repo', caller_notes: 'rsync is absent; transport is scp',
-          intelligence: 'max',
+          roots: 'C:/repo', caller_notes: settled, intelligence: 'max',
         }),
       })),
       'integration-setup': setUp({ head_sha: M40 }),
@@ -992,8 +1032,13 @@ test('a resumed run adopts the notes and tier its plan was written under', async
   })
 
   const code = prompts.find((p) => p.opts.label === 'code:W2')
-  assert.ok(code.prompt.includes('rsync is absent; transport is scp'),
+  assert.ok(code.prompt.includes('node "C:/plugin/lib/ledger.mjs" notes "' + RUN_DIR + '"'),
     'settled evidence recorded at plan time must reach the coder on a resume')
+  assert.ok(!code.prompt.includes(settled),
+    'by reference, not by copy: the verdict carries a length and a digest, never the text')
+  assert.ok(logs.some((l) => l.includes('Settled evidence: ' + settled.length + ' character(s)')),
+    'evidence that silently went missing is the failure this envelope exists to prevent, and ' +
+    'the announced length is the only way a reader can see it did not')
   assert.ok(code.prompt.includes('C:/repo'), 'the roots the plan was surveyed against win')
   assert.equal(code.opts.model, 'fable', 'the recorded intelligence tier is adopted too')
 })

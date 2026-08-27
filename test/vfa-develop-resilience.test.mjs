@@ -12,46 +12,20 @@
 //                 itself and reporting a moved world as still.
 //   the tags    — programme and slice on the plan envelope, so a run can be attributed to the
 //                 slice it implements instead of being one more timestamped directory.
-//   scavenging  — deterministic order-branch names, so an interrupted run's work can be FOUND,
+//   salvage     — deterministic order-branch names, so an interrupted run's work can be FOUND,
 //                 adopted rather than rebuilt, and still put through everything.
+//
+// Since 0.17.0 the finding half of that last mechanism happens on disk, in lib/run-verdict.mjs,
+// and reaches this script as one digested payload rather than as a scavenge agent's report.
+// So the fixtures here say what GIT HOLDS — `gitFacts([...])` — and the verdict every scenario
+// runs against is computed by the real lib from that, which is what makes these tests pin what
+// the ladder decides rather than what their author believed it decides.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
-import { manifestOf } from '../lib/plan-digest.mjs'
-
-/**
- * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
- * 'resume-index' answer (everything but the orders) and a 'load:' prefix responder that
- * serves each order slice out of the same fixture, retry labels included.
- */
-const resumeLoad = (v) => ({
-  'resume-index': {
-    stop_reason: v.stop_reason,
-    order_ids: v.plan ? (v.plan.work_orders || []).map((o) => o.id) : [],
-    shared_files: v.plan ? v.plan.shared_files : [],
-    partition_raw: v.plan ? v.plan.partition_raw : '',
-    blocking_gaps: v.plan ? v.plan.blocking_gaps : [],
-    plan_path: v.plan ? v.plan.plan_path : '',
-    plan_notes: v.plan ? (v.plan.notes || '') : '',
-    envelope: v.envelope || { change: '', roots: '', caller_notes: '', intelligence: '',
-                              base_branch: '', base_sha: '', programme: '', slice: '' },
-    manifest: v.manifest || [],
-    state: v.state || [],
-    // Verbatim, exactly as the courier carries it: the fixtures build the file, not a parsed
-    // view of it, so the parser under test is the one the run actually uses.
-    journal_raw: v.journal_raw || '',
-    notes: v.notes || '',
-  },
-  'load:': (prompt, opts) => {
-    const id = (opts.label || '').replace(/^load:/, '').replace(/#\d+$/, '')
-    const wo = v.plan && (v.plan.work_orders || []).find((o) => o.id === id)
-    return wo ? { stop_reason: 'loaded', orders: [wo], notes: '' }
-              : { stop_reason: 'not_found', orders: [], notes: 'no order ' + id }
-  },
-})
-
+import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
@@ -126,6 +100,10 @@ const waveLine = () => ({
   head_sha: '',
 })
 
+/**
+ * The run as lib/run-verdict.mjs will find it. `git` is what the repository holds for this
+ * runstamp — omitted means no order branch exists, which is the clean case.
+ */
 const loaded = (over = {}) => ({
   stop_reason: 'loaded',
   plan: {
@@ -134,7 +112,6 @@ const loaded = (over = {}) => ({
     blocking_gaps: [], plan_path: RUN_DIR, notes: '',
   },
   envelope: envelope(),
-  manifest: manifestOf(ORDERS),
   state: [waveLine()],
   notes: 'read plan.json and one state entry',
   ...over,
@@ -144,7 +121,6 @@ const cast = (over = {}) => scriptedAgents({
   'existing-runs': { stop_reason: 'observed', runs: [], notes: 'no runs directory' },
   plan: plan(),
   drift: { stop_reason: 'completed', user_head: A40, moved_files: [], notes: 'unchanged' },
-  scavenge: { stop_reason: 'completed', found: [], notes: 'no order branch exists' },
   'integration-setup': setUp(),
   'merge:': merged(),
   'wave-verify:': verified({ discriminator: [], notes: 'the merged head' }),
@@ -161,11 +137,15 @@ const fresh = (args, over) => runWorkflow(WF, {
   args: { ...ARGS, ...args }, workflow: surveyResult, agent: cast(over),
 })
 
-const resumed = (over) => runWorkflow(WF, {
+/**
+ * A resumed run. `over` scripts agents; `fixture` says what the verdict lib will find on disk
+ * and in git — `{ state, journal_raw, git, plan, envelope }`, all optional.
+ */
+const resumed = (over, fixture) => runWorkflow(WF, {
   args: { ...ARGS, resume_path: RUN_DIR },
   workflow: surveyResult,
   agent: cast({
-    ...resumeLoad(loaded()),
+    ...resumeVerdict(loaded(fixture)),
     'integration-setup': setUp({ head_sha: M40 }),
     'merge:': merged(N40),
     ...over,
@@ -178,25 +158,25 @@ const promptFor = (prompts, label) => {
   return hit.prompt
 }
 
-// --- the loader fan (the 2026-08-19 transcription failure) ---------------------------------
+// --- the load (the 2026-08-19 transcription failure) ----------------------------------------
 
-test('a resume fans the load: one index plus one slice per order, at the frontmatter tier', async () => {
-  // No dispatch carries the whole plan. The single loader this replaced was asked for a
-  // 118KB byte-exact copy and paraphrased 13 of 14 orders; each slice is bounded by its own
-  // order, so the frontmatter tier carries it — the sonnet override exists only as the
-  // per-slice retry, and a clean load never pays for it.
+test('a resume buys ONE verdict courier, at the frontmatter tier, and no loader at all', async () => {
+  // No dispatch carries the plan, and no dispatch carries a piece of it either. The single
+  // loader this began as was asked for a 118KB byte-exact copy and paraphrased 13 of 14 orders;
+  // the fan that replaced it bounded each order by its own size but still ran the index — and
+  // `partition_raw` with it — through a model. The whole payload is computed on disk now, so
+  // one dispatch runs one command and pastes its stdout, and the frontmatter tier carries that.
+  // The transport ladder around it is pinned in test/vfa-develop-resume-verdict.test.mjs.
   const { prompts } = await resumed()
 
-  const idx = prompts.find((p) => p.opts.label === 'resume-index')
-  assert.ok(idx, 'a resume dispatches the index courier')
-  assert.equal(idx.opts.model, undefined,
-    'the index is everything EXCEPT the orders — small enough for the frontmatter tier')
+  const verdicts = prompts.filter((p) => /^resume-verdict/.test(p.opts.label || ''))
+  assert.equal(verdicts.length, 1, 'one dispatch reads the whole run directory')
+  assert.equal(verdicts[0].opts.model, undefined,
+    'pasting one command\'s stdout is frontmatter work; sonnet is the retry, not the default')
 
-  const slices = prompts.filter((p) => (p.opts.label || '').startsWith('load:'))
-  assert.deepEqual(slices.map((p) => p.opts.label).sort(), ['load:W1', 'load:W2'],
-    'one slice courier per manifest row, no retries on a clean load')
-  assert.ok(slices.every((p) => p.opts.model === undefined),
-    'a first-pass slice runs at the frontmatter tier; sonnet is the retry, not the default')
+  assert.ok(!prompts.some((p) => (p.opts.label || '').startsWith('load:') ||
+    p.opts.label === 'resume-index'),
+    'no per-order loader of any kind survives: the plan is read on disk, by its consumer')
 
   const recorder = prompts.find((p) => (p.opts.label || '').startsWith('record:'))
   assert.ok(recorder, 'a completed wave dispatches the recorder')
@@ -263,16 +243,8 @@ test('a run with no programme records empty tags rather than omitting them', asy
 })
 
 test('a resumed run adopts the tags its own plan recorded', async () => {
-  const { logs } = await runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: surveyResult,
-    agent: cast({
-      ...resumeLoad(loaded({
-        envelope: envelope({ programme: '2026-08-15-eva-plays-2', slice: 'walk' }),
-      })),
-      'integration-setup': setUp({ head_sha: M40 }),
-      'merge:': merged(N40),
-    }),
+  const { logs } = await resumed({}, {
+    envelope: envelope({ programme: '2026-08-15-eva-plays-2', slice: 'walk' }),
   })
 
   assert.ok(!logs.some((l) => /Override: programme/.test(l)),
@@ -286,7 +258,7 @@ test('a caller who re-tags a resumed run is obeyed, and never in silence', async
     args: { ...ARGS, resume_path: RUN_DIR, programme: 'something-else' },
     workflow: surveyResult,
     agent: cast({
-      ...resumeLoad(loaded({
+      ...resumeVerdict(loaded({
         envelope: envelope({ programme: '2026-08-15-eva-plays-2', slice: 'walk' }),
       })),
       'integration-setup': setUp({ head_sha: M40 }),
@@ -314,7 +286,8 @@ test('a verification is journalled by the verifier, not recorded by a second dis
   const { prompts } = await fresh({})
 
   const verify = promptFor(prompts, 'verify:W1')
-  assert.match(verify, /journal\.jsonl/, 'the verifier is told where to append')
+  assert.match(verify, /ledger\.mjs" append "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005" --file journal/,
+    'the verifier is told where to append, and through the writer that refuses a mangled line')
   assert.match(verify, /"kind":"verify-observed"/)
   assert.match(verify, /VFAJOURNAL/, 'and to append with a heredoc, not a quoted redirect')
 
@@ -385,11 +358,16 @@ test('the recorder is told to append, never to read and write back', async () =>
   // line rather than one, on the file whose whole purpose is surviving a run that dies. The
   // charter says so; this pins the DISPATCH saying so too, because the task text is what the
   // agent is actually holding, and two authoritative instructions disagreeing is the defect.
+  //
+  // 0.17.0 goes one further: the agent no longer touches the file at all. It pipes the line
+  // into lib/ledger.mjs, which appends — so "do not read it and write it back" is not an
+  // instruction to be followed any more, it is a shape the dispatch cannot express.
   const record = promptFor((await fresh({})).prompts, 'record:W1')
 
-  assert.match(record, /cat >> /)
-  assert.match(record, /Do NOT read the file and write it back/)
-  assert.ok(!/[Rr]ead the file first/.test(record))
+  assert.match(record, /ledger\.mjs" append "[^"]+" --file state --digest /,
+    'one append, through the writer, under a digest the writer rechecks')
+  assert.ok(!/cat >> |[Rr]ead the file first|write it back/.test(record),
+    'and no read-modify-write survives anywhere in the text the agent is holding')
 })
 
 test('the order line carries what the coder actually reported', async () => {
@@ -419,13 +397,20 @@ test('a wave line still names its type explicitly', async () => {
     'a reader must not have to infer the line type from its shape')
 })
 
-// --- scavenging (§9.4) ---------------------------------------------------------------------
+// --- salvage (§9.4) ------------------------------------------------------------------------
+//
+// What an interrupted predecessor left, as git holds it. This is the fixture the whole ladder
+// is driven from: `resumed({}, { git: gitFacts([FOUND_W2]) })` is a resume whose W2 branch
+// carries one commit and still has a worktree to stand in.
 
 const FOUND_W2 = {
   id: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2',
   base_sha: M40, head_sha: C40, commits: [{ sha: C40, subject: 'feat: w2' }],
   already_merged: false,
 }
+
+/** The ordinary salvage world: W1 merged in the state log, W2 sitting committed on its branch. */
+const holdingW2 = (rows = [FOUND_W2]) => ({ git: gitFacts(rows) })
 
 /** A per-order stage line for W2, at whatever head the caller says the stage closed over. */
 const stageLine = (kind, over = {}) => ({
@@ -436,8 +421,10 @@ const stageLine = (kind, over = {}) => ({
   ...over,
 })
 
-const scavengedW2 = (found = [FOUND_W2]) => ({
-  stop_reason: 'completed', found, notes: 'one branch resolved with commits',
+/** A worktree pass that reports one cut tree, or whatever the caller says instead. */
+const cutTrees = (over = {}) => ({
+  stop_reason: 'completed', made: [{ id: 'W2', worktree: 'C:/wt/w2-fresh' }],
+  notes: 'one worktree added', ...over,
 })
 
 test('order branches are named from the runstamp, which is what makes them findable', async () => {
@@ -446,24 +433,31 @@ test('order branches are named from the runstamp, which is what makes them finda
   assert.ok(promptFor(prompts, 'code:W1').includes('vfa/20260816-143005-W1'))
 })
 
-test('a fresh run scavenges nothing — there is no predecessor to have left anything', async () => {
+test('a fresh run salvages nothing — there is no predecessor to have left anything', async () => {
   const { prompts } = await fresh({})
 
-  assert.ok(!prompts.some((p) => p.opts.label === 'scavenge'),
+  assert.ok(!prompts.some((p) => p.opts.label === 'worktrees'),
     'asking a fresh run what it left behind is asking whether the future exists')
 })
 
-test('a resume looks for exactly the branches its own naming scheme would have used', async () => {
-  const { prompts } = await resumed()
-  const scavenge = promptFor(prompts, 'scavenge')
+test('a resume points the verdict at its own run directory, and at the CLI', async () => {
+  // Was: "a resume looks for exactly the branches its own naming scheme would have used" — the
+  // reconnaissance a scavenge agent used to be told to perform. It is `git branch --list
+  // vfa/<runstamp>-*` inside lib/run-verdict.mjs now, bounded by the same naming scheme, and
+  // pinned in test/run-verdict.test.mjs. What this side still owns is the handover: the one
+  // dispatch names the run directory and the command, and asks for nothing to be worked out.
+  const verdict = promptFor((await resumed()).prompts, 'resume-verdict')
 
-  assert.match(scavenge, /vfa\/20260816-143005-W2/)
-  assert.ok(!/vfa\/20260816-143005-W1/.test(scavenge),
-    'W1 already merged; offering to adopt it would offer work already in the tree')
+  assert.match(verdict, /C:\/repo\/\.claude\/vfa\/runs\/20260816-143005/,
+    'the run directory the branch names are derived from')
+  assert.match(verdict, /node "C:\/plugin\/lib\/run-verdict\.mjs" "\." "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005"/,
+    'one command, with the roots and the run directory already resolved for it')
+  assert.ok(!/vfa\/20260816-143005-W[12]/.test(verdict),
+    'no branch is enumerated into the prompt — enumerating them is the CLI\'s job')
 })
 
 test('adopted commits skip the coder and go straight to verification', async () => {
-  const { result, prompts } = await resumed({ scavenge: scavengedW2() })
+  const { result, prompts } = await resumed({}, holdingW2())
 
   assert.ok(!prompts.some((p) => p.opts.label === 'code:W2'),
     'IRON LAW §3: interrupted work is resumed, never redone')
@@ -474,7 +468,7 @@ test('adopted commits skip the coder and go straight to verification', async () 
 })
 
 test('an adopted series is verified at the base and in the worktree git reported', async () => {
-  const { prompts } = await resumed({ scavenge: scavengedW2() })
+  const { prompts } = await resumed({}, holdingW2())
   const verify = promptFor(prompts, 'verify:W2')
 
   assert.ok(verify.includes(M40), 'the fork point is the discriminator baseline')
@@ -484,7 +478,6 @@ test('an adopted series is verified at the base and in the worktree git reported
 test('an adopted series the review faults is fixed in place, not rebuilt', async () => {
   let round = 0
   const { result, prompts } = await resumed({
-    scavenge: scavengedW2(),
     // A per-order review round is labelled `review:W2#1`, so it can only be targeted through
     // the `review:` prefix — and `review:integration` sits ahead of it in the cast, which is
     // what keeps the integration review from being fed a per-order answer.
@@ -492,7 +485,7 @@ test('an adopted series the review faults is fixed in place, not rebuilt', async
       ? reviewed({ findings: [{ id: 'F1', severity: 'critical', file: 'src/W2.js', line: 3,
                                 claim: 'null deref', evidence: 'line 3' }] })
       : reviewed({ fix_verdicts: [{ id: 'F1', status: 'fixed' }] })),
-  })
+  }, holdingW2())
 
   assert.ok(prompts.some((p) => (p.opts.label || '').startsWith('fix:W2')),
     'an ordinary fix round finishes adopted work the review found wanting')
@@ -500,71 +493,84 @@ test('an adopted series the review faults is fixed in place, not rebuilt', async
   assert.equal(result.escalations.length, 0)
 })
 
-test('a report naming no worktree is ignored and the order is rebuilt', async () => {
-  const { prompts } = await resumed({
-    scavenge: scavengedW2([{ ...FOUND_W2, worktree: '' }]),
-  })
+test('a salvaged branch with nowhere to stand is given a tree, not rebuilt', async () => {
+  // The behaviour here CHANGED with 0.17.0, and deliberately. A scavenge report naming no
+  // worktree used to be discarded, because a report is all there was to go on. Commits are the
+  // unit of salvage, though — they live on the branch, so a pruned worktree loses nothing — and
+  // the one thing that was ever missing is a directory to stand in. So one dispatch cuts it.
+  const { prompts } = await resumed({ worktrees: cutTrees() },
+    holdingW2([{ ...FOUND_W2, worktree: '' }]))
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W2'),
+    'the commits are still there; re-writing them is the waste the ladder exists to prevent')
+  assert.ok(promptFor(prompts, 'verify:W2').includes('C:/wt/w2-fresh'),
+    'and everything downstream is dispatched into the tree that was actually cut')
+})
+
+test('a worktree that could not be cut sends the order back to the coder', async () => {
+  const { prompts } = await resumed({ worktrees: cutTrees({ made: [], notes: 'git refused' }) },
+    holdingW2([{ ...FOUND_W2, worktree: '' }]))
 
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
     'a fix round dispatched into a directory that is not there is worse than rebuilding')
 })
 
-test('a report naming no commits is ignored', async () => {
-  const { prompts } = await resumed({
-    scavenge: scavengedW2([{ ...FOUND_W2, head_sha: M40, commits: [] }]),
-  })
+test('a branch with no commits holds nothing to adopt', async () => {
+  const { prompts } = await resumed({}, holdingW2([{ ...FOUND_W2, head_sha: M40, commits: [] }]))
 
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
     'a branch with nothing ahead of the fork point holds nothing to adopt')
 })
 
-test('a report naming an unresolvable base is ignored', async () => {
-  const { prompts } = await resumed({
-    scavenge: scavengedW2([{ ...FOUND_W2, base_sha: '' }]),
-  })
+test('a branch whose fork point git could not resolve holds nothing to adopt either', async () => {
+  // Was: "a report naming an unresolvable base is ignored". The pairing is structural now —
+  // lib/run-verdict.mjs only lists commits it measured FROM a fork point, so no base means no
+  // commits, and test/run-verdict.test.mjs pins that. What this side still owns is the
+  // consequence: with no baseline there is nothing to measure a discriminator against, so the
+  // order is written afresh rather than adopted against a tree nobody can name.
+  const { prompts } = await resumed({}, holdingW2([{ ...FOUND_W2, base_sha: '', commits: [] }]))
 
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'))
 })
 
-test('a report for an order this plan does not carry is ignored', async () => {
-  const { prompts } = await resumed({
-    scavenge: scavengedW2([{ ...FOUND_W2, id: 'W9' }]),
-  })
+test('a branch for an order this plan does not carry is ignored', async () => {
+  const { prompts } = await resumed({}, holdingW2([{ ...FOUND_W2, id: 'W9' }]))
 
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'))
 })
 
-test('a broken scavenge degrades to rebuilding, and says so', async () => {
-  const { result, prompts } = await resumed({
-    scavenge: { stop_reason: 'environment_broken', found: [], notes: 'git refused' },
-  })
+test('a broken worktree pass degrades to rebuilding, and says so', async () => {
+  const { result, prompts } = await resumed(
+    { worktrees: { stop_reason: 'environment_broken', made: [], notes: 'git refused' } },
+    holdingW2([{ ...FOUND_W2, worktree: '' }]))
 
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
     'IRON LAW §5: a failed side channel costs tokens, never the run')
-  assert.ok(result.coverage.failed_channels.includes('scavenge'))
+  assert.ok(result.coverage.failed_channels.includes('scavenge'),
+    'the channel keeps the name the whole salvage path reports under')
 })
 
-test('the run state points the scavenge at the worktree it last saw', async () => {
-  const { prompts } = await resumed({
-    ...resumeLoad(loaded({
-      state: [waveLine(), {
-        kind: 'order-approved', wave: 2, merged: [], approved_unmerged: [], escalated: [],
-        discovered: [], integration_base: '', integration_head: '',
-        order: 'W2', branch: 'vfa/20260816-143005-W2', worktree: 'C:/wt/w2-old',
-        head_sha: C40,
-      }],
-    })),
+test('a worktree the run state remembers never overrides the one git reports', async () => {
+  // Was: the recorded path was handed to a scavenge agent so it could go and find the tree.
+  // git's own worktree listing is the source now, and that is the stronger reading: a path in
+  // a state line can name a directory pruned three invocations ago, and a review dispatched
+  // into it reviews nothing while looking exactly as thorough (IRON LAW §4).
+  const { prompts } = await resumed({}, {
+    state: [waveLine(), stageLine('order-verified', { worktree: 'C:/wt/w2-old' })],
+    git: gitFacts([FOUND_W2]),
   })
 
-  assert.match(promptFor(prompts, 'scavenge'), /C:\/wt\/w2-old/)
+  const review = prompts.find((p) => (p.opts.label || '').startsWith('review:W2'))
+  assert.ok(review, 'a verified order goes to review')
+  assert.match(review.prompt, /\nC:\/wt\/w2\n/, 'the tree git actually reports')
+  assert.ok(!review.prompt.includes('C:/wt/w2-old'), 'and never the one the log remembers')
 })
 
 test('an order-approved line does not count as a merge', async () => {
   // The line says the order was APPROVED. Reading it as merged would skip the order entirely
   // and leave its commits sitting on a branch nothing ever integrates.
-  const { result } = await resumed({
-    ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-approved')] })),
-    scavenge: scavengedW2(),
+  const { result } = await resumed({}, {
+    state: [waveLine(), stageLine('order-approved')], git: gitFacts([FOUND_W2]),
   })
 
   assert.deepEqual(result.integration.merged, ['W2'])
@@ -577,10 +583,9 @@ test('an order-approved line does not count as a merge', async () => {
 // head-match/head-mismatch cases is the point — trusting the log alone would adopt a verdict
 // nobody reached over the commits that are actually there.
 
-/** Resume with a per-order stage line for W2 and a scavenge report to pair it against. */
-const withStage = (kind, over = {}, found = [FOUND_W2]) => resumed({
-  ...resumeLoad(loaded({ state: [waveLine(), stageLine(kind, over)] })),
-  scavenge: scavengedW2(found),
+/** Resume with a per-order stage line for W2 and the git facts to pair it against. */
+const withStage = (kind, over = {}, rows = [FOUND_W2]) => resumed({}, {
+  state: [waveLine(), stageLine(kind, over)], git: gitFacts(rows),
 })
 
 test('an order approved by an earlier invocation, unchanged in git, is merged as it stands', async () => {
@@ -640,24 +645,28 @@ test('a verification whose branch has moved since is re-measured', async () => {
 })
 
 test('a resumed run records the approval and nothing about the verification', async () => {
-  const { prompts } = await resumed({ scavenge: scavengedW2() })
+  const { prompts } = await resumed({}, holdingW2())
   const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
 
   assert.deepEqual(labels, ['record:W2', 'record:wave-2'])
   assert.ok(promptFor(prompts, 'record:W2').includes('"kind":"order-approved"'))
-  assert.match(promptFor(prompts, 'verify:W2'), /journal\.jsonl/,
+  assert.match(promptFor(prompts, 'verify:W2'), /ledger\.mjs" append .* --file journal/,
     'the verification records itself, in the dispatch that performs it')
 })
 
-test('the journal is loaded verbatim, not re-emitted field by field', async () => {
-  // The same handling partition_raw gets, for the same reason: the journal is the longest and
-  // least uniform thing a resume carries, and a courier asked to re-emit thirty measurement
-  // objects is the 118KB transcription failure with the numbers changed.
-  const index = promptFor((await resumed()).prompts, 'resume-index')
+test('the journal never rides a model at all — the courier pastes, it does not re-emit', async () => {
+  // Was: the index courier was told to carry journal.jsonl as ONE verbatim string, because the
+  // journal is the longest and least uniform thing a resume needs and a courier asked to
+  // re-emit thirty measurement objects is the 118KB transcription failure with the numbers
+  // changed. The stronger answer is the one 0.17.0 took: the journal is not carried at all. It
+  // is read off disk by the CLI that replays it, and what crosses a model is one digested line.
+  const verdict = promptFor((await resumed()).prompts, 'resume-verdict')
 
-  assert.match(index, /journal_raw/)
-  assert.match(index, /WHOLE FILE as one string/)
-  assert.match(index, /a line that will not parse is information it needs/)
+  assert.match(verdict, /ENTIRE stdout into payload_raw, byte for byte, as one string/)
+  assert.match(verdict, /Do not parse it, do not reformat it/,
+    'every re-emission the old fan invited is named and forbidden')
+  assert.match(verdict, /recomputes that digest over what arrives/,
+    'and the instruction is backed by arithmetic rather than trusted')
 })
 
 /**
@@ -665,10 +674,9 @@ test('the journal is loaded verbatim, not re-emitted field by field', async () =
  * merge that follows it) and git says the branch is already in. Only the wave line that would
  * have recorded the merge is missing — the invocation died between the two.
  */
-const reconcilable = (over = {}) => resumed({
-  ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-approved')] })),
-  scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
-  ...over,
+const reconcilable = (over = {}) => resumed(over, {
+  state: [waveLine(), stageLine('order-approved')],
+  git: gitFacts([{ ...FOUND_W2, already_merged: true }]),
 })
 
 test('a merge git already holds is recorded rather than made again', async () => {
@@ -689,11 +697,9 @@ test('ancestry alone never lands an order — the approval record is the second 
   // commits ahead of the fork point — reporting identically to a genuinely merged one. Landing
   // that would mark an order nobody implemented as done, and write it into the log for every
   // later resume to believe.
-  const { result, prompts } = await resumed({
-    scavenge: scavengedW2([{
-      ...FOUND_W2, already_merged: true, head_sha: M40, base_sha: M40, commits: [], worktree: '',
-    }]),
-  })
+  const { result, prompts } = await resumed({}, holdingW2([{
+    ...FOUND_W2, already_merged: true, head_sha: M40, base_sha: M40, commits: [], worktree: '',
+  }]))
 
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
     'no record of a review closing over that head means no reason to believe it was merged')
@@ -705,9 +711,7 @@ test('ancestry alone never lands an order — the approval record is the second 
 test('a reconciliation whose record cannot be written is a named gap, not a silent one', async () => {
   // This can be the only line an invocation writes. Losing it silently leaves a run reporting
   // itself finished while its own log still says those orders never landed.
-  const { result } = await resumed({
-    ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-approved')] })),
-    scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+  const { result } = await reconcilable({
     'record:': (prompt, opts) => ((opts.label || '') === 'record:reconcile'
       ? { stop_reason: 'unwritable', path: '', notes: 'the share went read-only' }
       : { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' }),
@@ -723,10 +727,10 @@ test('a run that merged before it recorded anything keeps the base it was cut fr
   // happened. The observed integration head already contains that merge, so taking it as the
   // base would define the change as starting after part of the change — and the integration
   // review would cover the remainder while looking exactly as thorough (IRON LAW §4).
-  const { result, prompts } = await resumed({
+  const { result, prompts } = await resumed({}, {
     // The real 2026-08-19 shape: an order line and no wave line at all.
-    ...resumeLoad(loaded({ state: [stageLine('order-approved', { wave: 1 })] })),
-    scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+    state: [stageLine('order-approved', { wave: 1 })],
+    git: gitFacts([{ ...FOUND_W2, already_merged: true }]),
   })
 
   assert.equal(result.integration.base_sha, A40, 'the envelope records what it was cut from')
@@ -750,23 +754,16 @@ test('a reconciled merge gets its line and its verification before any wave runs
 
 test('a reconciled head that fails verification stops the line before a wave is dispatched', async () => {
   const THREE = [order('W1'), order('W2', { deps: ['W1'] }), order('W3', { deps: ['W2'] })]
-  const { result, prompts } = await runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: surveyResult,
-    agent: cast({
-      ...resumeLoad(loaded({
-        plan: {
-          work_orders: THREE, shared_files: [],
-          partition_raw: JSON.stringify({ waves: [['W1'], ['W2'], ['W3']], coupled: [] }),
-          blocking_gaps: [], plan_path: RUN_DIR, notes: '',
-        },
-        manifest: manifestOf(THREE),
-        state: [waveLine(), stageLine('order-approved')],
-      })),
-      'integration-setup': setUp({ head_sha: M40 }),
-      scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
-      'wave-verify:': verified({ suite: 'failed', discriminator: [], notes: 'the merged head' }),
-    }),
+  const { result, prompts } = await resumed({
+    'wave-verify:': verified({ suite: 'failed', discriminator: [], notes: 'the merged head' }),
+  }, {
+    plan: {
+      work_orders: THREE, shared_files: [],
+      partition_raw: JSON.stringify({ waves: [['W1'], ['W2'], ['W3']], coupled: [] }),
+      blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+    },
+    state: [waveLine(), stageLine('order-approved')],
+    git: gitFacts([{ ...FOUND_W2, already_merged: true }]),
   })
 
   assert.ok(!prompts.some((p) => p.opts.label === 'code:W3'),
@@ -778,10 +775,7 @@ test('a line written before `kind` existed is still read as the wave line it was
   const { without, ...old } = { ...waveLine(), without: null }
   delete old.kind
 
-  const { result, prompts } = await resumed({
-    ...resumeLoad(loaded({ state: [old] })),
-    scavenge: scavengedW2(),
-  })
+  const { result, prompts } = await resumed({}, { state: [old], git: gitFacts([FOUND_W2]) })
 
   assert.ok(!prompts.some((p) => p.opts.label === 'code:W1'),
     'W1 merged in that line; reading it as anything else would rebuild it')
@@ -792,9 +786,8 @@ test('an approval recorded before `measured` existed still salvages, and says wh
   const old = stageLine('order-approved')
   delete old.measured
 
-  const { result } = await resumed({
-    ...resumeLoad(loaded({ state: [waveLine(), old] })),
-    scavenge: scavengedW2(),
+  const { result } = await resumed({}, {
+    state: [waveLine(), old], git: gitFacts([FOUND_W2]),
   })
 
   const entry = result.implemented.find((e) => e.id === 'W2')
@@ -802,7 +795,7 @@ test('an approval recorded before `measured` existed still salvages, and says wh
   assert.deepEqual(entry.review.measured, [])
 
   // "The measurement was not written down" and "nothing was measurable" are different facts,
-  // and the loader normalizes a missing field to `[]` — correctly, since `[]` is what was
+  // and the replay normalizes a missing field to `[]` — correctly, since `[]` is what was
   // recorded — so this side cannot tell them apart. The note says both rather than picking
   // one, because picking one asserts an assurance nobody can read back.
   assert.equal(result.coverage.complete, false)
@@ -829,9 +822,17 @@ const journalLine = (over = {}) => JSON.stringify({
   ...over,
 })
 
-const journalled = (lines) => resumed({
-  ...resumeLoad(loaded({ journal_raw: lines.join('\n') + '\n' })),
-  scavenge: scavengedW2(),
+/** The line the merging agent writes inside the merge itself. */
+const mergeObservedW2 = () => JSON.stringify({
+  kind: 'merge-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
+  worktree: '', base_sha: M40, head_sha: N40, stop_reason: 'completed',
+  build: '', suite: '', failing_tests: [], discriminator: [], series_findings: [],
+})
+
+// The journal only ever corroborates: a stage is adopted where a RECORD and GIT agree on the
+// head, so every case below pairs its lines against the branch git actually holds.
+const journalled = (lines) => resumed({}, {
+  journal_raw: lines.join('\n') + '\n', git: gitFacts([FOUND_W2]),
 })
 
 test('a journalled measurement at the branch head skips re-verification', async () => {
@@ -876,16 +877,10 @@ test('a journalled merge lands an order whose approval line was never written', 
   // The incident this file exists for, one layer deeper: the recorder was killed, so the
   // wave line AND the approval line are missing. The merging agent's own line survives,
   // because nothing separate had to run to produce it.
-  const { result, prompts } = await resumed({
-    ...resumeLoad(loaded({
-      state: [waveLine()],
-      journal_raw: JSON.stringify({
-        kind: 'merge-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
-        worktree: '', base_sha: M40, head_sha: N40, stop_reason: 'completed',
-        build: '', suite: '', failing_tests: [], discriminator: [], series_findings: [],
-      }) + '\n',
-    })),
-    scavenge: scavengedW2([{ ...FOUND_W2, already_merged: true }]),
+  const { result, prompts } = await resumed({}, {
+    state: [waveLine()],
+    journal_raw: mergeObservedW2() + '\n',
+    git: gitFacts([{ ...FOUND_W2, already_merged: true }]),
   })
 
   assert.deepEqual(result.integration.merged, ['W2'])
@@ -895,17 +890,11 @@ test('a journalled merge lands an order whose approval line was never written', 
 })
 
 test('a journalled merge is still not enough on its own — git is the other witness', async () => {
-  const { result, prompts } = await resumed({
-    ...resumeLoad(loaded({
-      state: [waveLine()],
-      journal_raw: JSON.stringify({
-        kind: 'merge-observed', order: 'W2', branch: 'vfa/20260816-143005-W2',
-        worktree: '', base_sha: M40, head_sha: N40, stop_reason: 'completed',
-        build: '', suite: '', failing_tests: [], discriminator: [], series_findings: [],
-      }) + '\n',
-    })),
+  const { result, prompts } = await resumed({}, {
+    state: [waveLine()],
+    journal_raw: mergeObservedW2() + '\n',
     // git says the branch is NOT in the integration branch, whatever the line claims.
-    scavenge: scavengedW2(),
+    git: gitFacts([FOUND_W2]),
   })
 
   assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
@@ -925,16 +914,7 @@ test('a red order derives its own verdict from the journal, by its own rule', as
     blocking_gaps: [], plan_path: RUN_DIR, notes: '',
   }
 
-  const redRun = (over) => runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: surveyResult,
-    agent: cast({
-      ...resumeLoad(loaded({ plan: redPlan, manifest: manifestOf(RED), ...over })),
-      'integration-setup': setUp({ head_sha: M40 }),
-      'merge:': merged(N40),
-      scavenge: scavengedW2(),
-    }),
-  })
+  const redRun = (over) => resumed({}, { plan: redPlan, git: gitFacts([FOUND_W2]), ...over })
 
   // Red and correct: the test it landed fails now and failed on the base, the suite is red,
   // and every failure sits in its own locus.
@@ -1025,27 +1005,18 @@ test('a discriminator missing passes_now is not a green measurement for a RED or
   // dispatches a verification either way, and passes against the unfixed code.
   const RED = [order('W1'), order('W2', { deps: ['W1'], role: 'red' })]
 
-  const { prompts } = await runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: surveyResult,
-    agent: cast({
-      ...resumeLoad(loaded({
-        plan: {
-          work_orders: RED, shared_files: [],
-          partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
-          blocking_gaps: [], plan_path: RUN_DIR, notes: '',
-        },
-        manifest: manifestOf(RED),
-        journal_raw: journalLine({
-          suite: 'failed',
-          failing_tests: [{ file: 'src/W2.js', id: 'boom' }],
-          discriminator: [{ test_id: 'test/w2.test.js', failed_on_base: true }],
-        }) + '\n',
-      })),
-      'integration-setup': setUp({ head_sha: M40 }),
-      'merge:': merged(N40),
-      scavenge: scavengedW2(),
-    }),
+  const { prompts } = await resumed({}, {
+    plan: {
+      work_orders: RED, shared_files: [],
+      partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
+      blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+    },
+    journal_raw: journalLine({
+      suite: 'failed',
+      failing_tests: [{ file: 'src/W2.js', id: 'boom' }],
+      discriminator: [{ test_id: 'test/w2.test.js', failed_on_base: true }],
+    }) + '\n',
+    git: gitFacts([FOUND_W2]),
   })
 
   assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
@@ -1122,9 +1093,8 @@ test('an empty journal is the ordinary case, not a failure', async () => {
 test('a 0.13.0 log still resumes: order-verified state lines are still read', async () => {
   // Nothing writes that kind any more. Dropping the reader would make an upgrade rebuild
   // work its own predecessor had already finished.
-  const { prompts } = await resumed({
-    ...resumeLoad(loaded({ state: [waveLine(), stageLine('order-verified')] })),
-    scavenge: scavengedW2(),
+  const { prompts } = await resumed({}, {
+    state: [waveLine(), stageLine('order-verified')], git: gitFacts([FOUND_W2]),
   })
 
   assert.ok(!prompts.some((p) => p.opts.label === 'verify:W2'))
@@ -1137,14 +1107,16 @@ test('a 0.13.0 log still resumes: order-verified state lines are still read', as
 const escalatedLine = () => ({ ...waveLine(), escalated: ['W2'] })
 
 test('an order an earlier invocation escalated is carried, not silently re-bought', async () => {
-  const { result, prompts } = await resumed({
-    ...resumeLoad(loaded({ state: [escalatedLine()] })),
+  // Its branch has commits and no tree, so an order that WAS going to be dispatched would buy
+  // a worktree here. This one buys nothing at all.
+  const { result, prompts } = await resumed({}, {
+    state: [escalatedLine()], git: gitFacts([{ ...FOUND_W2, worktree: '' }]),
   })
 
   const labels = prompts.map((p) => p.opts.label || '')
   assert.ok(!labels.includes('code:W2'), 'it fails the same way unless something changed')
-  assert.ok(!labels.includes('scavenge'),
-    'and a worktree made for an order nobody will enter is litter')
+  assert.ok(!labels.includes('worktrees'),
+    'and a worktree cut for an order nobody will enter is litter')
 
   const esc = result.escalations.find((e) => e.id === 'W2')
   assert.ok(esc, 'it is reported, never dropped — IRON LAW §7')
@@ -1159,10 +1131,9 @@ test('retry_escalated re-dispatches exactly what it names', async () => {
     args: { ...ARGS, resume_path: RUN_DIR, retry_escalated: ['W2'] },
     workflow: surveyResult,
     agent: cast({
-      ...resumeLoad(loaded({ state: [escalatedLine()] })),
+      ...resumeVerdict(loaded({ state: [escalatedLine()], git: gitFacts([FOUND_W2]) })),
       'integration-setup': setUp({ head_sha: M40 }),
       'merge:': merged(N40),
-      scavenge: scavengedW2(),
     }),
   })
 
@@ -1172,8 +1143,8 @@ test('retry_escalated re-dispatches exactly what it names', async () => {
   assert.deepEqual(result.integration.merged, ['W2'])
 })
 
-const carried = async (over) => {
-  const { result } = await resumed({ ...resumeLoad(loaded(over)) })
+const carried = async (fixture) => {
+  const { result } = await resumed({}, fixture)
   return result.escalations.find((e) => e.id === 'W2')
 }
 
@@ -1182,12 +1153,10 @@ test('a journalled green AFTER an escalation supersedes it — the counter order
   // its review. Both files carry one run-wide sequence now, so "a later success clears an
   // earlier escalation" — increment 6 §1's rule, previously applicable only within
   // state.jsonl — finally reaches across them, and this is a comparison rather than a guess.
-  const { result, prompts } = await resumed({
-    ...resumeLoad(loaded({
-      state: [{ ...escalatedLine(), seq: 4 }],
-      journal_raw: journalLine({ seq: 9 }) + '\n',
-    })),
-    scavenge: scavengedW2(),
+  const { result, prompts } = await resumed({}, {
+    state: [{ ...escalatedLine(), seq: 4 }],
+    journal_raw: journalLine({ seq: 9 }) + '\n',
+    git: gitFacts([FOUND_W2]),
   })
 
   assert.equal(result.escalations.length, 0, 'the escalation is superseded, not carried')
@@ -1206,6 +1175,7 @@ test('a journalled green BEFORE an escalation stands, and is REPORTED as ordered
   const esc = await carried({
     state: [{ ...escalatedLine(), seq: 9 }],
     journal_raw: journalLine({ seq: 4 }) + '\n',
+    git: gitFacts([FOUND_W2]),
   })
 
   assert.equal(esc.reason, 'carried_forward')
@@ -1226,6 +1196,7 @@ test('an order escalated, retried and escalated AGAIN stays escalated', async ()
       { ...escalatedLine(), seq: 4 },
     ],
     journal_raw: journalLine({ seq: 3 }) + '\n',
+    git: gitFacts([FOUND_W2]),
   })
 
   assert.ok(esc, 'the last word on disk is the escalation, and it stands')
@@ -1235,11 +1206,10 @@ test('an order escalated, retried and escalated AGAIN stays escalated', async ()
 test('two records from before the counter existed stay honestly unordered', async () => {
   // Both at 0 is a genuine tie: neither preceded the other as far as anything on disk can
   // say. Reporting the ambiguity is right here; inventing an order would not be.
-  const { result } = await resumed({
-    ...resumeLoad(loaded({
-      state: [{ ...escalatedLine(), seq: 0 }],
-      journal_raw: journalLine({ seq: 0 }) + '\n',
-    })),
+  const { result } = await resumed({}, {
+    state: [{ ...escalatedLine(), seq: 0 }],
+    journal_raw: journalLine({ seq: 0 }) + '\n',
+    git: gitFacts([FOUND_W2]),
   })
 
   const esc = result.escalations.find((e) => e.id === 'W2')
@@ -1252,12 +1222,10 @@ test('an unstamped escalation really does precede a stamped measurement', async 
   // minted none, and a version only moves forward for a run directory, so the stamped line is
   // genuinely later — comparing them reads the log rather than guessing at it. Treating this
   // as ambiguous would strand an upgrade's first successful retry.
-  const { result } = await resumed({
-    ...resumeLoad(loaded({
-      state: [{ ...escalatedLine(), seq: 0 }],
-      journal_raw: journalLine({ seq: 7 }) + '\n',
-    })),
-    scavenge: scavengedW2(),
+  const { result } = await resumed({}, {
+    state: [{ ...escalatedLine(), seq: 0 }],
+    journal_raw: journalLine({ seq: 7 }) + '\n',
+    git: gitFacts([FOUND_W2]),
   })
 
   assert.equal(result.escalations.length, 0)
@@ -1275,12 +1243,10 @@ test('the counter resumes where the run left it, never at zero', async () => {
   for (const [stateSeq, journalSeq] of [[41, 57], [57, 41]]) {
     const highest = Math.max(stateSeq, journalSeq)
 
-    const { prompts } = await resumed({
-      ...resumeLoad(loaded({
-        state: [{ ...waveLine(), seq: stateSeq }],
-        journal_raw: journalLine({ seq: journalSeq }) + '\n',
-      })),
-      scavenge: scavengedW2(),
+    const { prompts } = await resumed({}, {
+      state: [{ ...waveLine(), seq: stateSeq }],
+      journal_raw: journalLine({ seq: journalSeq }) + '\n',
+      git: gitFacts([FOUND_W2]),
     })
 
     const stamps = prompts
@@ -1300,7 +1266,9 @@ test('a STATE-LINE green beside an escalation is ordered, and said to be', async
   // clears an earlier escalation as it replays, so an escalation that survived is necessarily
   // the later word. Telling the unordered story about this input would push a human toward
   // retry_escalated on the one case where the log already answered the question.
-  const esc = await carried({ state: [stageLine('order-verified'), escalatedLine()] })
+  const esc = await carried({
+    state: [stageLine('order-verified'), escalatedLine()], git: gitFacts([FOUND_W2]),
+  })
 
   assert.match(esc.unresolved[0].evidence, /BEFORE this escalation/)
   assert.ok(!/carries an ordering/.test(esc.unresolved[0].evidence))
@@ -1317,9 +1285,7 @@ test('a green with no head recorded says nothing about one', async () => {
 })
 
 test('a carried escalation with no measurement behind it says nothing about one', async () => {
-  const { result } = await resumed({
-    ...resumeLoad(loaded({ state: [escalatedLine()] })),
-  })
+  const { result } = await resumed({}, { state: [escalatedLine()] })
 
   assert.ok(!/recorded green at/.test(
     result.escalations.find((e) => e.id === 'W2').unresolved[0].evidence))
@@ -1330,8 +1296,8 @@ test('a verified line written BEFORE an escalation does not cancel it', async ()
   // review loop opens, so every review-stage escalation is LATER than a verified line — and
   // reading verified as the deeper record would cancel exactly the escalations most worth
   // carrying, silently re-buying the order the ladder exists to stop re-buying.
-  const { result, prompts } = await resumed({
-    ...resumeLoad(loaded({ state: [stageLine('order-verified'), escalatedLine()] })),
+  const { result, prompts } = await resumed({}, {
+    state: [stageLine('order-verified'), escalatedLine()], git: gitFacts([FOUND_W2]),
   })
 
   const esc = result.escalations.find((e) => e.id === 'W2')
@@ -1344,8 +1310,8 @@ test('a carried escalation is not also announced as work about to be resumed', a
   // The stage record is real and is kept, because `retry_escalated` salvages from it. But
   // nothing acts on it this invocation, and saying "W2 goes straight to review" four lines
   // before "W2 is not dispatched again" tells a human two different things about one order.
-  const { logs } = await resumed({
-    ...resumeLoad(loaded({ state: [stageLine('order-verified'), escalatedLine()] })),
+  const { logs } = await resumed({}, {
+    state: [stageLine('order-verified'), escalatedLine()], git: gitFacts([FOUND_W2]),
   })
 
   assert.ok(!logs.some((l) => /W2.*straight to review/.test(l)),
@@ -1357,13 +1323,11 @@ test('a carried escalation names the wave it escalated in, not the last wave tha
   // A wave line's `escalated` is cumulative, so wave 3's line re-lists what escalated in
   // wave 2 — and every later resume re-lists it again. Last-wins would report a wave the
   // order was never in, and the number would drift further with each resume.
-  const { result } = await resumed({
-    ...resumeLoad(loaded({
-      state: [
-        { ...waveLine(), wave: 2, escalated: ['W2'] },
-        { ...waveLine(), wave: 3, escalated: ['W2'] },
-      ],
-    })),
+  const { result } = await resumed({}, {
+    state: [
+      { ...waveLine(), wave: 2, escalated: ['W2'] },
+      { ...waveLine(), wave: 3, escalated: ['W2'] },
+    ],
   })
 
   const esc = result.escalations.find((e) => e.id === 'W2')
@@ -1380,7 +1344,7 @@ test('a stale-withheld order is not also reported as a carried escalation', asyn
     args: { ...ARGS, resume_path: RUN_DIR, confirmed_stale: [] },
     workflow: surveyResult,
     agent: cast({
-      ...resumeLoad(loaded({ state: [escalatedLine()] })),
+      ...resumeVerdict(loaded({ state: [escalatedLine()] })),
       'integration-setup': setUp({ head_sha: M40 }),
       drift: { stop_reason: 'completed', user_head: B40, moved_files: ['src/W2.js'],
                notes: 'the tree moved' },
@@ -1395,9 +1359,8 @@ test('a stale-withheld order is not also reported as a carried escalation', asyn
 test('an escalation a later line supersedes is not carried forward', async () => {
   // The log is append-only, so it records failures that were later fixed. An order can
   // escalate in one wave and be approved on the retry.
-  const { result } = await resumed({
-    ...resumeLoad(loaded({ state: [escalatedLine(), stageLine('order-approved')] })),
-    scavenge: scavengedW2(),
+  const { result } = await resumed({}, {
+    state: [escalatedLine(), stageLine('order-approved')], git: gitFacts([FOUND_W2]),
   })
 
   assert.equal(result.escalations.length, 0, 'reading the escalation as standing strands finished work')
@@ -1406,21 +1369,13 @@ test('an escalation a later line supersedes is not carried forward', async () =>
 
 test('a carried escalation still blocks the orders that depend on it', async () => {
   const THREE = [order('W1'), order('W2', { deps: ['W1'] }), order('W3', { deps: ['W2'] })]
-  const { result } = await runWorkflow(WF, {
-    args: { ...ARGS, resume_path: RUN_DIR },
-    workflow: surveyResult,
-    agent: cast({
-      ...resumeLoad(loaded({
-        plan: {
-          work_orders: THREE, shared_files: [],
-          partition_raw: JSON.stringify({ waves: [['W1'], ['W2'], ['W3']], coupled: [] }),
-          blocking_gaps: [], plan_path: RUN_DIR, notes: '',
-        },
-        manifest: manifestOf(THREE),
-        state: [escalatedLine()],
-      })),
-      'integration-setup': setUp({ head_sha: M40 }),
-    }),
+  const { result } = await resumed({}, {
+    plan: {
+      work_orders: THREE, shared_files: [],
+      partition_raw: JSON.stringify({ waves: [['W1'], ['W2'], ['W3']], coupled: [] }),
+      blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+    },
+    state: [escalatedLine()],
   })
 
   assert.deepEqual(result.blocked, [{ id: 'W3', blocked_by: 'W2' }],

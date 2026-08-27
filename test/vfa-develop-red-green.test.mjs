@@ -17,35 +17,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { resumeVerdict } from './harness/resume-fixture.mjs'
 import { manifestOf } from '../lib/plan-digest.mjs'
 
 /**
- * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
- * 'resume-index' answer (everything but the orders) and a 'load:' prefix responder that
- * serves each order slice out of the same fixture, retry labels included.
+ * Expand a plan-and-ledger fixture into the ONE dispatch surface a resume has: the
+ * 'resume-verdict' answer, carrying `lib/run-verdict.mjs`'s stdout and its digest. The fan of
+ * per-order loaders this used to feed is gone; the orders are read off disk by the agents that
+ * consume them.
  */
-const resumeLoad = (v) => ({
-  'resume-index': {
-    stop_reason: v.stop_reason,
-    order_ids: v.plan ? (v.plan.work_orders || []).map((o) => o.id) : [],
-    shared_files: v.plan ? v.plan.shared_files : [],
-    partition_raw: v.plan ? v.plan.partition_raw : '',
-    blocking_gaps: v.plan ? v.plan.blocking_gaps : [],
-    plan_path: v.plan ? v.plan.plan_path : '',
-    plan_notes: v.plan ? (v.plan.notes || '') : '',
-    envelope: v.envelope || { change: '', roots: '', caller_notes: '', intelligence: '',
-                              base_branch: '', base_sha: '', programme: '', slice: '' },
-    manifest: v.manifest || [],
-    state: v.state || [],
-    notes: v.notes || '',
-  },
-  'load:': (prompt, opts) => {
-    const id = (opts.label || '').replace(/^load:/, '').replace(/#\d+$/, '')
-    const wo = v.plan && (v.plan.work_orders || []).find((o) => o.id === id)
-    return wo ? { stop_reason: 'loaded', orders: [wo], notes: '' }
-              : { stop_reason: 'not_found', orders: [], notes: 'no order ' + id }
-  },
-})
+const resumeLoad = resumeVerdict
 
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
@@ -360,11 +341,22 @@ test('the planner is told when to split a behaviour into a pair', async () => {
 
 // --- the digest, which both sides must compute identically ------------------------------------
 
-test('a manifest over role-bearing orders survives the round trip', async () => {
-  // lib/plan-digest.mjs and the workflow's own copy must agree, or every resume of a plan
-  // containing a pair halts on a false mismatch.
+test('a role-bearing order reaches its coder under the digest the library recorded', async () => {
+  // lib/plan-digest.mjs and lib/run-verdict.mjs must agree about how `role` digests, or every
+  // resume of a plan containing a pair breaks.
+  //
+  // Where that breakage LANDS moved in 0.17.0 and the assertion moved with it. The plan no
+  // longer travels through a courier to be re-checked against a carried manifest in-script;
+  // the verdict CLI computes each order's digest off the same disk the plan sits on, the
+  // workflow quotes that number in the coder's dispatch, and the coder fetches the order with
+  // `ledger.mjs order` and refuses to implement anything whose digest does not read exactly
+  // that. So the number the coder is told to confirm is the thing worth pinning: if the two
+  // implementations of the conditional `role` treatment ever diverge, every coder on a
+  // red/green plan stops dead holding an order it is not allowed to build.
   const orders = [RED, GREEN]
-  const { result } = await runWorkflow(WF, {
+  const recorded = new Map(manifestOf(orders).map((entry) => [entry.id, entry.digest]))
+
+  const { result, prompts } = await runWorkflow(WF, {
     args: { ...ARGS, resume_path: RUN_DIR },
     workflow: () => ({ coverage: { complete: true, dropped: [], incomplete: [],
       failed_channels: [], unreached: [], resumable: { runId: 'r', remaining: [] } } }),
@@ -374,7 +366,6 @@ test('a manifest over role-bearing orders survives the round trip', async () => 
         plan: pairPlan(orders),
         envelope: { change: 'add the widget', roots: '.', caller_notes: '',
                     intelligence: 'normal', base_branch: 'master', base_sha: A40 },
-        manifest: manifestOf(orders),
         state: [],
         notes: 'loaded',
       }),
@@ -383,8 +374,17 @@ test('a manifest over role-bearing orders survives the round trip', async () => 
     }),
   })
 
+  for (const id of ['R1', 'G1']) {
+    const sent = promptFor(prompts, 'code:' + id)
+    assert.match(sent, /CONFIRM that digest reads exactly/,
+      'a resumed order is fetched from disk under a pin, never quoted into the prompt')
+    assert.ok(sent.includes(recorded.get(id)),
+      id + ': the coder is told to confirm ' + recorded.get(id) +
+      ', the digest lib/plan-digest.mjs computed for the same order')
+  }
+
   assert.deepEqual(result.implemented.map((e) => e.id), ['R1', 'G1'],
-    'a digest mismatch would have halted before dispatching anything')
+    'and the pair runs through to the end on those digests')
 })
 
 test('a plan written before roles existed still matches its stored manifest', async () => {
