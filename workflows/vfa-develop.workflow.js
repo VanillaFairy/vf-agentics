@@ -3651,6 +3651,12 @@ try {
     }
   }
 
+  // Orders held back because their commits have nowhere to stand. Filled in by the worktree
+  // pass below and read by the wave loop, exactly like the stale ruling above: withheld is a
+  // decision, not a failure, and a withheld order is named in coverage so the run does not
+  // read as having covered it.
+  const treeWithheldIds = []
+
   // --------------------------------------------- 3c. the integration worktree
   //
   // The design spec's stated reason for "the workflow never merges" is that merging would
@@ -3784,13 +3790,31 @@ try {
         return null
       })
 
+      // An order that reaches this pass HAS commits — `scavenged` holds facts only for
+      // branches that carry some. So rebuilding it is not the cheap fallback the old comment
+      // here claimed ("loses nothing — its branch keeps the commits"): a fresh coder's very
+      // first instruction is `git checkout -B <branch> <integration head>`, which force-moves
+      // the ref and leaves a possibly reviewed, possibly verified series reachable only from
+      // the reflog. One flaky agent response was enough to discard every in-progress order in
+      // a resumed run.
+      //
+      // So the order is WITHHELD instead, the way a stale one is: named, resumable, and left
+      // for a human or a later resume that can cut the tree. Rebuilding is the bottom of the
+      // salvage ladder and it is chosen deliberately, never as the handler for a failed
+      // `git worktree add`.
+      const withholdForTree = (id, why) => {
+        treeWithheldIds.push(id)
+        extraUnreached.push(id + ': withheld — its branch carries commits but no worktree ' +
+          'could be cut for them (' + why + '), and implementing it afresh would re-anchor ' +
+          'the branch over work that may already be verified or reviewed')
+        extraRemaining.push(id)
+      }
+
       if (!made || made.stop_reason !== 'completed') {
-        // Degraded, never fatal. An order with commits and nowhere to stand is implemented
-        // afresh, which costs tokens and loses nothing — its branch keeps the commits.
         const why = made && made.notes ? made.notes : 'the worktree pass returned no result'
-        log(`WARNING: no worktree could be cut (${why}); those orders are implemented afresh.`)
+        log(`WARNING: no worktree could be cut (${why}); those orders are withheld, not rebuilt.`)
         if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
-        for (const n of needTrees) dropSalvage(n.id)
+        for (const n of needTrees) withholdForTree(n.id, why)
       } else {
         const paths = new Map((made.made || []).map((m) => [m.id, m.worktree]))
         for (const n of needTrees) {
@@ -3798,11 +3822,9 @@ try {
           if (path) {
             scavenged.get(n.id).worktree = path
           } else {
-            // Reported as absent rather than as a path nobody confirmed. Dropping the salvage
-            // is the safe reading: the order is rebuilt, and its commits stay on the branch
-            // for a human or a later resume to find.
-            log(`No worktree could be made for ${n.id}; it is implemented from scratch.`)
-            dropSalvage(n.id)
+            log(`No worktree could be made for ${n.id}; it is withheld rather than rebuilt.`)
+            if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
+            withholdForTree(n.id, 'the pass reported no path for it')
           }
         }
       }
@@ -3889,7 +3911,7 @@ try {
     // as withheld, and reporting it a second time as an escalation would hand the human
     // `retry_escalated` — a lever that cannot move it, because the staleness gate filters it
     // out regardless. The lever that works is `confirmed_stale`.
-    if (staleWithheldIds.includes(id)) continue
+    if (staleWithheldIds.includes(id) || treeWithheldIds.includes(id)) continue
 
     // A green measurement for an order this run also escalated — and what can be SAID about
     // it depends entirely on which file it came out of.
@@ -3976,7 +3998,8 @@ try {
     // is not pending. Leaving it in would send it round the dispatch path this invocation
     // deliberately declined to buy.
     const pending = waveIds.filter((id) =>
-      !landed.has(id) && !staleWithheldIds.includes(id) && !escalatedPrior.has(id))
+      !landed.has(id) && !staleWithheldIds.includes(id) && !treeWithheldIds.includes(id) &&
+      !escalatedPrior.has(id))
 
     if (pending.length === 0) {
       // Either a resumed run whose state records this wave as merged, or — rarer — a wave

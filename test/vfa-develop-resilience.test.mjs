@@ -540,12 +540,21 @@ test('a salvaged branch with nowhere to stand is given a tree, not rebuilt', asy
     'and everything downstream is dispatched into the tree that was actually cut')
 })
 
-test('a worktree that could not be cut sends the order back to the coder', async () => {
-  const { prompts } = await resumed({ worktrees: cutTrees({ made: [], notes: 'git refused' }) },
+test('a worktree that could not be cut withholds the order — it never rebuilds over commits', async () => {
+  const { prompts, result } = await resumed(
+    { worktrees: cutTrees({ made: [], notes: 'git refused' }) },
     holdingW2([{ ...FOUND_W2, worktree: '' }]))
 
-  assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
-    'a fix round dispatched into a directory that is not there is worse than rebuilding')
+  // Rebuilding is not the cheap fallback it looks like. The fresh coder's first instruction
+  // is `git checkout -B <branch> <integration head>`, which force-moves the ref and leaves a
+  // possibly verified, possibly reviewed series reachable only from the reflog. Only orders
+  // WITH commits reach this pass at all, so that is the whole population at risk.
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W2'),
+    'a fresh coder here would re-anchor the branch over work that already exists')
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.unreached.some((u) => /W2: withheld/.test(u)))
+  assert.ok(result.coverage.resumable.remaining.includes('W2'),
+    'withheld is a decision, and a decision names what to resume')
 })
 
 test('a branch with no commits holds nothing to adopt', async () => {
@@ -572,15 +581,17 @@ test('a branch for an order this plan does not carry is ignored', async () => {
   assert.ok(prompts.some((p) => p.opts.label === 'code:W2'))
 })
 
-test('a broken worktree pass degrades to rebuilding, and says so', async () => {
+test('a broken worktree pass withholds the order and says so', async () => {
   const { result, prompts } = await resumed(
     { worktrees: { stop_reason: 'environment_broken', made: [], notes: 'git refused' } },
     holdingW2([{ ...FOUND_W2, worktree: '' }]))
 
-  assert.ok(prompts.some((p) => p.opts.label === 'code:W2'),
-    'IRON LAW §5: a failed side channel costs tokens, never the run')
+  // IRON LAW §5 still holds — the failed channel costs the run nothing it had. What it must
+  // not cost is work already on disk, and rebuilding was doing exactly that.
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W2'))
   assert.ok(result.coverage.failed_channels.includes('scavenge'),
     'the channel keeps the name the whole salvage path reports under')
+  assert.ok(result.coverage.unreached.some((u) => /no worktree could be cut/.test(u)))
 })
 
 test('a worktree the run state remembers never overrides the one git reports', async () => {
