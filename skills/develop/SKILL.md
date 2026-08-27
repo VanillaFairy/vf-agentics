@@ -1,6 +1,6 @@
 ---
 name: develop
-description: Use when the user asks to implement a change, feature, or fix through the vf-agentics pipeline — surveyed evidence, planned work orders, focused commits, mechanical verification, and an adversarial review loop. Not for read-only questions (investigate) or root-cause hunting (diagnose).
+description: Use when the user asks to implement a change, feature, or fix through the vf-agentics pipeline — surveyed evidence, planned work orders, focused commits, mechanical verification, and an adversarial review loop. Not for read-only questions (investigate).
 ---
 
 # develop
@@ -10,32 +10,34 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 ## Parse arguments
 
 **Intelligence** sets the tier for the whole run — the judging agents, and at `max` the coder
-with them.
+along with them, though never to the same model.
 
 <!-- vfa:verbatim intelligence-tier -->
 The dial follows the model this session is running, never how important the work feels:
-**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
-running, `normal`.
+**Fable → `max`; Opus → `normal`; Sonnet and everything below it → `low`.** When you cannot
+tell what you are running, `normal`.
 
 The judging agents belong at the tier of the session driving them. A session that dials itself
 up because the change looked significant is charging the user for its own self-assessment; a
 Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
-one the user is talking to. Only the user moves it — a bare leading `max` token, or
-`--intelligence=max`.
+one the user is talking to, and a Sonnet session that claims `normal` bills the user for Opus
+judgment nobody asked it for. Only the user moves it off that mapping — a bare leading `max`,
+`normal` or `low` token, or `--intelligence=<tier>`.
 <!-- /vfa:verbatim -->
 
-**`low` is this skill's own downshift, and only the user asks for it.** It puts the judging
-agents on Sonnet — the planner, every reviewer, and the analysts of the nested survey — and
-leaves the rest of the run exactly where it was: the coder, the verifier, the scouts and the
-courier all keep their own model. Pass it as a bare leading `low` token, or
-`--intelligence=low`.
+**What each position moves.** The judging agents — the planner, every reviewer, and the
+analysts of the nested survey — run on Sonnet at `low`, Opus at `normal`, Fable at `max`. The
+coder moves once, at `max`, and moves to **Opus rather than Fable**: judging is where this
+pipeline concentrates its judgment, and doubling the price of its highest-volume agent buys
+nothing the field evidence ever credited to Fable. Below `max` the coder keeps its own model,
+and the verifier, the scouts and the courier keep theirs at every position.
 
-Nothing derives it. The block above derives `max` and `normal` from the model this session is
-running and stops there, because `low` puts the judges on the same model as the coder and
-leaves no strong reader anywhere in the loop: a defective work order implemented faithfully
-clears verification, and then clears a review fenced to the same defective criteria. That is a
-real trade for a cheap run, and it belongs to the user — say what it costs when they ask for
-it, and never reach for it on their behalf.
+**When the dial lands on `low`, say what it costs before a long run starts.** The coder already
+runs Sonnet, so `low` leaves no strong reader anywhere in the loop: a defective work order
+implemented faithfully clears verification, and then clears a review fenced to the same
+defective criteria. That is the honest price of being judged at the tier of the session driving
+the work, and the user may well accept it — a sentence before the run is what they need, not a
+session that quietly dials itself up, which is the self-assessment the block above forbids.
 
 **A resume derives nothing.** When you are resuming a parked run (step 3e), pass no
 `intelligence` at all — the plan's envelope carries the tier it was planned at, and the
@@ -48,6 +50,15 @@ directory; pass `notes` only when the user gave extra constraints.
 `--pause-between-waves` is an opt-in for callers who want to look at each wave before the
 next one starts. It is off unless the user asks for it: one invocation carrying the whole
 change is the point of this pipeline, and paused waves cost a re-invocation each.
+
+**Reach for it — or for `--plan-only` — when this session is already deep.** The run logs its
+plan size before dispatching anything (`Plan size: N order(s) across M wave(s)`), and where the
+caller set a token target the workflow stops at a wave boundary rather than starting a wave the
+target cannot cover. Neither can see an account's usage limit; you can. A run killed halfway
+through a wave does not resume cheaply: the agents that had not returned recorded nothing, so
+their work is gone rather than deferred. A wave boundary has the state line written and the
+next wave branching from a head that already exists, which is why stopping there is nearly
+free — and it is the difference the three interruptions of 2026-08-27 turned on.
 
 `--plan-only` surveys, plans and partitions, then stops with the plan written to disk and
 nothing implemented. Use it when the user says to plan something now and build it later, or

@@ -95,6 +95,11 @@ stage closed, and git still holds the head it closed over. Disagreement is not a
 means the branch moved after the stage closed — so everything past the last agreed stage is
 redone.
 
+Multiple records for one order are resolved by **`seq`, last line wins** — the log's own order —
+never by ranking record kinds against each other. A fixed kind-precedence would let an older
+`verify-observed` outrank a newer escalation for the same order; `seq` cannot, because it is the
+same monotonic counter increment 8 introduced for exactly this reason.
+
 ### 2b. `next_action`, exhaustively
 
 | value | when | what the run does |

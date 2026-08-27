@@ -81,6 +81,27 @@ const happy = (over = {}) => {
 
 const run = (opts) => runWorkflow(WF, { args: ARGS, ...opts })
 
+// The dial reaches here for the same reason it reaches investigate: one derivation rule,
+// shared verbatim by every skill that passes `intelligence`. Framing the capability and
+// assessing each candidate are both judgment, so both move with it — and the searching angles
+// never do.
+test('the framing and assessing analysts follow the dial; the search tier does not', async () => {
+  const modelsAt = async (intelligence) => {
+    const { prompts } = await run({ args: { ...ARGS, intelligence }, agent: happy() })
+    const at = (label) => prompts.find((p) => p.opts.label === label).opts.model
+    return { frame: at('frame'), assess: at('assess'), find: at('find:stdlib') }
+  }
+
+  assert.deepEqual(await modelsAt('low'),
+    { frame: 'sonnet', assess: 'sonnet', find: undefined })
+  assert.deepEqual(await modelsAt('normal'),
+    { frame: 'opus', assess: 'opus', find: undefined })
+  assert.deepEqual(await modelsAt('max'),
+    { frame: 'fable', assess: 'fable', find: undefined })
+  assert.deepEqual(await modelsAt(undefined),
+    { frame: 'opus', assess: 'opus', find: undefined }, 'an absent dial is the derived `normal`')
+})
+
 /** The invariant the whole workflow exists to protect. */
 const assertEmptyNeverReadsAsExhausted = (result) => {
   if (result.candidates.length > 0) return
@@ -341,11 +362,40 @@ test('an assessment that never ran returns candidates raw, with the emptiness ex
   // it runs even on this path so the degraded output is still readable.
   assert.equal(result.candidates.length, 1)
   assert.deepEqual(result.candidates[0].disqualifiers_hit, [])
-  assert.deepEqual(result.viable, ['limiter-a'])
-  assert.ok(result.coverage.failed_channels.includes('assess'))
-  assert.ok(result.coverage.unreached.some((u) => /because nobody checked rather than because nothing was hit/.test(u)),
+
+  // The candidate rides in candidates[] and in neither verdict list. `viable` is computed
+  // from disqualifiers_hit, and on this path that array is this script's own invention —
+  // computing over it would present a candidate the user's licence policy might kill as one
+  // that cleared every check.
+  assert.deepEqual(result.viable, [],
     'an unmeasured candidate must not read as one that passed every disqualifier')
+  assert.deepEqual(result.ruled_out, [])
+  assert.ok(result.coverage.failed_channels.includes('assess'))
+  assert.ok(result.coverage.unreached.some((u) => /because nobody checked rather than because nothing was hit/.test(u)))
   assert.equal(result.coverage.complete, false)
+})
+
+test('an empty viable list on a dead assessment still trips the incomplete-sweep warning', async () => {
+  const { logs } = await run({
+    agent: happy({ assess: () => { throw new Error('budget') } }),
+  })
+
+  // The warning fires on `!complete && viable.length === 0`. While the dead channel minted a
+  // viable list, it suppressed the one line telling the reader not to conclude "build it".
+  assert.ok(logs.some((l) => /INCOMPLETE SWEEP WITH NO VIABLE CANDIDATE/.test(l)),
+    'the reader must be told nobody finished looking')
+})
+
+test('a candidate is never ruled out on a ground nobody declared', async () => {
+  const { result } = await run({
+    agent: happy({
+      assess: assessedAs([{ name: 'limiter-a', disqualifiers_hit: ['I do not care for the API'] }]),
+    }),
+  })
+
+  assert.deepEqual(result.viable, ['limiter-a'], 'an invented ground rules nothing out')
+  assert.deepEqual(result.ruled_out, [])
+  assert.ok(result.coverage.unreached.some((u) => /grounds nobody declared/.test(u)))
 })
 
 test('a duplicate found by two angles is one candidate, not two', async () => {

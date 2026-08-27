@@ -338,6 +338,31 @@ test('a stalled verify fix round escalates as verify_failed_repeatedly with a ve
   assert.deepEqual(result.integration.merged, [], 'an escalated order is never merged')
 })
 
+test('a fix round that lands commits and moves nothing escalates on the second identical verdict', async () => {
+  // The other stall shape. `noProgress` catches a fix round that lands NOTHING; this is the
+  // coder that lands commit after commit against a red it cannot move — a flaky test, a
+  // broken toolchain — where git shows progress every round and the failing facts never
+  // change. That loop had no exit at all: it ran until the invocation was killed, taking
+  // every parallel order in the wave with it.
+  let round = 0
+  const { result } = await run({
+    agent: happyAgents({
+      'verify:': verified({ build: 'failed' }),
+      // A genuinely moving head every round, so the no-new-commit exit cannot be what fires.
+      'fix:': () => {
+        const sha = 'f'.repeat(39) + (++round)
+        return coded({ head_sha: sha, commits: [{ sha, subject: 'attempt ' + round }] })
+      },
+    }),
+  })
+
+  assert.equal(result.escalations.length, 1)
+  assert.equal(result.escalations[0].reason, 'verify_failed_repeatedly')
+  assert.ok(result.escalations[0].unresolved.some((f) => /without changing what fails/.test(f.claim)),
+    'the escalation says which stall this was')
+  assert.deepEqual(result.integration.merged, [])
+})
+
 test('a schema-whole but semantically impossible coder result escalates as incoherent_result', async () => {
   const { result } = await run({
     agent: happyAgents({ 'code:': coded({ status: 'done', commits: [] }) }),
@@ -1026,9 +1051,11 @@ test('`low` puts every judging agent on sonnet and moves nothing else', async ()
   assert.equal(modelOf('verify:W1'), undefined, 'the mechanical tier never moves with the dial')
 })
 
-test('`max` still carries the coder up with the judges', async () => {
-  // The coupling `low` deliberately does not have. It is asserted here so that adding the
-  // third position cannot quietly become a rewrite of the second one.
+test('`max` moves the coder too, but to opus and not to the model the judges get', async () => {
+  // Fable-judged, opus-implemented — the configuration the coupled dial could not express.
+  // The equality that must NOT hold is the interesting one: a `max` run where the coder and
+  // the reviewer share a model is the coupling this position was split to remove, and it
+  // returns silently the moment somebody reaches for one ternary to set both.
   const { prompts } = await run({
     args: { ...ARGS, intelligence: 'max' },
     agent: happyAgents(),
@@ -1038,13 +1065,166 @@ test('`max` still carries the coder up with the judges', async () => {
 
   assert.equal(modelOf('plan'), 'fable')
   assert.equal(modelOf('review:W1#1'), 'fable')
-  assert.equal(modelOf('code:W1'), 'fable')
+  assert.equal(modelOf('code:W1'), 'opus')
+  assert.notEqual(modelOf('code:W1'), modelOf('review:W1#1'),
+    'the judge and the generator are priced apart at the top position, deliberately')
   assert.equal(modelOf('verify:W1'), undefined)
 })
 
+test('`normal` names opus rather than inheriting it', async () => {
+  // The dial is the authority on what a judge costs. Reading `undefined` here would mean the
+  // tier came from whatever agents/reviewer.md happens to say, which prices a run correctly
+  // right up until somebody edits that file — while the tier the envelope RECORDS still comes
+  // from the dial.
+  const { prompts } = await run({ args: { ...ARGS, intelligence: 'normal' }, agent: happyAgents() })
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'opus')
+  assert.equal(modelOf('review:W1#1'), 'opus')
+  assert.equal(modelOf('review:integration'), 'opus')
+  assert.equal(modelOf('code:W1'), undefined, 'the coder is not on this table at any position')
+})
+
+// ------------------------------------------------- does the next wave fit
+//
+// Not a budget stop. §1 forbids ending work because effort was spent, and nothing here ends
+// anything — it moves the boundary to a seam where stopping is free. A wave killed halfway
+// through by a session limit leaves nothing to resume from: the agents that had not returned
+// left no record. A wave boundary has the state line written and the next wave branching from
+// a head that already exists.
+
+const TWO_WAVES = (over = {}) => plan([order('W1'), order('W2')], {
+  partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
+  ...over,
+})
+
+test('a run with no token target never stops early, however large', async () => {
+  const { result, logs } = await run({
+    agent: happyAgents({ plan: TWO_WAVES() }),
+  })
+
+  // With no target `remaining()` is Infinity. A script cannot see an account's usage limit,
+  // and guessing at one would halt runs that would have finished.
+  assert.deepEqual(result.integration.merged, ['W1', 'W2'])
+  assert.ok(!logs.some((l) => /STOPPING after wave/.test(l)))
+})
+
+test('the plan size is reported before any wave is dispatched', async () => {
+  const { logs } = await run({ agent: happyAgents({ plan: TWO_WAVES() }) })
+
+  assert.ok(logs.some((l) => /Plan size: 2 order\(s\) across 2 wave\(s\)/.test(l)),
+    'the caller can see what the run is about to buy')
+})
+
+test('a wave the remaining target cannot cover is deferred at the boundary, not started', async () => {
+  const { result, logs } = await run({
+    agent: happyAgents({ plan: TWO_WAVES() }),
+    // Wave 1 costs enough that the projection for wave 2 exceeds what is left.
+    budget: { total: 60_000, perDispatch: 6_000 },
+  })
+
+  assert.deepEqual(result.integration.merged, ['W1'], 'wave 1 completed and merged')
+  assert.ok(logs.some((l) => /STOPPING after wave 1/.test(l)))
+
+  // The whole point: deferred work is resumable work. A mid-wave death is not.
+  assert.equal(result.coverage.complete, false)
+  assert.ok(result.coverage.resumable.remaining.includes('W2'))
+})
+
+// ------------------------------------------------- the dial, per order
+//
+// One dial for a whole run prices a ten-order plan as though its orders were the same work.
+// `weight` moves an order DOWN from the run's ceiling, and a structural floor holds red and
+// contract orders up regardless of the dial. Both are only real where they reach an
+// `opts.model`, so that is what these read.
+
+test('a red order implements at opus even when the dial says sonnet', async () => {
+  // The tiering doc states this as an ALWAYS and never waived it. A red order pins the
+  // acceptance criteria in failing tests; the green coder is fenced to those criteria and
+  // implements a wrong reading faithfully; the reviewer is fenced to the same criteria and
+  // has no standing to object. Nothing downstream can catch it.
+  const red = order('R1', { role: 'red', locus: ['test/widget.test.js'] })
+  const green = order('G1', { role: 'green', locus: ['src/widget.js'], deps: ['R1'] })
+
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'low' },
+    agent: happyAgents({
+      plan: plan([red, green], {
+        partition_raw: JSON.stringify({ waves: [['R1'], ['G1']], coupled: [] }),
+      }),
+      // A red order's suite is REQUIRED to fail; the ordinary verdict would spiral it.
+      'verify:R1': verified({ suite: 'failed', discriminator: [
+        { test_id: 'test/widget.test.js', failed_on_base: true, passes_now: false },
+      ] }),
+    }),
+  })
+
+  const modelOf = (label) => (prompts.find((p) => p.opts.label === label) || { opts: {} }).opts.model
+
+  assert.equal(modelOf('code:R1'), 'opus', 'the floor holds under the dial')
+
+  // The green order is deliberately NOT floored. Its defects are the catchable kind — the
+  // tests the red order pinned either pass or they do not — where a wrong red pin is
+  // uncatchable by construction. The floor is about what nothing downstream can see.
+  assert.equal(modelOf('code:G1'), undefined)
+})
+
+test('a contract order implements at opus, where an ordinary one inherits', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'normal' },
+    agent: happyAgents({ plan: plan([order('W1', { contract: true }), order('W2')]) }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  // An ambiguity in a contract propagates into every consumer, which is the same
+  // uncatchable-downstream shape the red floor exists for.
+  assert.equal(modelOf('code:W1'), 'opus')
+  assert.equal(modelOf('code:W2'), undefined, 'an ordinary order keeps its frontmatter model')
+})
+
+test('a light order is reviewed by the cheap reader, on a max run', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'max' },
+    agent: happyAgents({
+      plan: plan([order('W1', { weight: 'light' }), order('W2', { weight: 'heavy' })]),
+    }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('review:W1#1'), 'sonnet', 'a rename does not need the most expensive reader')
+  assert.equal(modelOf('review:W2#1'), 'fable', 'the hard order still gets the run/s ceiling')
+  assert.equal(modelOf('code:W1'), 'sonnet', 'and it is implemented cheaply too')
+  assert.equal(modelOf('code:W2'), 'opus')
+})
+
+test('weight never buys above the run dial — the ceiling is the user/s', async () => {
+  // The planner is an agent the session dispatched. Letting it raise the tier would be the
+  // same self-upgrade the derivation rule forbids the session, arriving by proxy.
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'low' },
+    agent: happyAgents({ plan: plan([order('W1', { weight: 'heavy' })]) }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+  assert.equal(modelOf('review:W1#1'), 'sonnet', 'heavy cannot climb past a low dial')
+})
+
+test('a weight nobody set is standard, so an old plan resumes unchanged', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'normal' },
+    agent: happyAgents({ plan: plan([order('W1', { weight: undefined })]) }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+  assert.equal(modelOf('review:W1#1'), 'opus')
+  assert.equal(modelOf('code:W1'), undefined)
+})
+
 test('a tier nobody defined is served as `normal`, not as itself', async () => {
-  // The dial is a closed set of three. A typo that fell through would dispatch with
-  // `model: undefined` and read, in every log and every envelope, as the tier the user typed.
+  // The dial is a closed set of three. A typo that fell through would dispatch at some other
+  // tier while every log and every envelope read back the tier the user typed.
   const { prompts } = await run({
     args: { ...ARGS, intelligence: 'cheap' },
     agent: happyAgents(),
@@ -1052,7 +1232,7 @@ test('a tier nobody defined is served as `normal`, not as itself', async () => {
 
   const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
 
-  assert.equal(modelOf('plan'), undefined)
+  assert.equal(modelOf('plan'), 'opus')
   assert.equal(modelOf('code:W1'), undefined)
 })
 
@@ -1114,7 +1294,7 @@ test('a resumed run adopts the notes and tier its plan was written under', async
     'evidence that silently went missing is the failure this envelope exists to prevent, and ' +
     'the announced length is the only way a reader can see it did not')
   assert.ok(code.prompt.includes('C:/repo'), 'the roots the plan was surveyed against win')
-  assert.equal(code.opts.model, 'fable', 'the recorded intelligence tier is adopted too')
+  assert.equal(code.opts.model, 'opus', 'the recorded intelligence tier is adopted too')
 })
 
 test('an explicit caller value still wins over the record, and says so', async () => {
@@ -1168,7 +1348,7 @@ test('a resume that supplies the tier it already recorded is not an override', a
     }),
   })
 
-  assert.equal(prompts.find((p) => p.opts.label === 'code:W2').opts.model, 'fable')
+  assert.equal(prompts.find((p) => p.opts.label === 'code:W2').opts.model, 'opus')
   assert.ok(!logs.some((l) => /Override: intelligence/.test(l)),
     'agreeing with the record is not a disagreement to report')
 })

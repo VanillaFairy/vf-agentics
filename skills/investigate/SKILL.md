@@ -14,7 +14,10 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 
 - The answer fits in one or two file reads. Just answer.
 - The user wants the work done, not investigated. Do the work.
-- The work is an iterative loop — run, observe, adjust. Use `diagnose`.
+- The work is an iterative loop — run, observe, adjust. This plugin has no pipeline for that:
+  a survey reads, it does not execute, so a hypothesis that only a test run can settle is
+  outside what the evidence phase can reach. Drive that loop in the session, then bring the
+  established cause back here or to `develop`.
 - The topics are not independent: what track A finds determines what track B should look for.
   Run two passes, seeding the second with the first's findings, rather than forcing one plan.
 
@@ -22,22 +25,24 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 
 Parse three things from what the user typed:
 
-**Intelligence.** `normal` or `max` — `max` swaps the judging tier from Opus to Fable.
+**Intelligence.** `low`, `normal` or `max` — the model the judging tier runs at: Sonnet, Opus,
+Fable.
 
 <!-- vfa:verbatim intelligence-tier -->
 The dial follows the model this session is running, never how important the work feels:
-**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
-running, `normal`.
+**Fable → `max`; Opus → `normal`; Sonnet and everything below it → `low`.** When you cannot
+tell what you are running, `normal`.
 
 The judging agents belong at the tier of the session driving them. A session that dials itself
 up because the change looked significant is charging the user for its own self-assessment; a
 Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
-one the user is talking to. Only the user moves it — a bare leading `max` token, or
-`--intelligence=max`.
+one the user is talking to, and a Sonnet session that claims `normal` bills the user for Opus
+judgment nobody asked it for. Only the user moves it off that mapping — a bare leading `max`,
+`normal` or `low` token, or `--intelligence=<tier>`.
 <!-- /vfa:verbatim -->
 
 An override arrives either way round: `/investigate max how does X work` or
-`/investigate --intelligence=max ...`. Strip the token from the question text.
+`/investigate --intelligence=low ...`. Strip the token from the question text.
 
 **Mode.** Task list or report:
 
@@ -65,6 +70,19 @@ do not guess at results before the notification arrives.
 
 There is no bespoke-script path. If a question genuinely does not fit this shape, say so rather
 than authoring a one-off workflow — a shape that recurs belongs in `workflows/` as its own file.
+
+**Resuming an interrupted run: re-pass the args.** A resume re-executes the script, which
+reads nothing from the prior run — so `resumeFromRunId` alone runs it with no question at all,
+and it returns an empty result in milliseconds while the interrupted run's cached agents go
+unreachable. The spent resume is the whole loss; there is no second one.
+
+```
+Workflow({ scriptPath, resumeFromRunId, args })
+```
+
+`args` is in `coverage.resumable.args` of the result you are resuming from, exactly as it was
+launched. When you no longer have that result, rebuild it from this step's argument list —
+`question` above all, since that is what the guard tests.
 
 ## Step 3 — Land the result
 

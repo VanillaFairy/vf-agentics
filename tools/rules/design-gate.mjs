@@ -35,7 +35,7 @@
 
 export const id = 'design-gate'
 
-export const applies = /^skills\/(design|programme)\/SKILL\.md$/
+export const applies = /^skills\/(design|programme|find-existing-solutions)\/SKILL\.md$/
 
 const DESIGN_CLAUSES = [
   {
@@ -90,9 +90,35 @@ const PROGRAMME_CLAUSES = [
   // ceremony the design removed on purpose.
 ]
 
+// A third skill whose whole purpose is one sentence. It does not end by moving something the
+// user owns — it ends by telling them whether to build — but the failure shape is the same:
+// soften the sentence and the skill still reads well, still runs, and has stopped doing the
+// one thing it existed for. The cost is not a fix round; it is weeks spent building what was
+// already on a registry.
+const EXISTING_SOLUTIONS_CLAUSES = [
+  {
+    pattern: /coverage\.complete/,
+    message:
+      `The find-existing-solutions skill never ties its verdict to coverage.complete. The ` +
+      `binding rule is that "nothing exists, build it" may not be reported while the sweep ` +
+      `is incomplete — without it, a search nobody finished reads exactly like a search that ` +
+      `found nothing, which is the one conclusion this skill exists to make safe.`,
+  },
+  {
+    // Tolerant of how the pair gets phrased; what must survive is the distinction itself.
+    pattern: /never reached/i,
+    message:
+      `The find-existing-solutions skill does not separate "searched and found nothing" from ` +
+      `"never reached". The first is evidence FOR building and the second is evidence of ` +
+      `nothing at all, and a reader who cannot tell them apart will treat an unfinished sweep ` +
+      `as a licence to start.`,
+  },
+]
+
 const CLAUSES = {
   'skills/design/SKILL.md': DESIGN_CLAUSES,
   'skills/programme/SKILL.md': PROGRAMME_CLAUSES,
+  'skills/find-existing-solutions/SKILL.md': EXISTING_SOLUTIONS_CLAUSES,
 }
 
 /**

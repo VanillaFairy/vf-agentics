@@ -32,8 +32,8 @@ export const meta = {
 // against a different contract than a fresh one.
 const WORK_ORDER_ITEM = {
       type: 'object', additionalProperties: false,
-      required: ['id', 'title', 'role', 'locus', 'reads', 'acceptance', 'context', 'deps',
-                 'contract'],
+      required: ['id', 'title', 'role', 'weight', 'locus', 'reads', 'acceptance', 'context',
+                 'deps', 'contract'],
       properties: {
         id: { type: 'string' },        // 'W1', 'W2', ... unique within the run
         title: { type: 'string' },     // imperative, passes the AND test
@@ -43,6 +43,14 @@ const WORK_ORDER_ITEM = {
         // field whose absence nobody notices, and here that silently restores the ordinary
         // verdict to an order whose whole point is that the ordinary verdict is wrong.
         role: { type: 'string', enum: ['none', 'red', 'green', 'refactor'] },
+        // How much reading this order takes, as the planner judges it. It buys a model tier
+        // UNDER the run's dial and never above it — see `judgeFor` / `coderFor`.
+        //
+        // Required for the same reason `role` is: an absent field is a field whose absence
+        // nobody notices, and here it would silently price a trivial order at the run's
+        // ceiling for the life of the plan. Normalized to 'standard' on read all the same,
+        // so a plan written before this field existed still resumes.
+        weight: { type: 'string', enum: ['light', 'standard', 'heavy'] },
         locus: { type: 'array', items: { type: 'string' } },  // EVERY file it may create/modify, repo-relative POSIX
         // Files this order BUILDS AGAINST and never writes — the types it calls, the module
         // its context describes, the interface it implements. Never a write permission: the
@@ -638,23 +646,35 @@ let slice = typeof input.slice === 'string' ? input.slice.trim() : ''
 // against and this is the only record of the world it was written for.
 let envelopeBase = { branch: '', sha: '' }
 
-// The intelligence dial. `normal` inherits each agent's frontmatter model — which pins the
-// coder to sonnet: the volume tier of this pipeline is the coder, its output is gated by the
-// verifier and fresh adversarial reviewers rather than by its own brilliance, and `inherit`
-// in the field billed every coding agent at whatever model the interactive session happened
-// to run. `max` overrides the judging tier and the coder to fable. Spreading {} rather than
-// passing model: undefined keeps the frontmatter default authoritative.
+// The intelligence dial. Three positions, each NAMING the judging tier rather than inheriting
+// it: `low` is sonnet, `normal` is opus, `max` is fable. Naming opus instead of spreading {}
+// makes this table the authority on what a judge costs — a `{}` meaning "whatever the
+// frontmatter says" prices a run correctly only until somebody edits an agent file, while the
+// tier the run RECORDS in its envelope comes from here either way.
 //
-// `low` moves the judging tier the other way and moves nothing else: the planner, the
-// reviewers and the nested survey's analysts drop to sonnet, while the coder, the verifier,
-// the scouts and the courier stay exactly where their frontmatter puts them. It is the one
-// position no session derives for itself — the skills derive `max` and `normal` from the
-// model they are running — because it puts the judges on the same model as the coder, which
-// `docs/2026-08-17-intelligence-tiering.md` §2 argues against by name: a defective work order
-// implemented faithfully clears verification and clears a review fenced to the same defective
-// criteria, so nothing downstream is left to catch it. That is a trade a user may want and a
-// session may not make on their behalf.
-const JUDGE_TIER = { low: { model: 'sonnet' }, normal: {}, max: { model: 'fable' } }
+// The dial is derived from the model the calling session runs, never chosen by it — the
+// skills' `intelligence-tier` block maps fable → max, opus → normal, sonnet and below → low —
+// unless the user names a position outright. So a sonnet session judges with sonnet, which
+// puts the judges on the same model as the coder and leaves open the hole
+// `docs/2026-08-17-intelligence-tiering.md` §2 names: a defective work order implemented
+// faithfully clears verification, then clears a review fenced to the same defective criteria.
+// That is the honest reading of "judged at the tier of the session driving it". The
+// alternative — a cheap session quietly buying opus judgment — is the self-assessment the
+// derivation rule exists to forbid, and the develop skill owes the user a sentence about the
+// cost instead.
+//
+// `coderTier` is deliberately NOT this table, and it does not follow the judges up. At `max`
+// the coder goes to OPUS, not fable: the tiering doc's §3 step 1 calls fable-judged,
+// opus-implemented "the coherent one the coupled dial cannot currently express", and the field
+// praise the coder tier rests on was of opus as implementer, not of fable. Doubling the price
+// of the pipeline's volume tier bought nothing that praise ever described.
+//
+// Below `max` it spreads {} and the coder keeps its frontmatter model, which is what lets the
+// doc's other half — pinning agents/coder.md to opus — land later without touching this line.
+// The coder's output is gated by the verifier and by fresh adversarial reviewers rather than
+// by its own brilliance; what it must not be is `inherit`, which in the field billed every
+// coding agent at whatever model the interactive session happened to run.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
 const tierOf = (value) => (Object.hasOwn(JUDGE_TIER, value) ? value : 'normal')
 
 let intelligence = 'normal'
@@ -665,10 +685,68 @@ let coderTier = {}
 function applyIntelligence(value) {
   intelligence = tierOf(value)
   judge = JUDGE_TIER[intelligence]
-  coderTier = intelligence === 'max' ? { model: 'fable' } : {}
+  coderTier = intelligence === 'max' ? { model: 'opus' } : {}
 }
 
 applyIntelligence(input.intelligence)
+
+// ------------------------------------------------------- the dial, per order
+//
+// One dial for a whole run prices a ten-order plan as though its orders were the same work.
+// They are not: a run mixing one contract-critical order with five trivial ones either buys
+// top-tier judgment for all six or cheap judgment for all six, and both are wrong. What the
+// dial is FOR is the ceiling — how much the user is willing to spend, derived from the model
+// their session runs and never chosen by the session itself. Where an order lands *under*
+// that ceiling is a property of the order, and the planner is the one that knows it.
+//
+// So: the run dial is a ceiling nothing may exceed, and `weight` moves an order down from it.
+// Downward only, deliberately. An upward move would let the planner buy a tier the user did
+// not authorize — the same self-upgrade the derivation rule forbids a session, arriving by
+// proxy through an agent the session dispatched.
+
+const MODEL_RANK = { sonnet: 1, opus: 2, fable: 3 }
+const rankOf = (model) => MODEL_RANK[model] || 0
+const higherOf = (a, b) => (rankOf(a) >= rankOf(b) ? a : b)
+const lowerOf = (a, b) => (rankOf(a) <= rankOf(b) ? a : b)
+
+const WEIGHTS = new Set(['light', 'standard', 'heavy'])
+const weightOf = (order) => (WEIGHTS.has(order && order.weight) ? order.weight : 'standard')
+
+/**
+ * Which model reviews and re-plans this order.
+ *
+ * `light` drops to sonnet; everything else sits at the run's ceiling. A trivial order does not
+ * stop being reviewed — it stops being reviewed by the most expensive reader in the run, which
+ * is where a mixed plan's judging cost actually goes.
+ */
+function judgeFor(order) {
+  return weightOf(order) === 'light'
+    ? { model: lowerOf(JUDGE_TIER[intelligence].model, 'sonnet') }
+    : judge
+}
+
+/**
+ * Which model implements this order.
+ *
+ * A floor sits under the dial here, and it is not a per-order preference: `red` and `contract`
+ * orders implement at opus at EVERY dial position, which `docs/2026-08-17-intelligence-
+ * tiering.md` §6.3 states as an ALWAYS and §7 never waived. The reason is that their defects
+ * are the ones nothing downstream can catch. A red order pins the acceptance criteria in
+ * failing tests; the green coder is fenced to those criteria and implements a wrong reading
+ * faithfully; the reviewer is fenced to the same criteria and has no standing to object. The
+ * defect surfaces at the integration review or the human gate — the expensive end — where a
+ * contract order's defect surfaces in every order built against it.
+ *
+ * `light` still drops to sonnet, but never through the floor: a red order is never light.
+ */
+function coderFor(order) {
+  const structural = order && (order.role === 'red' || order.contract === true)
+  const base = coderTier.model || 'sonnet'
+
+  if (structural) return { model: higherOf(base, 'opus') }
+  if (weightOf(order) === 'light') return { model: lowerOf(base, 'sonnet') }
+  return coderTier
+}
 
 // ------------------------------------------------------------- the plugin root
 //
@@ -1114,6 +1192,21 @@ function plannerPrompt(surveyEvidence) {
     `note, shared type definitions, an interface. An ambiguity in a contract propagates ` +
     `into every consumer, so majors block a contract order downstream the way criticals ` +
     `block any other.\n\n` +
+    `Set weight on every order. It says how much READING the order takes — how much of the ` +
+    `codebase somebody has to hold in their head to get it right — and it buys the model ` +
+    `tier that implements and reviews it:\n\n` +
+    `   'light'    — mechanical and local. A rename, a config value, a delegation to something ` +
+    `that already exists, a doc line. Someone who has seen only this order's locus can do it ` +
+    `and can check it.\n` +
+    `   'standard' — the default. Ordinary work inside a described context.\n` +
+    `   'heavy'    — the reading is the work: subtle invariants, concurrency, a migration whose ` +
+    `failure mode is silent, anything where the obvious implementation is the wrong one.\n\n` +
+    `Judge the order, not its importance. Every order in the plan matters or it would not be ` +
+    `in the plan; weight asks something narrower — whether getting this one right needs a ` +
+    `strong reader. Marking everything heavy spends the user's budget on orders that did not ` +
+    `need it and is the same as marking nothing. Marking a subtle order light is the more ` +
+    `expensive mistake: it buys a cheap implementation and a cheap review of it, and the two ` +
+    `agree.\n\n` +
     `Compare the survey's coverage gaps against what the change itself names or leans on. ` +
     `A gap the change explicitly depends on goes in blocking_gaps — one entry per gap: the ` +
     `gap, then what depends on it. A non-empty blocking_gaps makes the workflow withhold ` +
@@ -1612,10 +1705,16 @@ function mergePrompt(entry) {
     `CURRENT INTEGRATION HEAD: ${integration.head_sha}\n\n` +
     `BRANCH TO MERGE: ${entry.branch}   (work order ${entry.id})\n` +
     `ITS HEAD: ${entry.head_sha}\n\n` +
-    `Run git merge --no-ff ${entry.branch} and report the four fields your charter names. ` +
-    `Report merged_sha as the sha the merge actually produced, read back with git rev-parse ` +
-    `HEAD — the caller advances the integration head to it, and every later wave is built on ` +
-    `whatever you put there.\n\n` +
+    `Run EXACTLY this, and nothing else that writes:\n\n` +
+    `   node "${pluginRoot}/lib/merge.mjs" "${integration.worktree}" ${entry.branch} ` +
+    `--expect-head ${integration.head_sha}\n\n` +
+    rootWarning +
+    `\nIt performs the merge, reads the resulting head back, and on any conflict aborts the ` +
+    `merge itself and names the conflicting paths. Report merged_sha as the \`merged_sha\` in ` +
+    `its payload and the conflicting paths as its \`conflicts\` — copied, not retyped from ` +
+    `anything you observed yourself.\n\n` +
+    `Do not run git merge by hand, and do not "check" the result by editing anything. If the ` +
+    `payload says ok:false, the merge did not happen: report the conflicts and stop.\n\n` +
     journalSection(
       `ONLY after a merge that actually completed, and using the sha you read back — not the ` +
       `one you expected. A merge is durable in git the instant it happens while the wave line ` +
@@ -1627,10 +1726,13 @@ function mergePrompt(entry) {
       `"worktree":"","base_sha":"${integration.head_sha}","head_sha":"<the sha you read back>",` +
       `"stop_reason":"completed","build":"","suite":"","failing_tests":[],` +
       `"discriminator":[],"series_findings":[]}`) +
-    `NEVER resolve a conflict. The loci in a wave were declared pairwise disjoint, so a ` +
-    `conflict means the plan's independence declaration was wrong — that is a planner defect ` +
-    `a human needs to see, not a merge for you to negotiate. Report the conflicting paths ` +
-    `verbatim and stop.`
+    `NEVER resolve a conflict, and never re-run the merge to "get past" one. The loci in a ` +
+    `wave were declared pairwise disjoint, so a conflict means the plan's independence ` +
+    `declaration was wrong — that is a planner defect a human needs to see, not a merge for ` +
+    `you to negotiate. The script has already aborted it; your job is to report what it said.\n\n` +
+    `This is the point in the pipeline where being helpful is most expensive. A resolved ` +
+    `conflict produces a real sha, builds cleanly, and every later wave is built on a merge ` +
+    `nobody reviewed and nobody knows happened.`
 }
 
 function waveVerifyPrompt(waveNumber) {
@@ -2204,6 +2306,9 @@ const unfixedVerdict = (v) => v.status === 'not_fixed' || v.status === 'regresse
 // commit has made no progress, and an identical next round would make none either. No
 // counter is consulted on either path.
 async function verifyUntilGreen(wo, state, trail) {
+  // The failing facts of the previous round, as a comparable key. See the exit below.
+  let priorFailureKey = null
+
   while (true) {
     const call = await dispatch(wo, state, trail, 'the verifier for ' + wo.id, [],
       () => agent(verifierPrompt(wo, state), {
@@ -2229,6 +2334,29 @@ async function verifyUntilGreen(wo, state, trail) {
     const failures = verifyFailureFindings(wo, v)
     log(`${wo.id}: verification failed on ${failures.length} fact(s); dispatching a fix round.`)
 
+    // The verify-side analogue of the review loop's same-id-twice exit.
+    //
+    // `noProgress` below catches a fix round that lands nothing. It does not catch the other
+    // shape: a coder that lands commit after commit against a red it cannot move — a flaky
+    // test, a broken toolchain, a platform-specific failure — where every round makes visible
+    // progress in git and none of it changes what is failing. That loop has no exit at all,
+    // and it does not end quietly: it runs until the invocation is killed, taking every
+    // parallel order in the wave with it.
+    //
+    // Keyed on the failing facts, not on rounds. Identical facts twice running means the last
+    // fix addressed something else, and a third round asks the same question of the same code.
+    const failureKey = failures.map((f) => f.id).sort().join('|')
+
+    if (priorFailureKey !== null && failureKey === priorFailureKey) {
+      log(`ESCALATION ${wo.id}: two fix rounds landed commits and left the same facts failing.`)
+      return esc(wo, 'verify_failed_repeatedly',
+        failures.concat([runtimeFinding(wo.id + '-unmoved',
+          'two consecutive fix rounds landed commits without changing what fails',
+          failures.map((f) => f.claim || f.id).join('; '))]),
+        trail, state)
+    }
+    priorFailureKey = failureKey
+
     // The trail records every round that asked for work, verify rounds included — an
     // escalation reading `verify_failed_repeatedly` with an empty trail told a human
     // nothing about what was tried. absorbFix appends this round's fix commits to it.
@@ -2238,7 +2366,7 @@ async function verifyUntilGreen(wo, state, trail) {
     const fixCall = await dispatch(wo, state, trail, 'the verify fix round for ' + wo.id, failures,
       () => agent(coderFixPrompt(wo, state, verifyFixInstruction(failures)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
-        phase: 'Verify', label: `fix:${wo.id}`, ...coderTier,
+        phase: 'Verify', label: `fix:${wo.id}`, ...coderFor(wo),
       }), coherentCoder)
     if (fixCall.escalation) return fixCall.escalation
 
@@ -2286,7 +2414,7 @@ async function reviewLoop(wo, state, trail) {
   let priorBlockers = []
   let unfixedLastRound = []
   let openBlockers = []
-  let churnedLastRound = false
+  let churnedBefore = false
   let round = 0
 
   while (true) {
@@ -2296,7 +2424,7 @@ async function reviewLoop(wo, state, trail) {
       openBlockers,
       () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorBlockers, round), {
         agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
-        phase: 'Review', label: `review:${wo.id}#${round}`, ...judge,
+        phase: 'Review', label: `review:${wo.id}#${round}`, ...judgeFor(wo),
       }))
     if (call.escalation) return call.escalation
 
@@ -2341,26 +2469,38 @@ async function reviewLoop(wo, state, trail) {
       return esc(wo, 'review_not_converging', open, trail, state)
     }
 
-    // §7.3(c): the churn exit — the mirror of `stuck`. Two consecutive rounds each ruled
-    // every prior blocker fixed and still minted new blocking findings on material earlier
-    // rounds accepted. The fixes are landing; the reviewer pool is not converging; another
-    // round buys another sample, not a resolution. In the field one contract order paid
-    // eleven rounds this way across two runs and ended escalated regardless — this trigger
-    // hands the same trail to the human after two.
+    // §7.3(c): the churn exit — the mirror of `stuck`. A round that ruled every prior blocker
+    // fixed and still minted new blocking findings on material earlier rounds accepted. The
+    // fixes are landing; the reviewer pool is not converging; another round buys another
+    // sample, not a resolution. In the field one contract order paid eleven rounds this way
+    // across two runs and ended escalated regardless.
+    //
+    // TWO SUCH ROUNDS ANYWHERE IN THE LOOP, not two adjacent ones. Adjacency was defeatable
+    // by a single interposed round, and the defeating sequence is not exotic — it is what the
+    // loop does when a reviewer pool disagrees with itself: round N mints blocker X; round N+1
+    // rules X not_fixed exactly once, which cannot trip `stuck` (nothing was unfixed the round
+    // before) and which cleared this marker; round N+2 rules X fixed and mints Y, churn-shaped
+    // again against a marker that had just been reset. A period-2 cycle in which fixes always
+    // land, no id is ever unfixed twice running, and no two churn rounds are adjacent —
+    // defeating all three exits, and ending only when something outside the workflow kills it.
+    //
+    // "Two churn rounds happened" is a fact about the trail, in the same family as "the same
+    // id survived two rounds". It is not an effort cap: a loop that converges never trips it,
+    // however many rounds it takes.
     const churned = round > 1 && stillOpen.length === 0 && !verdicts.some(unfixedVerdict) &&
       blockers.length > 0 && blockers.every((f) => !priorBlockers.some((p) => p.id === f.id))
 
-    if (churned && churnedLastRound) {
-      log(`ESCALATION ${wo.id}: two consecutive rounds ruled all prior blockers fixed and still minted new ones.`)
+    if (churned && churnedBefore) {
+      log(`ESCALATION ${wo.id}: a second round ruled all prior blockers fixed and still minted new ones.`)
       return esc(wo, 'review_churn', open, trail, state)
     }
-    churnedLastRound = churned
+    churnedBefore = churnedBefore || churned
 
     const headBefore = state.head_sha
     const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, open,
       () => agent(coderFixPrompt(wo, state, reviewFixInstruction(open)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
-        phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderTier,
+        phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderFor(wo),
       }), coherentCoder)
     if (fixCall.escalation) return fixCall.escalation
 
@@ -2460,7 +2600,7 @@ async function implement(wo) {
         const call = await dispatch(wo, state, trail, 'the continuation coder for ' + wo.id, [],
           () => agent(coderContinuePrompt(wo, found), {
             agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
-            phase: 'Implement', label: `continue:${wo.id}`, ...coderTier,
+            phase: 'Implement', label: `continue:${wo.id}`, ...coderFor(wo),
           }), coherentContinuation)
 
         if (call.escalation) return { wo, state, trail, escalation: call.escalation }
@@ -2498,7 +2638,7 @@ async function implement(wo) {
     const call = await dispatch(wo, state, trail, 'the coder for ' + wo.id, [],
       () => agent(coderPrompt(wo, orderBranch(wo.id)), {
         agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
-        phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderTier,
+        phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderFor(wo),
       }), coherentNewSeries)
     if (call.escalation) return { wo, state, trail, escalation: call.escalation }
 
@@ -3520,6 +3660,12 @@ try {
     }
   }
 
+  // Orders held back because their commits have nowhere to stand. Filled in by the worktree
+  // pass below and read by the wave loop, exactly like the stale ruling above: withheld is a
+  // decision, not a failure, and a withheld order is named in coverage so the run does not
+  // read as having covered it.
+  const treeWithheldIds = []
+
   // --------------------------------------------- 3c. the integration worktree
   //
   // The design spec's stated reason for "the workflow never merges" is that merging would
@@ -3653,13 +3799,31 @@ try {
         return null
       })
 
+      // An order that reaches this pass HAS commits — `scavenged` holds facts only for
+      // branches that carry some. So rebuilding it is not the cheap fallback the old comment
+      // here claimed ("loses nothing — its branch keeps the commits"): a fresh coder's very
+      // first instruction is `git checkout -B <branch> <integration head>`, which force-moves
+      // the ref and leaves a possibly reviewed, possibly verified series reachable only from
+      // the reflog. One flaky agent response was enough to discard every in-progress order in
+      // a resumed run.
+      //
+      // So the order is WITHHELD instead, the way a stale one is: named, resumable, and left
+      // for a human or a later resume that can cut the tree. Rebuilding is the bottom of the
+      // salvage ladder and it is chosen deliberately, never as the handler for a failed
+      // `git worktree add`.
+      const withholdForTree = (id, why) => {
+        treeWithheldIds.push(id)
+        extraUnreached.push(id + ': withheld — its branch carries commits but no worktree ' +
+          'could be cut for them (' + why + '), and implementing it afresh would re-anchor ' +
+          'the branch over work that may already be verified or reviewed')
+        extraRemaining.push(id)
+      }
+
       if (!made || made.stop_reason !== 'completed') {
-        // Degraded, never fatal. An order with commits and nowhere to stand is implemented
-        // afresh, which costs tokens and loses nothing — its branch keeps the commits.
         const why = made && made.notes ? made.notes : 'the worktree pass returned no result'
-        log(`WARNING: no worktree could be cut (${why}); those orders are implemented afresh.`)
+        log(`WARNING: no worktree could be cut (${why}); those orders are withheld, not rebuilt.`)
         if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
-        for (const n of needTrees) dropSalvage(n.id)
+        for (const n of needTrees) withholdForTree(n.id, why)
       } else {
         const paths = new Map((made.made || []).map((m) => [m.id, m.worktree]))
         for (const n of needTrees) {
@@ -3667,11 +3831,9 @@ try {
           if (path) {
             scavenged.get(n.id).worktree = path
           } else {
-            // Reported as absent rather than as a path nobody confirmed. Dropping the salvage
-            // is the safe reading: the order is rebuilt, and its commits stay on the branch
-            // for a human or a later resume to find.
-            log(`No worktree could be made for ${n.id}; it is implemented from scratch.`)
-            dropSalvage(n.id)
+            log(`No worktree could be made for ${n.id}; it is withheld rather than rebuilt.`)
+            if (!failedChannels.includes('scavenge')) failedChannels.push('scavenge')
+            withholdForTree(n.id, 'the pass reported no path for it')
           }
         }
       }
@@ -3758,7 +3920,7 @@ try {
     // as withheld, and reporting it a second time as an escalation would hand the human
     // `retry_escalated` — a lever that cannot move it, because the staleness gate filters it
     // out regardless. The lever that works is `confirmed_stale`.
-    if (staleWithheldIds.includes(id)) continue
+    if (staleWithheldIds.includes(id) || treeWithheldIds.includes(id)) continue
 
     // A green measurement for an order this run also escalated — and what can be SAID about
     // it depends entirely on which file it came out of.
@@ -3832,20 +3994,66 @@ try {
     })
   }
 
+  // ---------------------------------------------- 3d. will this run fit the session
+  //
+  // The IRON LAW says a set task is finished regardless of cost. It does not say the task has
+  // to be finished in ONE INVOCATION, and the two have been quietly conflated: a run that
+  // dispatches a wave it cannot pay for does not finish that wave more slowly, it dies in the
+  // middle of it and takes every parallel order down at once. Work in flight when a session
+  // limit lands is not resumed cheaply — the agents that had not yet returned left nothing to
+  // resume from. Three such deaths were observed in one afternoon.
+  //
+  // So this is not a budget stop. §1 forbids ending work because effort was spent, and nothing
+  // here ends anything: it moves the boundary to a place where stopping is FREE. Waves are
+  // already the run's natural seam — wave k+1 branches from the head wave k's merges produced,
+  // the state line is written, and a resume picks up exactly there. Stopping at a seam this
+  // run chose beats being killed at a point the platform chose.
+  //
+  // It fires only when the caller set a token target. With no target `remaining()` is Infinity
+  // and none of this runs, because there is then no honest signal to act on — a script cannot
+  // see an account's usage limit, and guessing at one would halt runs that would have finished.
+
+  const spentNow = () => (budget && typeof budget.spent === 'function' ? budget.spent() : 0)
+  const remainingNow = () => (budget && typeof budget.remaining === 'function' ? budget.remaining() : Infinity)
+  const hasTarget = Boolean(budget && budget.total)
+
+  // Dispatches one order costs at a floor: coder, verifier, reviewer, merge. Fix rounds and
+  // review rounds sit on top, which is why this is a floor and is named one — a projection
+  // that flattered the next wave would defeat the whole point.
+  const DISPATCHES_PER_ORDER = 4
+  const waveCost = (ids) => ids.length * DISPATCHES_PER_ORDER + 1
+
+  const plannedDispatches = waves.reduce((n, ids) => n + waveCost(ids), 0)
+  log(`Plan size: ${orders.length} order(s) across ${waves.length} wave(s) — at least ` +
+    `${plannedDispatches} agent dispatches before the integration review.`)
+
+  if (hasTarget) {
+    log(`Token target set: ${Math.round(remainingNow() / 1000)}k remaining. Waves will stop at ` +
+      `a boundary rather than start work the target cannot cover.`)
+  }
+
   // -------------------------------------------------------- 4. the wave loop
   //
   // One invocation carries the whole partition. Between waves there IS a barrier, and it is
   // the justified kind: wave k+1 branches from the head that wave k's merges produced, so it
   // cannot start until they have happened AND been verified.
 
+  // What the last completed wave actually cost, and how many dispatches it covered. Measured
+  // rather than assumed: a projection built from this run's own observed spend is the only
+  // one worth acting on, and it needs no constant anybody has to keep true.
+  let lastWaveSpend = 0
+  let lastWaveDispatches = 0
+
   for (let w = 0; w < waves.length; w++) {
     const waveNumber = w + 1
     const waveIds = waves[w]
+    const spendAtWaveStart = spentNow()
     // A carried-forward escalation is accounted for — it already sits in `escalations` — so it
     // is not pending. Leaving it in would send it round the dispatch path this invocation
     // deliberately declined to buy.
     const pending = waveIds.filter((id) =>
-      !landed.has(id) && !staleWithheldIds.includes(id) && !escalatedPrior.has(id))
+      !landed.has(id) && !staleWithheldIds.includes(id) && !treeWithheldIds.includes(id) &&
+      !escalatedPrior.has(id))
 
     if (pending.length === 0) {
       // Either a resumed run whose state records this wave as merged, or — rarer — a wave
@@ -4114,6 +4322,34 @@ try {
     if (pauseBetweenWaves && w + 1 < waves.length) {
       lineStopped = 'paused after wave ' + waveNumber + ' at the caller\'s request'
       log(`PAUSED after wave ${waveNumber}; remaining waves are deferred with resumable state.`)
+      continue
+    }
+
+    // ------------------------------------------- 4e. does the next wave fit
+    //
+    // Projected from what THIS run just spent, per dispatch, against what the next wave needs
+    // at its floor. The floor matters: a wave that ends up needing fix rounds costs more than
+    // this predicts, so the projection under-states and the halt fires later than it ideally
+    // would — never earlier, which would strand work that would have finished.
+
+    lastWaveSpend = spentNow() - spendAtWaveStart
+    lastWaveDispatches = waveCost(pending)
+
+    if (hasTarget && w + 1 < waves.length && lastWaveDispatches > 0 && lastWaveSpend > 0) {
+      const perDispatch = lastWaveSpend / lastWaveDispatches
+      const nextWave = waves[w + 1].filter((id) =>
+        !landed.has(id) && !staleWithheldIds.includes(id) && !treeWithheldIds.includes(id) &&
+        !escalatedPrior.has(id))
+      const projected = waveCost(nextWave) * perDispatch
+
+      if (nextWave.length > 0 && projected > remainingNow()) {
+        lineStopped = 'stopped after wave ' + waveNumber + ' because wave ' + (waveNumber + 1) +
+          ' is projected to cost about ' + Math.round(projected / 1000) + 'k against ' +
+          Math.round(remainingNow() / 1000) + 'k remaining'
+        log(`STOPPING after wave ${waveNumber}: wave ${waveNumber + 1} projects ~` +
+          `${Math.round(projected / 1000)}k against ${Math.round(remainingNow() / 1000)}k left. ` +
+          `Deferred with resumable state — dying mid-wave would leave nothing to resume from.`)
+      }
     }
   }
 

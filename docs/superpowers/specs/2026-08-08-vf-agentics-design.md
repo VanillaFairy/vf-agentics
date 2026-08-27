@@ -546,18 +546,19 @@ the degradation rows against at least the bare-Epic fixture.
 
 ## §6 — The intelligence switch
 
-`--intelligence=normal|max`. It is **derived, not chosen**:
+`--intelligence=low|normal|max`. It is **derived, not chosen**:
 
 <!-- vfa:verbatim intelligence-tier -->
 The dial follows the model this session is running, never how important the work feels:
-**Fable → `max`; Opus and everything below it → `normal`.** When you cannot tell what you are
-running, `normal`.
+**Fable → `max`; Opus → `normal`; Sonnet and everything below it → `low`.** When you cannot
+tell what you are running, `normal`.
 
 The judging agents belong at the tier of the session driving them. A session that dials itself
 up because the change looked significant is charging the user for its own self-assessment; a
 Fable session that leaves the dial at `normal` has its work judged by a weaker model than the
-one the user is talking to. Only the user moves it — a bare leading `max` token, or
-`--intelligence=max`.
+one the user is talking to, and a Sonnet session that claims `normal` bills the user for Opus
+judgment nobody asked it for. Only the user moves it off that mapping — a bare leading `max`,
+`normal` or `low` token, or `--intelligence=<tier>`.
 <!-- /vfa:verbatim -->
 
 **The mechanical tier never moves.** `scout`, `historian`, `doc-researcher`, `verifier` stay
@@ -565,26 +566,39 @@ Sonnet regardless — swapping the search tier buys nothing and costs a lot.
 
 The dial applies to the agents whose output is judgment or authored code:
 
-| Agent | `normal` (default) | `max` |
-|---|---|---|
-| `analyst`, `planner`, `reviewer`, `diagnostician` | `opus` (frontmatter default) | `fable` |
-| `coder`, `ue-writer` | inherit the session model | `fable` |
+| Agent | `low` | `normal` | `max` |
+|---|---|---|---|
+| `analyst`, `planner`, `reviewer`, `diagnostician` | `sonnet` | `opus` | `fable` |
+| `coder`, `ue-writer` | frontmatter default | frontmatter default | `opus` |
+
+The judging row NAMES its model at every position rather than inheriting one. A table cell
+reading "frontmatter default" prices a run correctly only until somebody edits an agent file,
+and the tier a run records in its envelope comes from the dial either way. The coder row still
+inherits, because the coder's tier is its frontmatter's business at every position but `max`.
 
 `coder` is on the dial even though the original ask named only the analytics agents. The reason
 is that `/develop max` that left the actual code authoring untouched would be surprising — the
-code is the deliverable. Flagged in §10 for confirmation.
+code is the deliverable. It rises to `opus` and stops there: the dial's top position is about
+buying the strongest available JUDGE, and the pipeline's highest-volume agent has never been
+where its judgment concentrates.
 
 Two lines per script:
 
 ```js
-const intelligence = input.intelligence === 'max' ? 'max' : 'normal'
-const judge = intelligence === 'max' ? { model: 'fable' } : {}   // {} = inherit frontmatter
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
+const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
+const judge = JUDGE_TIER[intelligence]
 
 await agent(prompt, { agentType: 'vf-agentics:analyst', effort: 'high', schema: VERDICT, ...judge })
 ```
 
-Spreading `{}` rather than passing `model: undefined` keeps the frontmatter default
-authoritative instead of depending on how a validator treats an explicit undefined.
+One table, closed over three keys, doing both jobs: a position absent from it is not a tier, and
+the model it maps to cannot be edited in one place and forgotten in the other. A position this
+script does not recognise is served as `normal` — dispatching at one tier while the caller
+reports the one it typed bills a run at one price and describes it at another. Where a dial
+position is meant to leave frontmatter alone (`coderTier` below `max`), it still spreads `{}`
+rather than `model: undefined`, which keeps the default authoritative instead of depending on
+how a validator treats an explicit undefined.
 
 **Propagation:** the skill parses it, passes `intelligence` in workflow args, and forwards it
 into the nested call — `workflow('vfa-survey', { ...args, intelligence })` — so the shared core
@@ -595,7 +609,7 @@ All four skills accept three forms:
 | Form | Example |
 |---|---|
 | Bare leading token | `/investigate max how does X work` |
-| Explicit flag | `/develop --intelligence=max` |
+| Explicit flag | `/develop --intelligence=low` |
 | Omitted | derived from the session model, per the block above |
 
 `model` and `effort` stay orthogonal. `effort` controls how long a model thinks; `model`

@@ -56,15 +56,27 @@ test('`low` puts the analysts on sonnet and leaves the search tier alone', async
   assert.equal(modelOf('scout:a'), undefined, 'search never moves with the dial')
 })
 
+test('`normal` names opus rather than inheriting it', async () => {
+  const { prompts } = await run(
+    { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
+    { intelligence: 'normal' },
+  )
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('plan'), 'opus')
+  assert.equal(modelOf('analyze:a'), 'opus')
+  assert.equal(modelOf('scout:a'), undefined, 'the search tier is not on the dial')
+})
+
 test('a tier this script does not define is served as normal, not as itself', async () => {
   const { prompts } = await run(
     { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
     { intelligence: 'cheap' },
   )
 
-  assert.equal(prompts.find((p) => p.opts.label === 'plan').opts.model, undefined,
-    'an unrecognised tier that dispatches at the frontmatter default while the caller reports ' +
-    'the tier it typed is a run billed at one price and described at another')
+  assert.equal(prompts.find((p) => p.opts.label === 'plan').opts.model, 'opus',
+    'an unrecognised tier that dispatches at one tier while the caller reports the one it ' +
+    'typed is a run billed at one price and described at another')
 })
 
 // ------------------------------------------- a requested channel that produced nothing
@@ -203,7 +215,55 @@ test('a resumed round that covers no new ground ends the loop as stuck, not anot
   assert.equal(scoutCalls.length, 2)
   assert.deepEqual(result.coverage.incomplete, ['a'])
   assert.equal(result.coverage.complete, false)
-  assert.ok(logs.some((l) => /covered no new ground/.test(l)))
+  assert.ok(logs.some((l) => /brought back nothing new/.test(l)))
+})
+
+test('a scout that rewords its account of the same ground is stuck, not progressing', async () => {
+  // The signature of the loop that does not converge. Every round finds the SAME hit and
+  // leaves the SAME ground unreached, but obeys "do not repeat yourself" by describing its
+  // search differently each time. Counting those fresh descriptions as progress resumed such
+  // a scout until something outside the workflow killed it.
+  let round = 0
+  const { result, prompts, logs } = await run({
+    plan: PLAN(),
+    'scout:': () => {
+      round++
+      return HITS({
+        searched: [`pass ${round}: looked through the legacy tree`],
+        stop_reason: 'unfinished',
+        not_reached: 'src/legacy/ was never opened',
+      })
+    },
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:')).length, 2,
+    'new prose about old ground is not new ground')
+  assert.ok(logs.some((l) => /brought back nothing new/.test(l)))
+  assert.deepEqual(result.coverage.incomplete, ['a'])
+})
+
+test('a round that narrows the remainder keeps going even with no new hits', async () => {
+  // The other half of the rule. A round can legitimately come back empty-handed and still
+  // have advanced — it looked at an area, found nothing there, and that area leaves the
+  // remainder. Stopping on "no new hits" alone would cut those searches short.
+  const remainders = ['src/legacy/ and src/vendor/', 'src/vendor/ only', '']
+  let round = 0
+  const { prompts } = await run({
+    plan: PLAN(),
+    'scout:': () => {
+      const not_reached = remainders[Math.min(round++, remainders.length - 1)]
+      return HITS({
+        hits: [], searched: ['same search every time'],
+        stop_reason: not_reached ? 'unfinished' : 'exhausted',
+        not_reached,
+      })
+    },
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:')).length, 3,
+    'a shrinking remainder is progress even when nothing new is found')
 })
 
 test('every planned topic is searched — the topic cap guides the planner, it never drops work', async () => {

@@ -217,6 +217,15 @@ in the user's checkout.
    finish, a loader or state failure, and programme-complete. **The rule is the closure; the
    list is its known instances, not its bounds.**
 
+   **It also stops before a slice it does not expect this session to survive.** A slice
+   boundary is the cheapest stop this layer has — the previous slice is merged, its delivery
+   event is appended, and the frontier recomputes from disk — so a session running low pays
+   almost nothing to stop here and a great deal to be killed halfway through the next
+   `develop` run instead. What that costs is not the tokens: work in flight when a limit lands
+   leaves nothing to resume from, because the agents that had not yet returned recorded
+   nothing. Say which slice is next and what it is estimated to take, and let the user decide
+   whether to start it now or in a fresh session.
+
 ## Step 5 — Landing, the one ask
 
 On programme-complete — every slice landed or delivered with nothing open, no `unknown`, no

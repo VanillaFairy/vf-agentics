@@ -6,7 +6,17 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+/**
+ * The plugin root, derived from this file's own location rather than the caller's cwd.
+ *
+ * `process.cwd()` made the gate agree with wherever it happened to be invoked: run from a
+ * parent directory it walks a tree with no tools/rules in it, loads zero rules, finds zero
+ * findings and prints "OK: no findings" over source nobody linted. A green run that proves
+ * nothing is worse than a red one, and this is the gate that guards every other invariant.
+ */
+export const PLUGIN_ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 /** Directories never linted: VCS, deps, the plan, and the lint's own fixtures. */
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'docs', 'test'])
@@ -86,9 +96,19 @@ async function collectFiles(dir, out) {
   return out
 }
 
-/** Walk the plugin tree and lint every file. */
+/**
+ * Walk the plugin tree and lint every file.
+ *
+ * An empty rule set throws rather than returning zero findings: every caller reads "no
+ * findings" as "nothing is wrong", and a rules directory that failed to load says only that
+ * nothing was checked. Callers linting a fixture tree pass their own `rules` and never reach
+ * this.
+ */
 export async function lintPlugin(root, rules) {
   const ruleSet = rules ?? (await loadRules(root))
+  if (ruleSet.length === 0) {
+    throw new Error(`no rules loaded from ${join(root, 'tools', 'rules')} — nothing was checked`)
+  }
   const findings = []
 
   for (const full of await collectFiles(root, [])) {
@@ -115,7 +135,12 @@ const isMain = import.meta.main ??
   (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)
 
 if (isMain) {
-  const findings = await lintPlugin(process.cwd())
-  console.log(formatFindings(findings))
-  process.exit(findings.length > 0 ? 1 : 0)
+  try {
+    const findings = await lintPlugin(PLUGIN_ROOT)
+    console.log(formatFindings(findings))
+    process.exit(findings.length > 0 ? 1 : 0)
+  } catch (error) {
+    console.error(`lint could not run: ${error.message}`)
+    process.exit(1)
+  }
 }

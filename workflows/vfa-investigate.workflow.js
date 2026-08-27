@@ -60,12 +60,19 @@ const TASKS = {
 // ---------------------------------------------------------------- inputs
 
 const input = typeof args === 'string' ? { question: args } : (args || {})
-const question = input.question || ''
+// Trimmed, because the blank-question guard below tests truthiness and a question of spaces
+// is truthy: it would buy a judge-tier planner call before dying one stage later.
+const question = (input.question || '').trim()
 const roots = input.roots || '.'
 const notes = input.notes || ''
 const asTasks = Boolean(input.as_tasks)
-const intelligence = input.intelligence === 'max' ? 'max' : 'normal'
-const judge = intelligence === 'max' ? { model: 'fable' } : {}
+// The intelligence dial — the same three positions every skill in this plugin passes, because
+// they share one derivation rule (fable → max, opus → normal, sonnet and below → low) and a
+// sonnet session therefore sends `low` here as readily as it sends it to develop. The judging
+// tier in this workflow is the analyst that synthesizes.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
+const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
+const judge = JUDGE_TIER[intelligence]
 
 const MAX_TASKS = 12
 
@@ -75,11 +82,28 @@ const MAX_TASKS = 12
 // launch and pairs it with `remaining`.
 const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Workflow launch result'
 
+// The launch arguments, echoed into every coverage block this workflow returns.
+//
+// A resume by scriptPath + resumeFromRunId runs the script with whatever args that call
+// passes, and a caller who passes none gets a script with no question: it hits the blank
+// guard, returns a coverage-honest empty result in a few milliseconds, and the interrupted
+// run's cached agents become unreachable — the resume is spent and nothing is recovered.
+// Field-observed 2026-08-27. The args are not secret and not large, so the fix is to make
+// them travel with the thing a caller reads when deciding how to resume, instead of living
+// only in a launch result the session may no longer have.
+const LAUNCH_ARGS = { question, roots, notes, as_tasks: asTasks, intelligence }
+
+const RESUME_NOTE = 'a resume must re-pass `args` alongside resumeFromRunId — the script is ' +
+  're-executed and reads nothing from the prior run; `args` here is that object'
+
+const resumable = (remaining) => ({ runId: RUN_ID, remaining, args: LAUNCH_ARGS, note: RESUME_NOTE })
+const carryArgs = (block) => ({ ...(block || { runId: RUN_ID, remaining: [] }), args: LAUNCH_ARGS, note: RESUME_NOTE })
+
 // The parameter is named `coverageBlock` so the key can be written out as `coverage:` without
 // reading as a redundant `coverage: coverage`. Style only, matching `vfa-survey` — the
 // `coverage-block` rule understands ES shorthand, so `{ …, coverage }` would lint clean too.
-function investigateResult(mode, tasks, report, coverageBlock) {
-  return { question, mode, tasks, report, coverage: coverageBlock }
+function investigateResult(mode, tasks, report, coverageBlock, evidence = null) {
+  return { question, mode, tasks, report, evidence, coverage: coverageBlock }
 }
 
 if (!question) {
@@ -89,7 +113,7 @@ if (!question) {
     incomplete: [],
     failed_channels: [],
     unreached: ['no question was supplied, so nothing was investigated'],
-    resumable: { runId: RUN_ID, remaining: [] },
+    resumable: resumable([]),
   })
 }
 
@@ -133,7 +157,7 @@ if (surveyUnresolved) {
       '"vfa-survey" — a broken reference in this plugin, not an environmental failure; ' +
       'nothing was searched',
     ],
-    resumable: { runId: RUN_ID, remaining: [] },
+    resumable: resumable([]),
   })
 }
 
@@ -146,11 +170,14 @@ if (!survey || !survey.coverage) {
     incomplete: [],
     failed_channels: ['survey'],
     unreached: ['vfa-survey returned no coverage block; the evidence phase did not complete'],
-    resumable: { runId: RUN_ID, remaining: [] },
+    resumable: resumable([]),
   })
 }
 
-const c = survey.coverage
+// The survey's own coverage, with this workflow's launch args attached to its resume block.
+// The survey cannot supply them — it never saw them in this shape — and a caller reading
+// `resumable` to decide how to resume is exactly the caller who needs them.
+const c = { ...survey.coverage, resumable: carryArgs(survey.coverage.resumable) }
 
 // ---------------------------------------------------------------- 2. synthesize
 
@@ -185,6 +212,18 @@ const evidence =
   (survey.docs ? `EXTERNAL DOCUMENTATION:\n${survey.docs}\n\n` : '') +
   caveats
 
+// What the survey established, handed back when synthesis dies.
+//
+// Synthesis is one agent at the end of a phase that may have cost several hundred thousand
+// tokens, and its death used to return coverage arrays and nothing else — the verdicts, the
+// history and the docs died inside the script. The session can hand-synthesize from these,
+// or retry synthesis alone; either beats re-buying the survey to recover work already done.
+const gathered = () => ({
+  verdicts: survey.verdicts || [],
+  history: survey.history || '',
+  docs: survey.docs || '',
+})
+
 if (asTasks) {
   const result = await agent(
     `Turn this investigation into an ordered task list.\n\n` +
@@ -209,7 +248,7 @@ if (asTasks) {
       failed_channels: c.failed_channels.concat(['synthesis']),
       unreached: c.unreached.concat(['synthesis failed; the evidence was gathered but not turned into tasks']),
       resumable: c.resumable,
-    })
+    }, gathered())
   }
 
   // The schema cannot cap array length, so enforce it here.
@@ -256,7 +295,7 @@ if (!report) {
     failed_channels: c.failed_channels.concat(['synthesis']),
     unreached: c.unreached.concat(['synthesis failed; the evidence was gathered but not written up']),
     resumable: c.resumable,
-  })
+  }, gathered())
 }
 
 return investigateResult('report', null, report, c)

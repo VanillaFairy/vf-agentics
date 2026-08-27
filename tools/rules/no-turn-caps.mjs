@@ -12,7 +12,10 @@
 // resume-escalation threshold". Field use showed what that tolerance costs: a survey topic
 // bigger than the counter ends undersurveyed, and every later, far more expensive stage is
 // built on the hole. The loops are progress-gated now, and nothing counter-shaped remains
-// to tolerate.
+// to tolerate — so `rounds` is caught alongside turns and tool calls. Leaving it out left
+// the door open for the exact regression the paragraph above describes: reintroduced as
+// `max_rounds` it would end a search undersurveyed while lint stayed green and CLAUDE.md
+// went on claiming §1 was enforced.
 
 export const id = 'no-turn-caps'
 
@@ -21,8 +24,8 @@ export const id = 'no-turn-caps'
 // the most damaging place one can appear — every dispatch of that agent inherits it.
 export const applies = /(\.workflow\.js|SKILL\.md|agents\/[^/]+\.md)$/
 
-/** Option-shaped caps. `rounds` is absent on purpose — see the header. */
-const CAP_IDENTIFIER = /\bmax_?(turns|tool_?calls)\b/gi
+/** Option-shaped caps, `rounds` among them — see the header. */
+const CAP_IDENTIFIER = /\bmax_?(turns|tool_?calls|rounds)\b/gi
 
 /** A stop verb bound to a countable EFFORT unit. Content units are not effort. */
 const CAP_PROSE = /\b(?:stop|halt|give up|abort)\s+(?:after|at)\s+\d+\s+(?:tool\s*calls?|turns?|iterations?)\b/gi

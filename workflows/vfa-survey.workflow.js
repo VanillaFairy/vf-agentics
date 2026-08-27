@@ -1,7 +1,7 @@
 export const meta = {
   name: 'vfa-survey',
   description: 'Gather evidence about a question across the local repos, git history, and vendor documentation. Returns structured findings plus a coverage block — never a conclusion.',
-  whenToUse: 'The shared evidence phase for investigate, diagnose, develop and ue-develop. Call it via workflow("vfa-survey", args) as a nested step; it is rarely invoked directly.',
+  whenToUse: 'The shared evidence phase for investigate, develop, find-existing-solutions and design. Call it via workflow("vfa-survey", args) as a nested step; it is rarely invoked directly.',
   phases: [
     { title: 'Plan' },
     { title: 'Scout' },
@@ -211,21 +211,23 @@ const VERDICT = {
 // ---------------------------------------------------------------- inputs
 
 const input = typeof args === 'string' ? { question: args } : (args || {})
-const question = input.question || ''
+// Trimmed: the blank-question guard below tests truthiness, and a question of spaces is
+// truthy — it would buy a judge-tier planner call before dying at the zero-topics exit.
+const question = (input.question || '').trim()
 const roots = input.roots || '.'
 const notes = input.notes || ''
 const maxTopics = input.max_topics || 8
 
-// The intelligence dial. `normal` inherits each agent's frontmatter model; `max` overrides
-// the judging tier to fable and `low` drops it to sonnet. Spreading {} rather than passing
-// model: undefined keeps the frontmatter default authoritative.
+// The intelligence dial. Three positions, each naming the judging tier rather than inheriting
+// it: `low` is sonnet, `normal` is opus, `max` is fable. The judging tier in this workflow is
+// the analysts — the one that plans the topics and the ones that rule on them.
 //
-// The judging tier in this workflow is the analysts — the one that plans the topics and the
-// ones that rule on them. `develop` forwards its own dial into this nested call, so a run
-// dialled to `low` reaches its analysis through this line and nowhere else; a tier this
-// script did not recognise would be served as `normal` in silence, and the caller would
-// report a cheap tier while paying the normal one.
-const JUDGE_TIER = { low: { model: 'sonnet' }, normal: {}, max: { model: 'fable' } }
+// Every caller derives the position from the model it is running (fable → max, opus → normal,
+// sonnet and below → low), and `develop` forwards its own dial into this nested call, so a run
+// dialled to `low` reaches its analysis through this line and nowhere else. A position this
+// script did not recognise is served as `normal`: dispatching at one tier while the caller
+// reports the one it typed bills a run at one price and describes it at another.
+const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: { model: 'fable' } }
 const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
 const judge = JUDGE_TIER[intelligence]
 
@@ -241,6 +243,16 @@ const judge = JUDGE_TIER[intelligence]
 // launch and pairs it with `remaining`.
 const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Workflow launch result'
 
+// The launch arguments, echoed into every coverage block. A resume re-executes this script
+// and reads nothing from the prior run, so a caller who resumes without re-passing them gets
+// a survey with no question: it returns a coverage-honest empty result in milliseconds and
+// the interrupted run's cached agents become unreachable. Field-observed 2026-08-27. They
+// travel with the block a caller actually reads when deciding how to resume.
+const LAUNCH_ARGS = { question, roots, notes, max_topics: maxTopics, intelligence }
+
+const RESUME_NOTE = 'a resume must re-pass `args` alongside resumeFromRunId — the script is ' +
+  're-executed and reads nothing from the prior run; `args` here is that object'
+
 function coverageOf(dropped, incomplete, failedChannels, unreached) {
   return {
     complete:
@@ -252,7 +264,8 @@ function coverageOf(dropped, incomplete, failedChannels, unreached) {
     incomplete,
     failed_channels: failedChannels,
     unreached,
-    resumable: { runId: RUN_ID, remaining: dropped.concat(incomplete) },
+    resumable: { runId: RUN_ID, remaining: dropped.concat(incomplete),
+                 args: LAUNCH_ARGS, note: RESUME_NOTE },
   }
 }
 
@@ -350,9 +363,15 @@ log(`Plan: ${plan.topics.length} topic(s)` +
 // round gained new ground. Progress is judged on evidence actually gained, never on the
 // agent's account of itself: a round that re-treads old ground while naming the same
 // remainder would otherwise be resumed forever.
+// A remainder, normalized for comparison. Whitespace and case only: two roundsly-worded
+// descriptions of the same unreached surface are the same surface, and the question here is
+// whether the search advanced, not how it was phrased.
+const remainderKey = (text) => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase()
+
 async function resumeToExhaustion({ key, prompt, launch, absorb }) {
   let round = 0
   let prev = null
+  let prevRemainder = null
   while (true) {
     round++
     let found
@@ -383,8 +402,23 @@ async function resumeToExhaustion({ key, prompt, launch, absorb }) {
       return { exhausted: false, notReached: `search stopped as "${reason}" without naming what was missed` }
     }
 
-    if (!progressed) {
-      log(`${key}: round ${round} covered no new ground — stopping as stuck rather than looping.`)
+    // Two independent ways a round can advance: it brought back evidence nobody had, or it
+    // narrowed the surface still to cover. Neither means the round achieved nothing, whatever
+    // it says about itself.
+    //
+    // The remainder half is what closes the paraphrase loop. `absorb` used to judge progress
+    // by counting new `searched` lines, and an agent obediently told not to repeat itself
+    // rewords its account of the same ground every round — new lines, no new knowledge, the
+    // same remainder, forever. That is not a search that needs more time; it is a search that
+    // has stopped moving, and left alone it runs until something outside the workflow kills
+    // it, which in the field means a usage limit taking every parallel agent with it.
+    const remainder = remainderKey(found.not_reached)
+    const narrowed = prevRemainder === null || remainder !== prevRemainder
+    prevRemainder = remainder
+
+    if (!progressed && !narrowed) {
+      log(`${key}: round ${round} brought back nothing new and left the same ground unreached — ` +
+        `stopping as stuck rather than looping.`)
       return { exhausted: false, notReached: found.not_reached }
     }
 
@@ -437,18 +471,27 @@ async function channelToExhaustion({ key, first, launch }) {
   const searched = []
   const noMatch = []
   const seen = new Set()
+  const seenFindings = new Set()
   let sawResult = false
 
+  // Returns whether the round brought back EVIDENCE nobody had. Deliberately not "wrote a
+  // line nobody had written": `searched` is an account of where the agent went, and an agent
+  // told not to repeat itself will describe the same ground in fresh words indefinitely. The
+  // accumulator still collects those lines — the resume prompt needs them — but they no
+  // longer testify to progress.
   const absorb = (found) => {
     sawResult = true
-    const before = seen.size
-    if ((found.findings || '').trim()) findings.push(found.findings.trim())
+    let gained = false
+
+    const text = (found.findings || '').trim()
+    if (text && !seenFindings.has(text)) { seenFindings.add(text); findings.push(text); gained = true }
+
     for (const s of found.searched || []) {
       const k = String(s).trim()
       if (k && !seen.has(k)) { seen.add(k); searched.push(s) }
     }
     if ((found.no_match || '').trim()) noMatch.push(found.no_match.trim())
-    return seen.size > before
+    return gained
   }
 
   const prompt = (round, prev) => round === 1
@@ -506,18 +549,22 @@ async function scoutUntilComplete(topic) {
   const noMatch = []
   const seen = new Set()
 
+  // Progress is HITS, not lines of self-report. A scout told not to repeat itself will keep
+  // producing fresh descriptions of ground it has already covered, and counting those as
+  // progress resumed such a scout forever — see the engine's stuck exit for what that costs.
   const absorb = (found) => {
-    const before = seen.size
+    let gained = false
+
     for (const h of found.hits || []) {
       const k = `hit:${h.path}:${h.line}`
-      if (!seen.has(k)) { seen.add(k); hits.push(h) }
+      if (!seen.has(k)) { seen.add(k); hits.push(h); gained = true }
     }
     for (const s of found.searched || []) {
       const k = `searched:${String(s).trim()}`
       if (String(s).trim() && !seen.has(k)) { seen.add(k); searched.push(s) }
     }
     if ((found.no_match || '').trim()) noMatch.push(found.no_match.trim())
-    return seen.size > before
+    return gained
   }
 
   // The shared ground is searched once, by its own scout, so every other scout is told to

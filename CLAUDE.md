@@ -5,8 +5,8 @@ this plugin defines.
 
 ## What this is
 
-A Claude Code plugin providing workflow-orchestrated design, investigation, diagnosis, and
-development over a generic codebase. Its runtime artifacts are declarative — agent markdown,
+A Claude Code plugin providing workflow-orchestrated design, investigation, and development
+over a generic codebase. Its runtime artifacts are declarative — agent markdown,
 workflow JS, `SKILL.md` — and are validated in three layers: `tools/lint.mjs` judges form, the
 scenario harness (`test/harness/workflow-host.mjs`) executes the workflows' orchestration
 arithmetic with scripted agents, and `test/verbatim-blocks.test.mjs` diffs every contract that
@@ -117,6 +117,27 @@ stale number is still what the marketplace reports to `claude plugin list --avai
 update tooling, so everything *reads* like a version nobody is actually running. Verify with:
 
     claude plugin validate ..
+
+## Standing requirements
+
+Stated by the user 2026-08-27; every proposed improvement to this plugin must serve at least
+one. Full rubric and the review that scored against it: `docs/2026-08-27-scenario-catalogue.md`,
+`docs/2026-08-27-adversarial-review.md`, `docs/2026-08-27-actionable-summary.md`.
+
+1. **Configurable intelligence per task.** Intelligence level is balanced and configurable at
+   task granularity — not one dial for the whole run.
+2. **Completion is mandatory.** If a task is set, it must be done, regardless of cost. This is
+   §0 below, mechanically enforced by the rules in the table that follows it.
+3. **Minimize cost within the chosen level.** Given the selected intelligence level, any
+   available cost reduction must be taken. Cheap where cheap suffices.
+4. **Judge the effort's shape.** Development tasks differ: some need strict red-green-refactor
+   TDD, some are simple tasks, some are in between. The system must judge which shape a piece
+   of work needs. Applies mostly to work orders.
+5. **Maximum resumability.** Detect early when a session limit is likely to be hit — never
+   start lengthy work that is doomed to be killed; split it into smaller steps. See
+   `docs/superpowers/specs/2026-08-27-increment-9-contracts.md` for the current resume design.
+6. **Deterministic → script.** If something is deterministic, it must be done as a script, not
+   a model. Model calls are reserved for judgment.
 
 ---
 
