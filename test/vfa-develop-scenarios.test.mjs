@@ -1060,6 +1060,97 @@ test('`normal` names opus rather than inheriting it', async () => {
   assert.equal(modelOf('code:W1'), undefined, 'the coder is not on this table at any position')
 })
 
+// ------------------------------------------------- the dial, per order
+//
+// One dial for a whole run prices a ten-order plan as though its orders were the same work.
+// `weight` moves an order DOWN from the run's ceiling, and a structural floor holds red and
+// contract orders up regardless of the dial. Both are only real where they reach an
+// `opts.model`, so that is what these read.
+
+test('a red order implements at opus even when the dial says sonnet', async () => {
+  // The tiering doc states this as an ALWAYS and never waived it. A red order pins the
+  // acceptance criteria in failing tests; the green coder is fenced to those criteria and
+  // implements a wrong reading faithfully; the reviewer is fenced to the same criteria and
+  // has no standing to object. Nothing downstream can catch it.
+  const red = order('R1', { role: 'red', locus: ['test/widget.test.js'] })
+  const green = order('G1', { role: 'green', locus: ['src/widget.js'], deps: ['R1'] })
+
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'low' },
+    agent: happyAgents({
+      plan: plan([red, green], {
+        partition_raw: JSON.stringify({ waves: [['R1'], ['G1']], coupled: [] }),
+      }),
+      // A red order's suite is REQUIRED to fail; the ordinary verdict would spiral it.
+      'verify:R1': verified({ suite: 'failed', discriminator: [
+        { test_id: 'test/widget.test.js', failed_on_base: true, passes_now: false },
+      ] }),
+    }),
+  })
+
+  const modelOf = (label) => (prompts.find((p) => p.opts.label === label) || { opts: {} }).opts.model
+
+  assert.equal(modelOf('code:R1'), 'opus', 'the floor holds under the dial')
+
+  // The green order is deliberately NOT floored. Its defects are the catchable kind — the
+  // tests the red order pinned either pass or they do not — where a wrong red pin is
+  // uncatchable by construction. The floor is about what nothing downstream can see.
+  assert.equal(modelOf('code:G1'), undefined)
+})
+
+test('a contract order implements at opus, where an ordinary one inherits', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'normal' },
+    agent: happyAgents({ plan: plan([order('W1', { contract: true }), order('W2')]) }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  // An ambiguity in a contract propagates into every consumer, which is the same
+  // uncatchable-downstream shape the red floor exists for.
+  assert.equal(modelOf('code:W1'), 'opus')
+  assert.equal(modelOf('code:W2'), undefined, 'an ordinary order keeps its frontmatter model')
+})
+
+test('a light order is reviewed by the cheap reader, on a max run', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'max' },
+    agent: happyAgents({
+      plan: plan([order('W1', { weight: 'light' }), order('W2', { weight: 'heavy' })]),
+    }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+
+  assert.equal(modelOf('review:W1#1'), 'sonnet', 'a rename does not need the most expensive reader')
+  assert.equal(modelOf('review:W2#1'), 'fable', 'the hard order still gets the run/s ceiling')
+  assert.equal(modelOf('code:W1'), 'sonnet', 'and it is implemented cheaply too')
+  assert.equal(modelOf('code:W2'), 'opus')
+})
+
+test('weight never buys above the run dial — the ceiling is the user/s', async () => {
+  // The planner is an agent the session dispatched. Letting it raise the tier would be the
+  // same self-upgrade the derivation rule forbids the session, arriving by proxy.
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'low' },
+    agent: happyAgents({ plan: plan([order('W1', { weight: 'heavy' })]) }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+  assert.equal(modelOf('review:W1#1'), 'sonnet', 'heavy cannot climb past a low dial')
+})
+
+test('a weight nobody set is standard, so an old plan resumes unchanged', async () => {
+  const { prompts } = await run({
+    args: { ...ARGS, intelligence: 'normal' },
+    agent: happyAgents({ plan: plan([order('W1', { weight: undefined })]) }),
+  })
+
+  const modelOf = (label) => prompts.find((p) => p.opts.label === label).opts.model
+  assert.equal(modelOf('review:W1#1'), 'opus')
+  assert.equal(modelOf('code:W1'), undefined)
+})
+
 test('a tier nobody defined is served as `normal`, not as itself', async () => {
   // The dial is a closed set of three. A typo that fell through would dispatch at some other
   // tier while every log and every envelope read back the tier the user typed.

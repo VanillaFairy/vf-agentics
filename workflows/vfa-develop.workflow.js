@@ -32,8 +32,8 @@ export const meta = {
 // against a different contract than a fresh one.
 const WORK_ORDER_ITEM = {
       type: 'object', additionalProperties: false,
-      required: ['id', 'title', 'role', 'locus', 'reads', 'acceptance', 'context', 'deps',
-                 'contract'],
+      required: ['id', 'title', 'role', 'weight', 'locus', 'reads', 'acceptance', 'context',
+                 'deps', 'contract'],
       properties: {
         id: { type: 'string' },        // 'W1', 'W2', ... unique within the run
         title: { type: 'string' },     // imperative, passes the AND test
@@ -43,6 +43,14 @@ const WORK_ORDER_ITEM = {
         // field whose absence nobody notices, and here that silently restores the ordinary
         // verdict to an order whose whole point is that the ordinary verdict is wrong.
         role: { type: 'string', enum: ['none', 'red', 'green', 'refactor'] },
+        // How much reading this order takes, as the planner judges it. It buys a model tier
+        // UNDER the run's dial and never above it — see `judgeFor` / `coderFor`.
+        //
+        // Required for the same reason `role` is: an absent field is a field whose absence
+        // nobody notices, and here it would silently price a trivial order at the run's
+        // ceiling for the life of the plan. Normalized to 'standard' on read all the same,
+        // so a plan written before this field existed still resumes.
+        weight: { type: 'string', enum: ['light', 'standard', 'heavy'] },
         locus: { type: 'array', items: { type: 'string' } },  // EVERY file it may create/modify, repo-relative POSIX
         // Files this order BUILDS AGAINST and never writes — the types it calls, the module
         // its context describes, the interface it implements. Never a write permission: the
@@ -682,6 +690,64 @@ function applyIntelligence(value) {
 
 applyIntelligence(input.intelligence)
 
+// ------------------------------------------------------- the dial, per order
+//
+// One dial for a whole run prices a ten-order plan as though its orders were the same work.
+// They are not: a run mixing one contract-critical order with five trivial ones either buys
+// top-tier judgment for all six or cheap judgment for all six, and both are wrong. What the
+// dial is FOR is the ceiling — how much the user is willing to spend, derived from the model
+// their session runs and never chosen by the session itself. Where an order lands *under*
+// that ceiling is a property of the order, and the planner is the one that knows it.
+//
+// So: the run dial is a ceiling nothing may exceed, and `weight` moves an order down from it.
+// Downward only, deliberately. An upward move would let the planner buy a tier the user did
+// not authorize — the same self-upgrade the derivation rule forbids a session, arriving by
+// proxy through an agent the session dispatched.
+
+const MODEL_RANK = { sonnet: 1, opus: 2, fable: 3 }
+const rankOf = (model) => MODEL_RANK[model] || 0
+const higherOf = (a, b) => (rankOf(a) >= rankOf(b) ? a : b)
+const lowerOf = (a, b) => (rankOf(a) <= rankOf(b) ? a : b)
+
+const WEIGHTS = new Set(['light', 'standard', 'heavy'])
+const weightOf = (order) => (WEIGHTS.has(order && order.weight) ? order.weight : 'standard')
+
+/**
+ * Which model reviews and re-plans this order.
+ *
+ * `light` drops to sonnet; everything else sits at the run's ceiling. A trivial order does not
+ * stop being reviewed — it stops being reviewed by the most expensive reader in the run, which
+ * is where a mixed plan's judging cost actually goes.
+ */
+function judgeFor(order) {
+  return weightOf(order) === 'light'
+    ? { model: lowerOf(JUDGE_TIER[intelligence].model, 'sonnet') }
+    : judge
+}
+
+/**
+ * Which model implements this order.
+ *
+ * A floor sits under the dial here, and it is not a per-order preference: `red` and `contract`
+ * orders implement at opus at EVERY dial position, which `docs/2026-08-17-intelligence-
+ * tiering.md` §6.3 states as an ALWAYS and §7 never waived. The reason is that their defects
+ * are the ones nothing downstream can catch. A red order pins the acceptance criteria in
+ * failing tests; the green coder is fenced to those criteria and implements a wrong reading
+ * faithfully; the reviewer is fenced to the same criteria and has no standing to object. The
+ * defect surfaces at the integration review or the human gate — the expensive end — where a
+ * contract order's defect surfaces in every order built against it.
+ *
+ * `light` still drops to sonnet, but never through the floor: a red order is never light.
+ */
+function coderFor(order) {
+  const structural = order && (order.role === 'red' || order.contract === true)
+  const base = coderTier.model || 'sonnet'
+
+  if (structural) return { model: higherOf(base, 'opus') }
+  if (weightOf(order) === 'light') return { model: lowerOf(base, 'sonnet') }
+  return coderTier
+}
+
 // ------------------------------------------------------------- the plugin root
 //
 // The planner and the verifier each run a CLI that lives under THIS plugin's lib/, while
@@ -1126,6 +1192,21 @@ function plannerPrompt(surveyEvidence) {
     `note, shared type definitions, an interface. An ambiguity in a contract propagates ` +
     `into every consumer, so majors block a contract order downstream the way criticals ` +
     `block any other.\n\n` +
+    `Set weight on every order. It says how much READING the order takes — how much of the ` +
+    `codebase somebody has to hold in their head to get it right — and it buys the model ` +
+    `tier that implements and reviews it:\n\n` +
+    `   'light'    — mechanical and local. A rename, a config value, a delegation to something ` +
+    `that already exists, a doc line. Someone who has seen only this order's locus can do it ` +
+    `and can check it.\n` +
+    `   'standard' — the default. Ordinary work inside a described context.\n` +
+    `   'heavy'    — the reading is the work: subtle invariants, concurrency, a migration whose ` +
+    `failure mode is silent, anything where the obvious implementation is the wrong one.\n\n` +
+    `Judge the order, not its importance. Every order in the plan matters or it would not be ` +
+    `in the plan; weight asks something narrower — whether getting this one right needs a ` +
+    `strong reader. Marking everything heavy spends the user's budget on orders that did not ` +
+    `need it and is the same as marking nothing. Marking a subtle order light is the more ` +
+    `expensive mistake: it buys a cheap implementation and a cheap review of it, and the two ` +
+    `agree.\n\n` +
     `Compare the survey's coverage gaps against what the change itself names or leans on. ` +
     `A gap the change explicitly depends on goes in blocking_gaps — one entry per gap: the ` +
     `gap, then what depends on it. A non-empty blocking_gaps makes the workflow withhold ` +
@@ -2250,7 +2331,7 @@ async function verifyUntilGreen(wo, state, trail) {
     const fixCall = await dispatch(wo, state, trail, 'the verify fix round for ' + wo.id, failures,
       () => agent(coderFixPrompt(wo, state, verifyFixInstruction(failures)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
-        phase: 'Verify', label: `fix:${wo.id}`, ...coderTier,
+        phase: 'Verify', label: `fix:${wo.id}`, ...coderFor(wo),
       }), coherentCoder)
     if (fixCall.escalation) return fixCall.escalation
 
@@ -2308,7 +2389,7 @@ async function reviewLoop(wo, state, trail) {
       openBlockers,
       () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorBlockers, round), {
         agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
-        phase: 'Review', label: `review:${wo.id}#${round}`, ...judge,
+        phase: 'Review', label: `review:${wo.id}#${round}`, ...judgeFor(wo),
       }))
     if (call.escalation) return call.escalation
 
@@ -2372,7 +2453,7 @@ async function reviewLoop(wo, state, trail) {
     const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, open,
       () => agent(coderFixPrompt(wo, state, reviewFixInstruction(open)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
-        phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderTier,
+        phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderFor(wo),
       }), coherentCoder)
     if (fixCall.escalation) return fixCall.escalation
 
@@ -2472,7 +2553,7 @@ async function implement(wo) {
         const call = await dispatch(wo, state, trail, 'the continuation coder for ' + wo.id, [],
           () => agent(coderContinuePrompt(wo, found), {
             agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
-            phase: 'Implement', label: `continue:${wo.id}`, ...coderTier,
+            phase: 'Implement', label: `continue:${wo.id}`, ...coderFor(wo),
           }), coherentContinuation)
 
         if (call.escalation) return { wo, state, trail, escalation: call.escalation }
@@ -2510,7 +2591,7 @@ async function implement(wo) {
     const call = await dispatch(wo, state, trail, 'the coder for ' + wo.id, [],
       () => agent(coderPrompt(wo, orderBranch(wo.id)), {
         agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
-        phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderTier,
+        phase: 'Implement', label: `code:${wo.id}`, isolation: 'worktree', ...coderFor(wo),
       }), coherentNewSeries)
     if (call.escalation) return { wo, state, trail, escalation: call.escalation }
 
