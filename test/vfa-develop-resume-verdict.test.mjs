@@ -33,7 +33,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
-import { resumeVerdict } from './harness/resume-fixture.mjs'
+import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 
 const resumeLoad = resumeVerdict
 
@@ -114,10 +114,10 @@ const cast = (over = {}) => scriptedAgents({
   ...over,
 })
 
-const resumed = (over) => runWorkflow(WF, {
+const resumed = (over, fixture) => runWorkflow(WF, {
   args: { ...ARGS, resume_path: RUN_DIR },
   workflow: () => { throw new Error('a resume never surveys') },
-  agent: cast(over),
+  agent: fixture ? cast({ ...resumeLoad(loaded(fixture)), ...over }) : cast(over),
 })
 
 /**
@@ -283,3 +283,77 @@ test('a wrong change halts on the verdict alone — nothing is dispatched for fe
       'building the wrong plan is the spend the early comparison withholds')
     assert.equal(result.coverage.complete, false)
   })
+
+// --- continuing a series nobody reported finishing ------------------------------------------
+//
+// The rung between "adopt these commits and measure them" and "build this order from scratch".
+// Git shows commits on a branch whether the coder finished or was killed mid-series, and only
+// the coder knows which — so it now says so, and the absence of that line means something.
+
+const C40 = 'c'.repeat(40)
+
+/** W2's branch holds commits; some OTHER order recorded a coder-done, so this run speaks it. */
+const halfBuilt = (over = {}) => ({
+  journal_raw: JSON.stringify({
+    kind: 'coder-done', seq: 4, order: 'W1', head_sha: M40,
+    commits: [{ sha: M40, subject: 'feat: w1' }],
+  }),
+  git: gitFacts([{
+    id: 'W2', branch: 'vfa/20260819-062330-W2', head_sha: C40, base_sha: M40,
+    commits: [{ sha: C40, subject: 'feat: w2, partly' }],
+    worktree: 'C:/wt/w2', dirty: [], already_merged: false,
+  }]),
+  ...over,
+})
+
+test('an unfinished series is continued from its last commit, never rebuilt', async () => {
+  const { prompts } = await resumed({
+    'continue:W2': {
+      status: 'done', worktree: 'C:/wt/w2', branch: 'vfa/20260819-062330-W2',
+      base_sha: M40, head_sha: B40,
+      commits: [{ sha: C40, subject: 'feat: w2, partly' }, { sha: B40, subject: 'feat: w2, rest' }],
+      concerns: [], discovered: [], summary: 'carried on',
+    },
+  }, halfBuilt())
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'code:W2'),
+    'rebuilding over commits that are already there pays for that work twice')
+
+  const carry = prompts.find((p) => p.opts.label === 'continue:W2')
+  assert.ok(carry, 'the continuation coder is dispatched instead')
+  assert.match(carry.prompt, /CONTINUE an unfinished commit series/)
+  assert.match(carry.prompt, /do not amend, do not rebase, do not squash/)
+  assert.ok(carry.prompt.includes(C40), 'it is shown the commits it is continuing from')
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'and the finished series is measured like any other — adoption is never trust')
+})
+
+test('a continuation that finds nothing left to add is a real answer, not an escalation', async () => {
+  // `done` with no NEW commits means opposite things for a fresh series and a continued one:
+  // nothing was implemented, versus the series was already complete. The two results look
+  // identical, so escalating the honest one would throw away a finished order.
+  const { result, prompts } = await resumed({
+    'continue:W2': {
+      status: 'done', worktree: 'C:/wt/w2', branch: 'vfa/20260819-062330-W2',
+      base_sha: M40, head_sha: C40, commits: [], concerns: [],
+      discovered: [], summary: 'the series was already complete against every criterion',
+    },
+  }, halfBuilt())
+
+  assert.equal(result.escalations.length, 0,
+    'an honest "there was nothing left to do" must not be read as "I did nothing"')
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'it still goes through verification — the caller measures, it does not take the word')
+  assert.deepEqual(result.integration.merged, ['W2'])
+})
+
+test('a legacy run — commits, and no coder-done anywhere — is measured, never continued', async () => {
+  // Every run planned before this version has exactly this shape. Reading the absence as "the
+  // coder died mid-series" would buy a continuation round at every adopted series in every one
+  // of them, and invite commits nobody asked for.
+  const { prompts } = await resumed({}, halfBuilt({ journal_raw: '' }))
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'continue:W2'))
+  assert.ok(prompts.some((p) => p.opts.label === 'verify:W2'),
+    'the older, safe reading: measure what is on the branch as it stands')
+})

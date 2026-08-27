@@ -604,6 +604,20 @@ function coherentNewSeries(res) {
   return coherentCoder(res)
 }
 
+// A CONTINUATION of a series that already exists. Same checks as any coder result but one, and
+// the exception is the whole reason this function exists: `done` with no commits is a real
+// answer here. The coder was sent at a branch that already carries work, and "the series was
+// already complete against every criterion, so I added nothing" is exactly what it should say
+// when that is true. For a fresh series the same shape means nothing was implemented at all,
+// which is why `coherentCoder` treats it as incoherent — the two look identical and mean
+// opposite things, and escalating the honest one would throw away a finished order.
+function coherentContinuation(res) {
+  const commits = res.commits || []
+  if (commits.some((c) => !SHA_RE.test(c.sha || ''))) return 'a commit sha is not a git sha'
+  if (commits.length > 0 && !res.head_sha) return 'commits landed but head_sha is empty'
+  return null
+}
+
 function coherentVerify(v) {
   if (v.stop_reason === 'completed' && !(v.notes || '').trim()) {
     return 'completed with empty notes — the commands run must be named'
@@ -2488,7 +2502,7 @@ async function implement(wo) {
           () => agent(coderContinuePrompt(wo, found), {
             agentType: 'vf-agentics:coder', effort: 'high', schema: CODER_RESULT,
             phase: 'Implement', label: `continue:${wo.id}`, ...coderTier,
-          }), coherentCoder)
+          }), coherentContinuation)
 
         if (call.escalation) return { wo, state, trail, escalation: call.escalation }
 
