@@ -1705,10 +1705,16 @@ function mergePrompt(entry) {
     `CURRENT INTEGRATION HEAD: ${integration.head_sha}\n\n` +
     `BRANCH TO MERGE: ${entry.branch}   (work order ${entry.id})\n` +
     `ITS HEAD: ${entry.head_sha}\n\n` +
-    `Run git merge --no-ff ${entry.branch} and report the four fields your charter names. ` +
-    `Report merged_sha as the sha the merge actually produced, read back with git rev-parse ` +
-    `HEAD — the caller advances the integration head to it, and every later wave is built on ` +
-    `whatever you put there.\n\n` +
+    `Run EXACTLY this, and nothing else that writes:\n\n` +
+    `   node "${pluginRoot}/lib/merge.mjs" "${integration.worktree}" ${entry.branch} ` +
+    `--expect-head ${integration.head_sha}\n\n` +
+    rootWarning +
+    `\nIt performs the merge, reads the resulting head back, and on any conflict aborts the ` +
+    `merge itself and names the conflicting paths. Report merged_sha as the \`merged_sha\` in ` +
+    `its payload and the conflicting paths as its \`conflicts\` — copied, not retyped from ` +
+    `anything you observed yourself.\n\n` +
+    `Do not run git merge by hand, and do not "check" the result by editing anything. If the ` +
+    `payload says ok:false, the merge did not happen: report the conflicts and stop.\n\n` +
     journalSection(
       `ONLY after a merge that actually completed, and using the sha you read back — not the ` +
       `one you expected. A merge is durable in git the instant it happens while the wave line ` +
@@ -1720,10 +1726,13 @@ function mergePrompt(entry) {
       `"worktree":"","base_sha":"${integration.head_sha}","head_sha":"<the sha you read back>",` +
       `"stop_reason":"completed","build":"","suite":"","failing_tests":[],` +
       `"discriminator":[],"series_findings":[]}`) +
-    `NEVER resolve a conflict. The loci in a wave were declared pairwise disjoint, so a ` +
-    `conflict means the plan's independence declaration was wrong — that is a planner defect ` +
-    `a human needs to see, not a merge for you to negotiate. Report the conflicting paths ` +
-    `verbatim and stop.`
+    `NEVER resolve a conflict, and never re-run the merge to "get past" one. The loci in a ` +
+    `wave were declared pairwise disjoint, so a conflict means the plan's independence ` +
+    `declaration was wrong — that is a planner defect a human needs to see, not a merge for ` +
+    `you to negotiate. The script has already aborted it; your job is to report what it said.\n\n` +
+    `This is the point in the pipeline where being helpful is most expensive. A resolved ` +
+    `conflict produces a real sha, builds cleanly, and every later wave is built on a merge ` +
+    `nobody reviewed and nobody knows happened.`
 }
 
 function waveVerifyPrompt(waveNumber) {
