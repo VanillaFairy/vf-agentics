@@ -487,17 +487,42 @@ function fnv1a(text) {
 
 const SHA_RE = /^[0-9a-f]{7,40}$/i
 
-function coherentCoder(res) {
-  const finished = res.status === 'done' || res.status === 'done_with_concerns'
+/**
+ * A coder result answering a FIX round — a series that already exists and has been measured.
+ *
+ * `done` with no commits is a real answer here, and it is the one difference from
+ * `coherentCoder` below. A fix round is dispatched with findings attached, and a coder that
+ * reads them, finds nothing in its own locus to change, and says so is being honest: the round
+ * was asked for on evidence the coder can see is not about its work. Treating that as an
+ * IMPOSSIBLE result routes it to `incoherent_result`, which tells a human nothing and throws
+ * away the coder's actual message.
+ *
+ * The field cost of getting this wrong: run 20260829-140744 escalated five orders as
+ * `incoherent_result` when every one of their coders had correctly reported that the failing
+ * tests belonged to other orders. The tree state that produced those findings is fixed
+ * elsewhere — a red no longer merges without its green — and this is the second line of
+ * defence: whatever else goes wrong, a coder telling the truth is never the incoherent party.
+ * `noProgress` still ends the loop; it just ends it saying what actually happened.
+ */
+function coherentFix(res) {
   const commits = res.commits || []
 
-  if (finished && commits.length === 0) return 'status ' + res.status + ' with no commits'
   if (commits.some((c) => !SHA_RE.test(c.sha || ''))) return 'a commit sha is not a git sha'
   if (commits.length > 0 && !res.head_sha) return 'commits landed but head_sha is empty'
   if (commits.length > 0 && res.head_sha === res.base_sha) {
     return 'commits landed but head_sha still equals base_sha'
   }
   return null
+}
+
+function coherentCoder(res) {
+  const finished = res.status === 'done' || res.status === 'done_with_concerns'
+
+  // For a FRESH series this shape means nothing was implemented at all, whatever it says.
+  if (finished && (res.commits || []).length === 0) {
+    return 'status ' + res.status + ' with no commits'
+  }
+  return coherentFix(res)
 }
 
 // The initial coder also anchors the worktree and branch every later stage is dispatched
@@ -2441,6 +2466,22 @@ const noProgress = (fix, headBefore) =>
   fix.status === 'blocked' || fix.status === 'needs_context' ||
   (fix.commits || []).length === 0 || fix.head_sha === headBefore
 
+/**
+ * Why a fix round moved nothing, in the words of what it reported.
+ *
+ * A coder that finishes cleanly and commits nothing has said something specific: it read the
+ * findings, looked in its own locus, and there was nothing there to change. That is a different
+ * fact from a coder that churned or gave up, and it usually means the round was opened on
+ * evidence about somebody else's work — so it is the sentence a human most needs on the
+ * escalation. The coder's own summary rides along as the finding's evidence either way.
+ */
+const stalledClaim = (fix, headBefore) =>
+  (fix.status === 'done' || fix.status === 'done_with_concerns') &&
+  (fix.commits || []).length === 0
+    ? 'the coder read the findings and reported nothing in its own locus to change — the ' +
+      'defect it was sent at may belong to another order'
+    : 'a fix round ended at ' + (fix.head_sha || headBefore) + ' with no new commit'
+
 // interfaces §6: a fix verdict is `fixed`, `not_fixed` or `regressed`. The last two both say
 // the defect is still there, and the review loop treats them identically.
 const unfixedVerdict = (v) => v.status === 'not_fixed' || v.status === 'regressed'
@@ -2511,7 +2552,7 @@ async function verifyUntilGreen(wo, state, trail) {
       () => agent(coderFixPrompt(wo, state, verifyFixInstruction(failures)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
         phase: 'Verify', label: `fix:${wo.id}`, ...coderFor(wo),
-      }), coherentCoder)
+      }), coherentFix)
     if (fixCall.escalation) return fixCall.escalation
 
     const fix = fixCall.value
@@ -2520,8 +2561,7 @@ async function verifyUntilGreen(wo, state, trail) {
       log(`ESCALATION ${wo.id}: a verify fix round landed no new commit.`)
       return esc(wo, 'verify_failed_repeatedly',
         failures.concat([runtimeFinding(wo.id + '-stalled',
-          'a verify fix round ended at ' + (fix.head_sha || headBefore) + ' with no new commit',
-          fix.summary || '')]),
+          stalledClaim(fix, headBefore), fix.summary || '')]),
         trail, state)
     }
 
@@ -2645,7 +2685,7 @@ async function reviewLoop(wo, state, trail) {
       () => agent(coderFixPrompt(wo, state, reviewFixInstruction(open)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
         phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderFor(wo),
-      }), coherentCoder)
+      }), coherentFix)
     if (fixCall.escalation) return fixCall.escalation
 
     const fix = fixCall.value
@@ -2656,7 +2696,7 @@ async function reviewLoop(wo, state, trail) {
       log(`ESCALATION ${wo.id}: the fix round landed no new commit against ${open.length} critical(s).`)
       return esc(wo, 'no_fix_progress',
         open.concat([runtimeFinding(wo.id + '-nofix',
-          'the fix round ended at ' + (fix.head_sha || headBefore) + ' with no new commit',
+          stalledClaim(fix, headBefore),
           fix.summary || '')]),
         trail, state)
     }

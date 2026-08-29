@@ -734,6 +734,32 @@ test('a green order is never measured against a sibling pair\'s unimplemented te
   }
 })
 
+test('a coder reporting nothing to fix is escalated for THAT, not as incoherent', async () => {
+  // The second line of defence. Whatever puts a defect that is not this order's in front of a
+  // fix round, the coder that reads it, looks in its own locus and truthfully answers "there is
+  // nothing here to change" must not be the party recorded as impossible. `incoherent_result`
+  // says the RESULT cannot be true of any work; here the result is not only possible, it is
+  // correct, and it carries the one sentence a human needs.
+  //
+  // In the field this arrived the other way round: five orders escalated as incoherent_result
+  // while every coder had correctly reported that the failing tests belonged elsewhere.
+  const { result } = await run({
+    plan: pairPlan([plainOrder('W1')], [['W1']]),
+    'verify:': verifierSaying({
+      'verify:W1': verified({ suite: 'failed', failing_tests: [
+        { file: 'test/somebody-else.test.js', id: 'other > pins something' }] }),
+    }),
+    'fix:': coded({ status: 'done', commits: [], head_sha: B40 }),
+  })
+
+  const esc = result.escalations.find((e) => e.id === 'W1')
+  assert.ok(esc, 'the order still stops — the suite is failing and nothing changed it')
+  assert.notEqual(esc.reason, 'incoherent_result',
+    'the coder answered honestly; the incoherent party is not it')
+  assert.ok(esc.unresolved.some((f) => /nothing in its own locus to change/.test(f.claim || '')),
+    'and the escalation says what the coder actually reported')
+})
+
 test('a red order never reaches the integration head without its green', async () => {
   // The invariant underneath both assertions above, stated directly: whatever order the merges
   // happen in, the integration head never holds a red whose implementation is not there with it.
