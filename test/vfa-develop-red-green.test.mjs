@@ -238,30 +238,107 @@ test('a green order is verified the ordinary way — its tests must pass', async
     'the red tests still failing after the green order is the green order failing')
 })
 
-// --- the knowingly-red integration head -----------------------------------------------------
+// --- the cycle merges as a unit --------------------------------------------------------------
 
-test('a merged head failing only on unimplemented red tests does not stop the line', async () => {
-  const { result } = await run({
+test('a red order is held rather than merged, and lands with its green', async () => {
+  const { result, logs } = await run({
     'verify:': verifierSaying({ 'verify:R1': redVerified() }),
-    'wave-verify:': verifierSaying({
-      'wave-verify:1': verified({
-        discriminator: [], suite: 'failed',
-        failing_tests: [{ file: 'test/widget.test.js', id: 'widget > rejects an empty label' }],
-      }),
-    }),
     'merge:': mergeSequence([M40, N40]),
   })
 
   assert.deepEqual(result.integration.merged, ['R1', 'G1'],
-    'wave 2 must still run: the merged head is red on purpose, not broken')
+    'both are in the integration branch once the pair closes')
   assert.deepEqual(result.escalations, [])
+  assert.ok(logs.some((l) => /HELD R1/.test(l)),
+    'and the hold is stated rather than silent — a wave that merges nothing must say why')
+  assert.deepEqual(result.integration.approved_unmerged, [],
+    'a held order that later lands is no longer approved-and-unmerged')
 })
 
-test('a merged head failing anywhere else stops the line as before', async () => {
-  const { result } = await run({
+test('the green coder is anchored on its red\'s branch, not on the integration head', async () => {
+  const { prompts } = await run({
     'verify:': verifierSaying({ 'verify:R1': redVerified() }),
+    'merge:': mergeSequence([M40, N40]),
+  })
+
+  const green = promptFor(prompts, 'code:G1')
+  assert.match(green, new RegExp('git checkout -B \\S+ ' + B40),
+    'it builds on the head R1 left, which is where the tests it implements actually are')
+  assert.ok(!green.includes(M40),
+    'the integration head is not its base — that tree does not carry its tests')
+})
+
+test('a red whose green never lands is reported unmerged, not merged alone', async () => {
+  // The honest end state when a pair does not close. Merging the red on its own would put a
+  // failing test in the integration branch with nothing to satisfy it, and would leave the
+  // branch unusable for everything downstream.
+  const { result } = await run({
+    'verify:': verifierSaying({
+      'verify:R1': redVerified(),
+      'verify:G1': verified({ suite: 'failed', failing_tests: [
+        { file: 'test/widget.test.js', id: 'widget > rejects an empty label' }] }),
+    }),
+    'fix:': coded({ commits: [], head_sha: A40 }),
+  })
+
+  assert.ok(result.escalations.some((e) => e.id === 'G1'))
+  assert.deepEqual(result.integration.merged, [], 'nothing reached the integration branch')
+  assert.deepEqual(result.integration.approved_unmerged, ['R1'],
+    'R1 is finished work that is deliberately not merged, and a human is told exactly that')
+  assert.equal(result.coverage.complete, false)
+})
+
+// --- the knowingly-red integration head, which only a legacy resume can still produce ---------
+//
+// Before the cycle hold, a red merged on its own and the integration head between waves was
+// red by design. A run PLANNED under that behaviour and resumed under this one still has those
+// merges in its branch — run 20260829-140744 is exactly such a run — so the excuse that lets a
+// pending red's failures past wave verification has to survive for it. What this run will not
+// do is create the state: the two cases below reach it only through a resumed ledger.
+
+const RESUMED = 'C:/repo/.claude/vfa/runs/20260816-143005'
+
+/** A ledger from a pre-hold invocation: R1 merged alone, G1 still to build. */
+const legacyRedMerged = (over = {}) => resumeLoad({
+  stop_reason: 'loaded',
+  plan: pairPlan(),
+  envelope: { change: 'add the widget', roots: '.', caller_notes: '', intelligence: 'normal',
+              base_branch: 'master', base_sha: A40, programme: '', slice: '' },
+  state: [{
+    kind: 'wave', seq: 0, wave: 1, merged: ['R1'], approved_unmerged: [], escalated: [],
+    discovered: [], integration_base: A40, integration_head: M40, order: '', branch: '',
+    worktree: '', head_sha: '',
+  }],
+  notes: 'loaded',
+  ...over,
+})
+
+const runResumed = (over = {}) =>
+  runWorkflow(WF, {
+    args: { ...ARGS, resume_path: RESUMED },
+    workflow: () => ({ coverage: { complete: true, dropped: [], incomplete: [],
+      failed_channels: [], unreached: [], resumable: { runId: 'r', remaining: [] } } }),
+    agent: cast({ ...legacyRedMerged(), ...over }),
+  })
+
+test('a resumed run whose red already merged alone does not stop on its tests', async () => {
+  const { result } = await runResumed({
     'wave-verify:': verifierSaying({
-      'wave-verify:1': verified({
+      'wave-verify:2': verified({
+        discriminator: [], suite: 'failed',
+        failing_tests: [{ file: 'test/widget.test.js', id: 'widget > rejects an empty label' }],
+      }),
+    }),
+  })
+
+  assert.deepEqual(result.escalations, [],
+    'the head is red because a previous invocation merged R1 alone, not because G1 is wrong')
+})
+
+test('a resumed run still stops when the head fails outside the pending red set', async () => {
+  const { result } = await runResumed({
+    'wave-verify:': verifierSaying({
+      'wave-verify:2': verified({
         discriminator: [], suite: 'failed',
         failing_tests: [
           { file: 'test/widget.test.js', id: 'widget > rejects an empty label' },
@@ -272,18 +349,16 @@ test('a merged head failing anywhere else stops the line as before', async () =>
   })
 
   assert.equal(result.integration.merge_stopped_at === null, true)
-  assert.ok(result.deferred.includes('G1'),
+  assert.equal(result.coverage.complete, false,
     'a failure outside the pending red set is the merge breaking something')
-  assert.equal(result.coverage.complete, false)
 })
 
 test('once the green has landed, its red tests are no longer excused', async () => {
-  // Both orders merged. A suite still failing on the red tests now means the implementation
-  // does not satisfy them, which is the defect the pair existed to surface.
+  // Both orders in the branch. A suite still failing on the red tests now means the
+  // implementation does not satisfy them, which is the defect the pair existed to surface.
   const { result } = await run({
     'verify:': verifierSaying({ 'verify:R1': redVerified() }),
     'wave-verify:': verifierSaying({
-      'wave-verify:1': verified({ discriminator: [], suite: 'passed' }),
       'wave-verify:2': verified({
         discriminator: [], suite: 'failed',
         failing_tests: [{ file: 'test/widget.test.js', id: 'widget > rejects an empty label' }],
@@ -523,4 +598,153 @@ test('an ordinary order keeps the original charge', async () => {
   })
 
   assert.match(promptFor(prompts, 'review:W1#1'), /wrote its tests/)
+})
+
+// --- TWO pairs: the state that poisoned a field run ------------------------------------------
+//
+// Everything above this line uses ONE red/green pair, and with one pair the defect below is
+// invisible: the only red test in the tree belongs to the only green order, which implements it,
+// so the suite the green is measured against comes back clean.
+//
+// Add a second pair and the arithmetic changes completely. The partition packs file-disjoint
+// reds into the same wave, so R1 and R2 both merge into the integration head; every wave-2 order
+// then branches from a head carrying BOTH red test files. G1 implements R1 and is measured on a
+// suite still failing R2's tests — which are not its own, not in its locus, and not its to fix.
+// Its verification fails, a fix round opens, the coder correctly answers "these are not my
+// tests, there is nothing here to change", and returning no commits escalates it.
+//
+// That is not a hypothetical. Run 20260829-140744 in the field (2026-08-29, 22 orders) escalated
+// five orders this way and left thirteen more blocked behind them, having merged nothing but the
+// test halves of pairs whose implementations were all correct: merged by hand afterwards, the
+// same commits passed 1154/1154. The pipeline rejected finished work for a scheduling reason.
+//
+// The fixture below models the WORLD rather than the fix — `redTestsIn` answers "which red test
+// files does the tree this order is being verified in actually contain", derived from what has
+// been merged into the integration head at the moment of the dispatch. Any implementation that
+// stops a lone red from reaching that head satisfies it; nothing here pins how.
+
+const RED2 = {
+  id: 'R2', title: 'author the gadget tests', role: 'red',
+  locus: ['test/gadget.test.js'], acceptance: ['a failing test pins the gadget contract'],
+  context: 'ctx', deps: [], contract: false,
+}
+
+const GREEN2 = {
+  id: 'G2', title: 'implement the gadget', role: 'green',
+  locus: ['src/gadget.js'], acceptance: ['the gadget tests pass'],
+  context: 'ctx', deps: ['R2'], contract: false,
+}
+
+const REDS = { R1: 'test/widget.test.js', R2: 'test/gadget.test.js' }
+const IMPLEMENTS = { G1: 'R1', G2: 'R2' }
+
+const twoPairPlan = () =>
+  pairPlan([RED, RED2, GREEN, GREEN2], [['R1', 'R2'], ['G1', 'G2']])
+
+/**
+ * A scripted world for two pairs, standing in for the repository the agents would really see.
+ *
+ * `mergedIds` grows as the workflow merges branches — the fake's only input, and the same fact
+ * a real tree would carry. A green order is verified against its own branch stacked on whatever
+ * the workflow gave it as a base, so the red tests present in that tree are: its own red's (which
+ * it has just implemented, so they pass) plus every OTHER red already sitting in the integration
+ * head it was told to anchor on (which nobody has implemented, so they fail).
+ */
+function twoPairWorld() {
+  const mergedIds = []
+
+  const mergeHandler = (prompt, opts) => {
+    const id = String(opts.label || '').split(':')[1] || ''
+    mergedIds.push(id)
+    return merged('c'.repeat(39) + String(mergedIds.length))
+  }
+
+  /** Red test files a tree anchored on the current integration head carries, minus `ownRed`. */
+  const strayRedTests = (ownRed) =>
+    mergedIds.filter((id) => REDS[id] && id !== ownRed).map((id) => REDS[id])
+
+  const verifyHandler = (prompt, opts) => {
+    const id = String(opts.label || '').split(':')[1] || ''
+
+    if (REDS[id]) {
+      // A red order, measured on its own branch: its tests fail, which is the order.
+      return redVerified({
+        discriminator: [{ test_id: REDS[id], failed_on_base: true, passes_now: false }],
+        failing_tests: [{ file: REDS[id], id: id + ' > pins the contract' }],
+      })
+    }
+
+    const stray = strayRedTests(IMPLEMENTS[id])
+    if (stray.length === 0) return verified()
+
+    // The poisoned measurement: this order's own tests pass, and a sibling pair's unimplemented
+    // tests fail in the same suite run.
+    return verified({
+      suite: 'failed',
+      suite_output_tail: stray.join(', ') + ' failing',
+      failing_tests: stray.map((file) => ({ file, id: file + ' > pins the contract' })),
+    })
+  }
+
+  const waveVerifyHandler = () => {
+    const pendingReds = mergedIds
+      .filter((id) => REDS[id] && !mergedIds.includes('G' + id.slice(1)))
+      .map((id) => REDS[id])
+
+    return pendingReds.length === 0
+      ? verified({ discriminator: [], suite: 'passed' })
+      : verified({
+        discriminator: [], suite: 'failed',
+        failing_tests: pendingReds.map((file) => ({ file, id: file + ' > pins the contract' })),
+      })
+  }
+
+  return { mergedIds, mergeHandler, verifyHandler, waveVerifyHandler }
+}
+
+const runTwoPairs = () => {
+  const world = twoPairWorld()
+
+  return run({
+    plan: twoPairPlan(),
+    'verify:': world.verifyHandler,
+    'merge:': world.mergeHandler,
+    'wave-verify:': world.waveVerifyHandler,
+    // A fix round for someone else's failing test has nothing to change, and says so.
+    'fix:': coded({ status: 'done', commits: [], head_sha: B40 }),
+  }).then((out) => ({ ...out, world }))
+}
+
+test('two red/green pairs both run to completion', async () => {
+  const { result } = await runTwoPairs()
+
+  assert.deepEqual(result.escalations, [],
+    'no order here is defective: each green implements its own red and breaks nothing')
+  assert.deepEqual(result.implemented.map((e) => e.id).sort(), ['G1', 'G2', 'R1', 'R2'])
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a green order is never measured against a sibling pair\'s unimplemented tests', async () => {
+  const { prompts } = await runTwoPairs()
+
+  for (const id of ['G1', 'G2']) {
+    assert.ok(!prompts.some((p) => p.opts.label === 'fix:' + id),
+      id + ' drew a fix round for a failure it does not own — the tree it was verified in ' +
+      'carried another pair\'s red tests')
+  }
+})
+
+test('a red order never reaches the integration head without its green', async () => {
+  // The invariant underneath both assertions above, stated directly: whatever order the merges
+  // happen in, the integration head never holds a red whose implementation is not there with it.
+  // A head that is green between waves is also what makes an interrupted run's branch usable.
+  const { world } = await runTwoPairs()
+
+  const seen = []
+  for (const id of world.mergedIds) {
+    seen.push(id)
+    const orphanReds = seen.filter((m) => REDS[m] && !seen.includes('G' + m.slice(1)))
+    assert.deepEqual(orphanReds, [],
+      'after merging ' + seen.join(', ') + ' the head carries a red with no implementation')
+  }
 })

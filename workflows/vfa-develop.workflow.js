@@ -1498,15 +1498,28 @@ function roleSection(wo) {
 }
 
 function coderPrompt(wo, branch) {
-  const anchor = integration.head_sha
+  const stack = stackedOn(wo)
+
+  const anchor = stack
     ? `RE-ANCHOR FIRST — before you read anything and before your first commit:\n\n` +
-      `   git checkout -B ${branch} ${integration.head_sha}\n\n` +
-      `That commit is the integration head: every earlier wave of this change has already ` +
-      `merged into it, and your work builds on them. Starting from the worktree's own HEAD ` +
-      `would implement against a tree that no longer exists and manufacture a merge conflict ` +
-      `out of nothing. Record base_sha AFTER this, so the discriminator's baseline names the ` +
-      `commit your first change actually sits on.\n\n`
-    : ''
+      `   git checkout -B ${branch} ${stack.head_sha}\n\n` +
+      `That commit is the head of ${stack.id}, the order that authored the tests you are ` +
+      `implementing. You build directly on it rather than on the integration head, because a ` +
+      `failing test never reaches the integration branch without the code that satisfies it — ` +
+      `so this branch is where those tests actually live, and the two merge together once you ` +
+      `are approved. Everything ${stack.id} landed is already here and is NOT yours to change: ` +
+      `it sits outside your locus and the commit-series check blocks a commit that reaches it. ` +
+      `Record base_sha AFTER this, so the discriminator's baseline names the commit your first ` +
+      `change actually sits on.\n\n`
+    : integration.head_sha
+      ? `RE-ANCHOR FIRST — before you read anything and before your first commit:\n\n` +
+        `   git checkout -B ${branch} ${integration.head_sha}\n\n` +
+        `That commit is the integration head: every earlier wave of this change has already ` +
+        `merged into it, and your work builds on them. Starting from the worktree's own HEAD ` +
+        `would implement against a tree that no longer exists and manufacture a merge conflict ` +
+        `out of nothing. Record base_sha AFTER this, so the discriminator's baseline names the ` +
+        `commit your first change actually sits on.\n\n`
+      : ''
 
   const fetched = orderFetch(wo)
 
@@ -2244,9 +2257,140 @@ function suspectsIn(moved, waves) {
   return out
 }
 
+// ------------------------------------------------------- the red/green/refactor cycle
+//
+// A cycle is a red order and the orders that implement and restructure what it pinned. Its
+// members are linked by `deps`, which the planner already declares, so nothing here asks
+// anything new of a plan — the shape is READ, never decided.
+//
+// Why the cycle needs to exist as a unit at all: a red order's whole product is a failing test.
+// Merged on its own it makes the integration head red, and every order in every later wave is
+// then coded, verified and reviewed against a tree that fails for a reason none of them own. In
+// the field (run 20260829-140744, 2026-08-29) that cost five escalations on finished, correct
+// work and blocked thirteen more orders behind them: each green implemented its own red, was
+// measured on a suite still failing a SIBLING pair's tests, and drew a fix round its coder
+// could only answer with "these are not my tests". A no-commit answer escalates, so every green
+// in the run was unpassable by construction.
+//
+// The fix is to keep the failing half and the implementing half together. A cycle member does
+// not merge when it is approved; it is HELD, and the members that depend on it are anchored on
+// its branch rather than on the integration head. When the last member is approved the branch
+// tips are merged, carrying the whole stack with them. Two properties follow, and they are the
+// point:
+//
+//   the integration head is never red — so no order is ever measured against another's
+//     unimplemented tests, and a run that stops between waves leaves a usable branch
+//   a green is measured on its own red's tests and nothing else — the strict verdict
+//     `plainVerifyOk` already applies is the RIGHT verdict for it, so nothing is loosened
+//
+// The alternative was to teach each role's verdict to excuse the pending reds. That keeps the
+// red head and makes three separate judgments laxer to tolerate it; this removes the state
+// instead. `excusedRedFiles` below survives for the one case that still produces a red head —
+// a run resumed from a ledger written before this change, whose reds are already merged alone.
+
+/**
+ * The red order at the root of `id`'s cycle, or '' when it belongs to none.
+ *
+ * Walks `deps` up through green and refactor orders. `seen` guards a malformed plan: the
+ * partition refuses a dependency cycle, but this must not hang if one ever reaches here.
+ */
+function cycleRootOf(id, seen) {
+  const wo = orderById.get(id)
+  if (!wo) return ''
+
+  const role = roleOf(wo)
+  if (role === 'red') return id
+  if (role !== 'green' && role !== 'refactor') return ''
+
+  const visited = seen || new Set()
+  if (visited.has(id)) return ''
+  visited.add(id)
+
+  for (const dep of wo.deps || []) {
+    const root = cycleRootOf(dep, visited)
+    if (root) return root
+  }
+
+  // A green whose red is not in this plan — a resumed slice, or a planner slip. It has no cycle
+  // to be held with, so it merges on its own like any ordinary order.
+  return ''
+}
+
+/** Every order sharing `root`'s cycle, in plan order. */
+const cycleMembersOf = (root) =>
+  orders.filter((wo) => cycleRootOf(wo.id) === root)
+
+/**
+ * True when every member of `root`'s cycle is accounted for — landed already, held awaiting
+ * this merge, or the entry being decided right now.
+ *
+ * An escalated or blocked member makes this permanently false, which is correct: a red whose
+ * implementation never arrived must not reach the integration branch, and it is reported as
+ * approved-but-unmerged so a human sees the pair that did not close.
+ */
+const cycleComplete = (root, decidingId) =>
+  cycleMembersOf(root).every((wo) =>
+    landed.has(wo.id) || held.has(wo.id) || wo.id === decidingId)
+
+/**
+ * The members whose branches must actually be merged: those no other member depends on.
+ *
+ * Everything else in the cycle is an ancestor of one of these — a green is coded on its red's
+ * branch, a refactor on the green's — so merging a tip carries the members beneath it. Two
+ * greens implementing one red give two tips, and both are merged; their loci are pairwise
+ * disjoint by the partition, so the second merge cannot conflict with the first.
+ */
+function cycleTips(root) {
+  const members = cycleMembersOf(root)
+  const ids = new Set(members.map((wo) => wo.id))
+  const dependedOn = new Set()
+
+  for (const wo of members) {
+    for (const dep of wo.deps || []) if (ids.has(dep)) dependedOn.add(dep)
+  }
+
+  return members.filter((wo) => !dependedOn.has(wo.id))
+}
+
+/**
+ * The held order this one stacks on, or null when it anchors on the integration head.
+ *
+ * Only a dep in the SAME cycle qualifies. A held order from another cycle is not a base this
+ * order can stand on — it would import a foreign pair's failing tests, which is the whole
+ * defect — and `availableTo` refuses to run an order in that position at all.
+ */
+function stackedOn(wo) {
+  const root = cycleRootOf(wo.id)
+  if (!root) return null
+
+  for (const dep of wo.deps || []) {
+    const entry = held.get(dep)
+    if (entry && entry.head_sha && cycleRootOf(dep) === root) return entry
+  }
+
+  return null
+}
+
+/**
+ * Whether `depId` is something `wo` can be built on right now.
+ *
+ * Merged into the integration branch is the ordinary answer. A HELD dep also counts, but only
+ * for its own cycle's members, who are anchored on its branch. Anything else depending on a
+ * held order is genuinely blocked — it declared a dependency on an order whose tests have no
+ * implementation yet, which is a plan defect and is reported as one.
+ */
+const availableTo = (depId, wo) =>
+  landed.has(depId) ||
+  (held.has(depId) && cycleRootOf(depId) !== '' && cycleRootOf(depId) === cycleRootOf(wo.id))
+
 /**
  * Test files whose failure at the merged head is expected rather than a regression: they
  * belong to a red order that has merged while the green order implementing it has not.
+ *
+ * The cycle hold above means this run will not CREATE that state. It stays for the state a run
+ * can still inherit: a plan resumed from a ledger written before the hold existed, whose reds
+ * were merged on their own and are in the integration branch already. Deleting it would make
+ * every such resume stop the line on tests it merged itself, one invocation earlier.
  *
  * Derived from `deps`, which a green order already declares — nothing new is asked of the
  * planner. Once the green lands the excuse expires by itself, and a red test still failing
@@ -2788,6 +2932,19 @@ const extraRemaining = []
 // wave: an order whose provider is not in here has nothing to build against, whether the
 // provider escalated, was blocked itself, or was merged in a previous invocation.
 const landed = new Set()
+
+// Approved cycle members waiting for the rest of their cycle, by id — see cycleRootOf above.
+// A held order is finished work: coded, verified green and closed by a review. It is not in the
+// integration branch because merging it alone would put a failing test there with no
+// implementation. Its own cycle's later members are anchored on its branch instead, and the
+// whole stack merges together when the last one is approved.
+//
+// An entry carries what the merge and the anchor need: the branch, the head its dependants
+// stack on, and the id. On a resume these are re-populated from `salvagedApproved` by the same
+// merge loop that populated them the first time, so nothing about the hold has to be recorded
+// in the ledger or re-derived by lib/run-verdict.mjs — the plan says which orders form a cycle,
+// and what has landed says which of them still need each other.
+const held = new Map()
 
 try {
   // -------------------------------------------------------------- 1. survey
@@ -4090,7 +4247,11 @@ try {
 
     for (const id of pending) {
       const wo = orderById.get(id)
-      const missing = (wo.deps || []).filter((dep) => !landed.has(dep))
+      // A HELD dep counts as available to its own cycle's members — they are anchored on its
+      // branch rather than on the integration head, so the work it landed is genuinely there
+      // for them. To anyone else it is missing, which is the honest answer: an order outside
+      // the cycle that depends on a red is asking to build on tests nobody has implemented.
+      const missing = (wo.deps || []).filter((dep) => !availableTo(dep, wo))
 
       if (missing.length === 0) {
         if (salvagedApproved.has(id)) salvagedHere.push(wo)
@@ -4210,12 +4371,12 @@ try {
 
     const unmergedThisWave = []
 
-    for (const entry of approved) {
-      if (lineStopped) {
-        unmergedThisWave.push(entry.id)
-        continue
-      }
-
+    /**
+     * Merge one branch and record what it landed. `carries` names the orders that arrive with
+     * it — a cycle tip brings its stack as ancestors, so they enter the branch on this merge
+     * and are marked landed by it.
+     */
+    async function mergeBranch(entry, carries) {
       const merge = await agent(mergePrompt(entry), {
         agentType: 'vf-agentics:verifier', effort: 'low', schema: MERGE_RESULT,
         phase: 'Integrate', label: `merge:${entry.id}`,
@@ -4230,18 +4391,86 @@ try {
         const conflicts = merge && merge.conflicts ? merge.conflicts : []
         integration.merge_stopped_at = { order: entry.id, conflicts }
         lineStopped = 'the merge of ' + entry.id + ' did not complete'
-        unmergedThisWave.push(entry.id)
         log(`MERGE STOPPED at ${entry.id}: ${violation || (conflicts.length ? 'conflicts in ' + conflicts.join(', ') : (merge && merge.notes) || 'no result')}`)
-        continue
+        return false
       }
 
       integration.head_sha = merge.merged_sha
-      integration.merged.push(entry.id)
-      landed.add(entry.id)
-      log(`Merged ${entry.id} — integration head is now ${integration.head_sha}.`)
+
+      for (const id of carries) {
+        if (landed.has(id)) continue
+        integration.merged.push(id)
+        landed.add(id)
+        held.delete(id)
+      }
+
+      // An order held by an earlier wave — or an earlier invocation — was reported as approved
+      // and unmerged at the time. It is merged now, so it stops being either.
+      integration.approved_unmerged = integration.approved_unmerged.filter((id) => !landed.has(id))
+
+      log(carries.length > 1
+        ? `Merged ${entry.id} with its cycle (${carries.join(', ')}) — integration head is now ${integration.head_sha}.`
+        : `Merged ${entry.id} — integration head is now ${integration.head_sha}.`)
+      return true
     }
 
-    integration.approved_unmerged = integration.approved_unmerged.concat(unmergedThisWave)
+    for (const entry of approved) {
+      if (lineStopped) {
+        unmergedThisWave.push(entry.id)
+        continue
+      }
+
+      // A cycle member does not merge alone. Held here, it becomes the base its cycle's later
+      // members are coded on; the whole stack merges when the last member is approved. The
+      // integration head therefore never carries a test whose implementation is not there with
+      // it, which is what keeps every later order's measurement about that order.
+      const root = cycleRootOf(entry.id)
+
+      if (root) {
+        held.set(entry.id, entry)
+
+        if (!cycleComplete(root, entry.id)) {
+          const waiting = cycleMembersOf(root)
+            .filter((wo) => !landed.has(wo.id) && !held.has(wo.id))
+            .map((wo) => wo.id)
+          unmergedThisWave.push(entry.id)
+          log(`HELD ${entry.id}: approved, waiting for ${waiting.join(', ')} before its cycle merges.`)
+          continue
+        }
+
+        // The last member. Merge each branch tip; everything beneath it rides along.
+        const tips = cycleTips(root)
+        const beneath = new Map()
+        for (const tip of tips) beneath.set(tip.id, [])
+
+        for (const wo of cycleMembersOf(root)) {
+          if (landed.has(wo.id)) continue
+          // A non-tip member is an ancestor of every tip that reaches it; naming it under the
+          // first is enough to mark it landed once, and `mergeBranch` skips it thereafter.
+          const owner = tips.find((tip) => tip.id === wo.id) || tips[0]
+          if (owner) beneath.get(owner.id).push(wo.id)
+        }
+
+        for (const tip of tips) {
+          if (lineStopped) {
+            unmergedThisWave.push(tip.id)
+            continue
+          }
+          const tipEntry = held.get(tip.id)
+          if (!tipEntry) continue
+          if (!await mergeBranch(tipEntry, beneath.get(tip.id) || [tip.id])) {
+            unmergedThisWave.push(tip.id)
+          }
+        }
+
+        continue
+      }
+
+      if (!await mergeBranch(entry, [entry.id])) unmergedThisWave.push(entry.id)
+    }
+
+    integration.approved_unmerged = integration.approved_unmerged
+      .concat(unmergedThisWave.filter((id) => !landed.has(id)))
 
     // ------------------------------------------ 4b. verify the head we just built
     //
