@@ -381,8 +381,19 @@ const verifiable = (v) => v.stop_reason === 'completed' && v.build !== 'failed' 
 const failuresConfinedTo = (v, allowed) =>
   (v.failing_tests || []).length > 0 && failuresOutside(v.failing_tests, allowed).length === 0
 
+// The one allowance every role's verdict makes, and it is a BACKWARD-COMPATIBILITY path rather
+// than a loosening. `excusedRedFiles()` is empty in any run this version scheduled: a red is
+// held until its green is approved, so the tree an order is measured in never carries an
+// unimplemented red's tests. It is non-empty only for a run RESUMED from a ledger written before
+// the hold existed, whose reds are already in the integration branch on their own — and there
+// the failures it names genuinely belong to a pair nobody has finished, not to the order under
+// measurement. Escalating an order for them is what cost run 20260829-140744 five orders of
+// correct work; doing it again on the resume of that same run would be the same mistake twice.
+const inheritedRed = (v) =>
+  v.suite === 'failed' && failuresConfinedTo(v, excusedRedFiles())
+
 const plainVerifyOk = v => verifiable(v)
-  && v.suite !== 'failed'
+  && (v.suite !== 'failed' || inheritedRed(v))
   && (v.discriminator || []).every(d => d && d.failed_on_base && d.passes_now)
 
 // A RED order lands tests that MUST fail — that is the entire order. Four inversions, each
@@ -396,7 +407,7 @@ const redVerifyOk = (v, wo) => verifiable(v)
   && (v.discriminator || []).length > 0
   && (v.discriminator || []).every(d => d && d.failed_on_base && !d.passes_now)
   && v.suite !== 'passed'
-  && (v.suite !== 'failed' || failuresConfinedTo(v, wo.locus))
+  && (v.suite !== 'failed' || failuresConfinedTo(v, (wo.locus || []).concat(excusedRedFiles())))
 
 // A REFACTOR order restructures with the tests locked and green. `suite === 'passed'` is
 // strict where every other verdict here accepts `absent`, and that asymmetry is the whole
@@ -405,7 +416,7 @@ const redVerifyOk = (v, wo) => verifiable(v)
 // the order is entirely predicated on was never observed. A new discriminating test means new
 // behaviour, which makes it a green order wearing a refactor label.
 const refactorVerifyOk = v => verifiable(v)
-  && v.suite === 'passed'
+  && (v.suite === 'passed' || inheritedRed(v))
   && (v.discriminator || []).length === 0
 
 const verifyOk = (v, wo) => {
@@ -2215,7 +2226,7 @@ function newState(wo) {
 const plainFailures = (wo, v) => {
   const out = []
 
-  if (v.suite === 'failed') {
+  if (v.suite === 'failed' && !inheritedRed(v)) {
     out.push(runtimeFinding(wo.id + '-suite', 'the test suite exited non-zero',
       v.suite_output_tail || ''))
   }
@@ -2253,7 +2264,7 @@ const redFailures = (wo, v) => {
       ', passes_now=' + d.passes_now,
       'a red test must fail at base AND fail now — it pins behaviour nobody has built'))
   }
-  for (const f of failuresOutside(v.failing_tests, wo.locus)) {
+  for (const f of failuresOutside(v.failing_tests, (wo.locus || []).concat(excusedRedFiles()))) {
     out.push(runtimeFinding(wo.id + '-red-stray',
       f.file + ' fails and is not a test this order owns (' + f.id + ')',
       'a red order fails its own new tests and nothing else; this is collateral damage'))
@@ -2276,7 +2287,7 @@ const refactorFailures = (wo, v) => {
       'everywhere else an absent suite is a fact about the repository; for a refactor it ' +
       'means the safety net the whole order rests on was never observed'))
   }
-  if (v.suite === 'failed') {
+  if (v.suite === 'failed' && !inheritedRed(v)) {
     out.push(runtimeFinding(wo.id + '-refactor-broke',
       'this is a refactor order and the suite fails',
       v.suite_output_tail || 'a refactor that changes behaviour is not a refactor'))

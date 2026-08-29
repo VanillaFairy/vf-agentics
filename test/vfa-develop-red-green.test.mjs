@@ -336,6 +336,29 @@ test('a resumed run whose red already merged alone does not stop on its tests', 
     'the head is red because a previous invocation merged R1 alone, not because G1 is wrong')
 })
 
+test('a resumed run does not re-escalate the green its old head is poisoning', async () => {
+  // The whole point of keeping the excuse. R1 is in the integration branch on its own because
+  // a pre-hold invocation put it there, so G1 is coded and measured in a tree whose suite fails
+  // on R1's tests until the moment G1 satisfies them — and a verifier that runs the suite while
+  // ANOTHER pair's red is also sitting in that head reports those failures against G1.
+  //
+  // Escalating for them is exactly what run 20260829-140744 did to five orders of correct work.
+  // Doing it again on the resume of that same run would be the same mistake twice.
+  const { result, prompts } = await runResumed({
+    'verify:': verifierSaying({
+      'verify:G1': verified({
+        suite: 'failed',
+        failing_tests: [{ file: 'test/widget.test.js', id: 'widget > rejects an empty label' }],
+      }),
+    }),
+  })
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'fix:G1'),
+    'the failing tests belong to a pair a previous invocation half-merged, not to G1')
+  assert.deepEqual(result.escalations, [])
+  assert.ok(result.integration.merged.includes('G1'))
+})
+
 test('a resumed run still stops when the head fails outside the pending red set', async () => {
   const { result } = await runResumed({
     'wave-verify:': verifierSaying({
