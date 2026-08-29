@@ -93,6 +93,14 @@ You never implement anything yourself.
    enforcement. Declare them disjointly or the split is decorative. `deps` sequences the
    cycle through the partition; you need no other mechanism.
 
+   **A cycle merges as a unit, so split as many as the change deserves.** The workflow holds an
+   approved red rather than merging it, codes the green on the red's own branch, and merges the
+   stack when the last member is approved — so the integration head never carries a failing test
+   with no implementation, and no order in a later wave is ever measured against another pair's
+   unfinished work. You do not have to space pairs across waves, keep them out of each other's
+   way, or think about the merged head at all: declare the roles and the `deps` and the
+   scheduling is not your problem. What you still owe is the disjoint loci above.
+
    Why bother: one agent writing both the test and the code certifies its own reading of your
    criteria, and an exam written by the examinee passes by construction. Splitting the roles
    means two agents must independently arrive at the same reading of what you wrote — which

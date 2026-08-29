@@ -74,6 +74,30 @@ the caller's digest, and refuses a line it cannot prove intact. Order prose is n
 transported — a coder fetches its own order with `ledger.mjs order` and confirms the digest.
 Contract: `docs/superpowers/specs/2026-08-27-increment-9-contracts.md`.
 
+A digest makes corruption **detectable**; it cannot make the retry likelier to succeed, because
+the retry is typed by the same agent into the same shell. So a line the workflow mints whole
+travels **base64** on one argv slot — no path to escape, no apostrophe to close, no heredoc
+delimiter to indent — and the digest is still rechecked after decoding. Journal lines keep the
+heredoc, because they carry values only the observing agent knows and there is nothing to encode
+ahead of time. Field case: run `20260829-140744` lost its wave line and every escalation line to
+a mismatch three retries could not clear, while every journal line in the same run landed.
+
+**A red order never reaches the integration head alone.** A red's whole product is a failing
+test; merged on its own it makes the integration head red, and every order in every later wave
+is then coded, verified and reviewed against a tree failing for a reason none of them own. With
+one red/green pair that is invisible. With two, the partition packs both reds into one wave and
+each green is measured on a suite still failing its *sibling's* tests — a fix round it can only
+answer "these are not my tests", and a no-commit answer escalates. Run `20260829-140744`
+escalated five orders of finished, correct work that way and blocked thirteen behind them.
+
+So an approved cycle member is **held** rather than merged, its cycle's later members are
+anchored on its branch instead of the integration head, and the branch tips merge together once
+the last member is approved. The cycle is read from `role` and `deps` — nothing new is asked of
+a plan. Two properties follow: the integration head is never red, so a green is measured on its
+own red's tests and nothing else and the strict verdict already applied to it stays strict; and a
+run that stops between waves leaves a branch that still builds. `excusedRedFiles` survives only
+for a run resumed from a ledger written before this, whose reds are already merged alone.
+
 A resume then **salvages to the action**. Each order's lifecycle is a fixed sequence —
 `code → verify → review → merge` — and the verdict names the single **next undone action** per
 order, trusting a stage exactly as far as two independent sources agree: the run recorded that
