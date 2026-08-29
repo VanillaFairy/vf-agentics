@@ -109,3 +109,26 @@ export function scriptedAgents(script) {
     throw new Error('unscripted agent call: ' + (label || '(no label)'))
   }
 }
+
+/**
+ * The state line a `record:` dispatch actually carries, decoded.
+ *
+ * The workflow mints these whole and hands them to the recorder base64-encoded: a heredoc is
+ * shell syntax, and every corruption this file has seen in the field was shell syntax too — a
+ * Windows path's backslashes, an apostrophe in a test name, an indented closing delimiter.
+ * Tests therefore assert on the RECORD rather than on a substring of its serialization, which
+ * is the more durable assertion in any case.
+ *
+ * @param {string} prompt a recorder dispatch prompt
+ * @returns {{ entry: object, digest: string, token: string }}
+ */
+export function recordedLine(prompt) {
+  const call = /--digest (\S+) --b64 (\S+)/.exec(prompt || '')
+  if (!call) throw new Error('this prompt carries no --digest/--b64 ledger append')
+
+  return {
+    entry: JSON.parse(Buffer.from(call[2], 'base64').toString('utf8')),
+    digest: call[1],
+    token: call[2],
+  }
+}

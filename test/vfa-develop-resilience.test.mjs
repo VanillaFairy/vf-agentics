@@ -24,7 +24,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
@@ -372,12 +372,12 @@ test('the recorder is told to append, never to read and write back', async () =>
 
 test('the order line carries what the coder actually reported', async () => {
   const { prompts } = await fresh({})
-  const line = promptFor(prompts, 'record:W1')
+  const { entry } = recordedLine(promptFor(prompts, 'record:W1'))
 
-  assert.ok(line.includes('"kind":"order-approved"'))
-  assert.ok(line.includes('"order":"W1"'))
-  assert.ok(line.includes('"branch":"wo-w1"'), 'the branch observed, never the one asked for')
-  assert.ok(line.includes('"worktree":"C:/wt/w1"'))
+  assert.equal(entry.kind, 'order-approved')
+  assert.equal(entry.order, 'W1')
+  assert.equal(entry.branch, 'wo-w1', 'the branch observed, never the one asked for')
+  assert.equal(entry.worktree, 'C:/wt/w1')
 })
 
 test('an escalated order is never recorded as approved', async () => {
@@ -393,7 +393,7 @@ test('an escalated order is never recorded as approved', async () => {
 test('a wave line still names its type explicitly', async () => {
   const { prompts } = await fresh({})
 
-  assert.ok(promptFor(prompts, 'record:wave-1').includes('"kind":"wave"'),
+  assert.equal(recordedLine(promptFor(prompts, 'record:wave-1')).entry.kind, 'wave',
     'a reader must not have to infer the line type from its shape')
 })
 
@@ -693,7 +693,7 @@ test('a resumed run records the approval and nothing about the verification', as
   const labels = prompts.map((p) => p.opts.label || '').filter((l) => l.startsWith('record:'))
 
   assert.deepEqual(labels, ['record:W2', 'record:wave-2'])
-  assert.ok(promptFor(prompts, 'record:W2').includes('"kind":"order-approved"'))
+  assert.equal(recordedLine(promptFor(prompts, 'record:W2')).entry.kind, 'order-approved')
   assert.match(promptFor(prompts, 'verify:W2'), /ledger\.mjs" append .* --file journal/,
     'the verification records itself, in the dispatch that performs it')
 })
@@ -780,17 +780,17 @@ test('a run that merged before it recorded anything keeps the base it was cut fr
   assert.equal(result.integration.base_sha, A40, 'the envelope records what it was cut from')
   assert.ok(promptFor(prompts, 'review:integration').includes(A40 + '..'),
     'so the whole change is what gets reviewed, not the part that ran after the interruption')
-  assert.ok(promptFor(prompts, 'record:reconcile').includes('"integration_base":"' + A40 + '"'),
+  assert.equal(recordedLine(promptFor(prompts, 'record:reconcile')).entry.integration_base, A40,
     'and the correction is written down, so the next resume does not ask again')
 })
 
 test('a reconciled merge gets its line and its verification before any wave runs', async () => {
   const { prompts } = await reconcilable()
 
-  const line = promptFor(prompts, 'record:reconcile')
-  assert.ok(line.includes('"kind":"wave"'))
-  assert.ok(line.includes('"wave":1'), 'the wave those merges belonged to, not an invented one')
-  assert.ok(line.includes('"merged":["W2"]'))
+  const { entry } = recordedLine(promptFor(prompts, 'record:reconcile'))
+  assert.equal(entry.kind, 'wave')
+  assert.equal(entry.wave, 1, 'the wave those merges belonged to, not an invented one')
+  assert.deepEqual(entry.merged, ['W2'])
 
   // Nobody who wrote a record ever measured that head, and every later wave builds on it.
   assert.ok(prompts.some((p) => p.opts.label === 'wave-verify:reconciled'))

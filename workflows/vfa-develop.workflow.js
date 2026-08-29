@@ -476,6 +476,71 @@ function fnv1a(text) {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
+// ------------------------------------------------------------- the state-line transport
+//
+// A state line is minted HERE, whole, and has to reach lib/ledger.mjs through an agent typing a
+// shell command. The digest already makes corruption detectable; this makes it unlikely, which
+// is a different and better property — a detected corruption still costs the run a retry, and
+// the retry is typed by the same agent against the same shell.
+//
+// The heredoc it replaces is shell syntax, and everything that broke it was shell syntax too:
+// a Windows path's backslashes, an apostrophe in a test name, a closing delimiter that arrived
+// indented. Base64 has no metacharacters. One opaque token on one argv slot, nothing in it for
+// a shell to interpret, and the digest still checked on the far side.
+//
+// The field case: run 20260829-140744 lost its wave-1 line and every order-escalated line to a
+// mismatch that survived three attempts by the recorder — while every journal line, written by
+// the working agents themselves, landed. Journal lines still go by heredoc and must: they carry
+// values only the observing agent knows, so there is nothing to encode ahead of time.
+//
+// Written out by hand for the same reason canonical/fnv1a are: a workflow script has no imports
+// and no Buffer, and both of these are small enough to be identical wherever they are written.
+
+/** UTF-8 bytes of a string, surrogate pairs folded into one code point. */
+function utf8Bytes(text) {
+  const out = []
+
+  for (let i = 0; i < text.length; i++) {
+    let c = text.charCodeAt(i)
+
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const low = text.charCodeAt(i + 1)
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        c = 0x10000 + ((c - 0xd800) << 10) + (low - 0xdc00)
+        i++
+      }
+    }
+
+    if (c < 0x80) out.push(c)
+    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63))
+    else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+    else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+  }
+
+  return out
+}
+
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/** Standard base64, padded. */
+function base64(text) {
+  const bytes = utf8Bytes(text)
+  let out = ''
+
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : -1
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : -1
+
+    out += B64_ALPHABET[b0 >> 2]
+    out += B64_ALPHABET[((b0 & 3) << 4) | (b1 < 0 ? 0 : b1 >> 4)]
+    out += b1 < 0 ? '=' : B64_ALPHABET[((b1 & 15) << 2) | (b2 < 0 ? 0 : b2 >> 6)]
+    out += b2 < 0 ? '=' : B64_ALPHABET[b2 & 63]
+  }
+
+  return out
+}
+
 // ---------------------------------------------------------------- result coherence
 //
 // The runtime validates every agent result against its schema, but a schema cannot state
@@ -1810,25 +1875,24 @@ function waveVerifyPrompt(waveNumber) {
 function recorderPrompt(runDir, entry, digest) {
   return `RECORD MODE. Append one outcome line to this run's state log.\n\n` +
     `RUN DIRECTORY (absolute):\n${runDir}\n\n` +
-    `Run exactly this. The closing delimiter must be at the very start of its own line, with ` +
-    `nothing before it:\n\n` +
-    `node "${pluginRoot}/lib/ledger.mjs" append "${runDir}" --file state --digest ${digest} <<'VFASTATE'\n` +
-    `${JSON.stringify(entry)}\n` +
-    `VFASTATE\n` +
+    `Run exactly this, as ONE line:\n\n` +
+    `node "${pluginRoot}/lib/ledger.mjs" append "${runDir}" --file state --digest ${digest} ` +
+    `--b64 ${base64(JSON.stringify(entry))}\n\n` +
     rootWarning +
-    `The object between the delimiters is complete. Copy it EXACTLY — every brace, every ` +
-    `backslash, every quote. The digest above was computed over it before you were handed it, ` +
-    `and the writer recomputes that digest over what actually arrives: a line that changed by ` +
-    `one character is REFUSED, not written. That is deliberate, and it is why you cannot ` +
-    `corrupt this file even by accident.\n\n` +
+    `The long token is the outcome line, base64-encoded. Copy it as one unbroken string — do ` +
+    `not wrap it, do not insert a newline or a backslash continuation, and do not quote it. It ` +
+    `contains only letters, digits, +, / and = , so there is nothing in it for a shell to ` +
+    `interpret: no path to escape, no apostrophe to close, no delimiter to indent. That is why ` +
+    `it is encoded rather than written out — the object it carries holds Windows paths and free ` +
+    `text, and typing those into a shell is what has actually corrupted this file before.\n\n` +
+    `The writer decodes it and recomputes the digest above over what came out. A token that ` +
+    `changed by one character is REFUSED, not written, so you cannot corrupt this file even by ` +
+    `accident.\n\n` +
     `Read the writer's output. {"ok":true,...} means the line is on disk — return ` +
     `stop_reason recorded with the path it printed. {"ok":false,"error":...} means it refused; ` +
-    `the error names what was wrong. Copy the object again and run it once more. If it refuses ` +
-    `a second time, return stop_reason unwritable with the error verbatim in notes — your ` +
-    `caller treats that as a degraded side channel and keeps going.\n\n` +
-    `The heredoc rather than echo or a redirected quoted string: the object carries paths and ` +
-    `free text, and a single apostrophe in it turns a quoted append into a shell waiting for ` +
-    `a closing quote.\n\n` +
+    `the error names what was wrong. Copy the command again — the whole token — and run it once ` +
+    `more. If it refuses a second time, return stop_reason unwritable with the error verbatim ` +
+    `in notes — your caller treats that as a degraded side channel and keeps going.\n\n` +
     `Record what you were handed and nothing else — you do not know which orders "should" ` +
     `have merged, and a wave that merged nothing is recorded as a wave that merged nothing.`
 }

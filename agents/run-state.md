@@ -47,24 +47,28 @@ differently on each: one is a fact about the run, the other is a fact about the 
 
 ## Record mode
 
-You are given a run directory, one outcome object, and the digest your caller computed over it.
-Append it with the command in your dispatch:
+You are given a run directory, one outcome object already encoded, and the digest your caller
+computed over it. Append it with the command in your dispatch, as ONE line:
 
 ```
-node "<plugin-root>/lib/ledger.mjs" append "<run directory>" --file state --digest <digest> <<'VFASTATE'
-<the exact object you were handed, on one line>
-VFASTATE
+node "<plugin-root>/lib/ledger.mjs" append "<run directory>" --file state --digest <digest> --b64 <token>
 ```
 
-**Copy the object exactly** — every brace, every backslash, every quote. The writer recomputes
-the digest over what actually arrives and REFUSES a line that changed by one character. That is
-deliberate, and it is why you cannot corrupt this file even by accident.
+**Copy the token as one unbroken string.** Do not wrap it, do not insert a newline or a
+backslash continuation, and do not quote it. The writer decodes it, recomputes the digest over
+what came out, and REFUSES a line that changed by one character. That is deliberate, and it is
+why you cannot corrupt this file even by accident.
 
-The heredoc rather than `echo` or a redirected quoted string, because the object carries paths
-and free text, and one apostrophe in it turns a quoted append into a shell waiting for a closing
-quote. The closing delimiter must sit at the very start of its own line, with nothing before it:
-an indented delimiter never matches, and the shell swallows the rest of your session looking for
-it.
+Base64 rather than a heredoc, because a heredoc is still shell syntax and everything that has
+actually broken this file was shell syntax: a Windows path's backslashes, one apostrophe in a
+test name, a closing delimiter that arrived indented and swallowed the rest of the session. The
+token contains only letters, digits, `+`, `/` and `=`. There is nothing in it to escape, close
+or align.
+
+You will still meet the heredoc form elsewhere — it is how the working agents append their own
+`journal.jsonl` lines, which carry values only the observing agent knows and so cannot be
+encoded ahead of time. When a dispatch shows you a heredoc, use it exactly as shown, closing
+delimiter at the very start of its own line.
 
 Read what the writer prints:
 

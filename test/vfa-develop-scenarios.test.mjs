@@ -12,7 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 import { digestOrder } from '../lib/plan-digest.mjs'
 
@@ -497,10 +497,12 @@ test('each wave is recorded to the run state as it completes', async () => {
 
   const records = prompts.filter((p) => (p.opts.label || '').startsWith('record:wave-'))
   assert.equal(records.length, 2)
-  assert.ok(records[1].prompt.includes('"merged":["W1","W2"]'))
-  assert.ok(records[1].prompt.includes('"integration_head":"' + N40 + '"'))
-  assert.ok(records[1].prompt.includes('"integration_base":"' + A40 + '"'))
-  assert.ok(records[1].prompt.includes('"kind":"wave"'),
+
+  const { entry } = recordedLine(records[1].prompt)
+  assert.deepEqual(entry.merged, ['W1', 'W2'])
+  assert.equal(entry.integration_head, N40)
+  assert.equal(entry.integration_base, A40)
+  assert.equal(entry.kind, 'wave',
     'the line type is written explicitly — a reader must not have to infer it from shape')
 })
 
@@ -524,13 +526,15 @@ test('each approved order is recorded the moment its review closes', async () =>
     (p.opts.label || '') === 'record:W2')
 
   assert.equal(orderLines.length, 2)
-  assert.ok(orderLines[0].prompt.includes('"kind":"order-approved"'))
-  assert.ok(orderLines[0].prompt.includes('"order":"W1"'))
+
+  const { entry } = recordedLine(orderLines[0].prompt)
+  assert.equal(entry.kind, 'order-approved')
+  assert.equal(entry.order, 'W1')
   // The branch and worktree recorded are the ones the coder REPORTED, never the ones it was
   // asked for. A resume goes looking in the tree, and the tree holds what was actually made.
-  assert.ok(orderLines[0].prompt.includes('"branch":"wo-w1"'))
-  assert.ok(orderLines[0].prompt.includes('"worktree":"C:/wt/w1"'))
-  assert.ok(orderLines[0].prompt.includes('"head_sha":"' + B40 + '"'))
+  assert.equal(entry.branch, 'wo-w1')
+  assert.equal(entry.worktree, 'C:/wt/w1')
+  assert.equal(entry.head_sha, B40)
 })
 
 test('an order-approved line is written before the wave line it belongs to', async () => {
@@ -1525,7 +1529,8 @@ test('a wave records what it learned, and a resume inherits it', async () => {
       'merge:': mergeSequence([M40, N40]),
     }),
   })
-  assert.match(promptFor(writing, 'record:wave-1'), /POSTGRES_URL/)
+  assert.ok(recordedLine(promptFor(writing, 'record:wave-1')).entry.discovered
+    .some((d) => /POSTGRES_URL/.test(d)))
 
   // ...and read back on the way in.
   const { prompts: reading } = await runWorkflow(WF, {

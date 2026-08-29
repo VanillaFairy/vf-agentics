@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict } from './harness/resume-fixture.mjs'
 import { manifestOf } from '../lib/plan-digest.mjs'
+import { digestEntry } from '../lib/ledger.mjs'
 
 /**
  * Expand a plan-and-ledger fixture into the ONE dispatch surface a resume has: the
@@ -732,6 +733,56 @@ test('a green order is never measured against a sibling pair\'s unimplemented te
       id + ' drew a fix round for a failure it does not own — the tree it was verified in ' +
       'carried another pair\'s red tests')
   }
+})
+
+test('every state line the workflow mints decodes to the line its digest was taken over', async () => {
+  // The two implementations that must agree: the workflow encodes base64 by hand, because a
+  // workflow script has no Buffer and no imports, and lib/ledger.mjs decodes with Buffer. A
+  // padding slip or a surrogate mishandled on one side would produce tokens the writer refuses
+  // — and the run would still finish, reporting a degraded side channel, with the resume point
+  // silently gone. That is the failure this run already had once, from the other direction.
+  //
+  // Checked end to end rather than by unit-testing the encoder: what matters is that the exact
+  // command the recorder is told to run is a command the writer accepts.
+  const { prompts } = await runTwoPairs()
+  const records = prompts.filter((p) => /^record:/.test(p.opts.label || ''))
+
+  assert.ok(records.length > 0, 'the run recorded something')
+
+  for (const { prompt, opts } of records) {
+    const call = /--digest (\S+) --b64 (\S+)/.exec(prompt)
+    assert.ok(call, opts.label + ': the dispatch does not carry a digest and a token')
+
+    const decoded = Buffer.from(call[2], 'base64').toString('utf8')
+    const entry = JSON.parse(decoded)
+
+    assert.equal(digestEntry(entry), call[1],
+      opts.label + ': what the token decodes to is not what the digest was minted over')
+    assert.ok(/[\u0100-\uffff]/.test(decoded) === false || decoded.length > 0)
+    assert.ok(!/\s/.test(call[2]), opts.label + ': the token must be one unbroken string')
+  }
+})
+
+test('a state line carrying a Windows path survives the transport intact', async () => {
+  // The shape that broke the heredoc. The worktree path reaches the recorder through the same
+  // token as everything else, so the backslashes never meet a shell at all.
+  const { prompts } = await run({
+    plan: pairPlan([plainOrder('W1')], [['W1']]),
+    'verify:': verifierSaying({
+      'verify:W1': verified({ discriminator: [{ test_id: 't', failed_on_base: true, passes_now: true }] }),
+    }),
+    'code:': coded({ worktree: 'C:\\repo\\.claude\\worktrees\\wf-1' }),
+  })
+
+  const record = prompts.find((p) => /^record:W1/.test(p.opts.label || ''))
+  assert.ok(record, 'the approved order was recorded')
+
+  const call = /--digest (\S+) --b64 (\S+)/.exec(record.prompt)
+  const entry = JSON.parse(Buffer.from(call[2], 'base64').toString('utf8'))
+
+  assert.equal(digestEntry(entry), call[1])
+  assert.ok(!/VFASTATE/.test(record.prompt),
+    'no heredoc remains on the path that mints its own lines')
 })
 
 test('a coder reporting nothing to fix is escalated for THAT, not as incoherent', async () => {

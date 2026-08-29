@@ -86,6 +86,58 @@ test('key order is not corruption — a re-emitted object still matches', () => 
 
 // --- what the writer insists on -------------------------------------------------------------
 
+// --- the base64 transport -------------------------------------------------------------------
+//
+// A heredoc is shell syntax, and everything that has actually corrupted this file was shell
+// syntax: run 20260829-140744 lost its wave-1 line and every order-escalated line to a mismatch
+// the recorder could not get past in three attempts, while every journal line — written by the
+// working agents themselves — landed. The digest made that detectable; it could not make the
+// retry, typed by the same agent into the same shell, any likelier to succeed.
+
+test('a line handed to the CLI as base64 lands byte-identically', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const CLI = new URL('../lib/ledger.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+
+  const dir = runDir()
+  // The exact shapes that broke the heredoc: a Windows path and an apostrophe in free text.
+  const entry = line({
+    worktree: 'C:\\repo\\.claude\\worktrees\\w2',
+    discovered: ["the parser doesn't accept a trailing comma"],
+  })
+  const token = Buffer.from(JSON.stringify(entry), 'utf8').toString('base64')
+
+  const out = JSON.parse(execFileSync(process.execPath,
+    [CLI, 'append', dir, '--file', 'state', '--digest', digestEntry(entry), '--b64', token],
+    { encoding: 'utf8' }))
+
+  assert.equal(out.ok, true, out.error)
+  assert.deepEqual(JSON.parse(lines(dir)[0]), entry,
+    'a backslash path and an apostrophe survive a transport with no metacharacters')
+})
+
+test('a base64 token damaged in transit is still refused by the digest', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const CLI = new URL('../lib/ledger.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+
+  const dir = runDir()
+  const entry = line()
+  const minted = digestEntry(entry)
+  const good = Buffer.from(JSON.stringify({ ...entry, order: 'W3' }), 'utf8').toString('base64')
+
+  // Encoding removes the shell's ability to damage the line; it does not remove the check.
+  let threw = null
+  try {
+    execFileSync(process.execPath,
+      [CLI, 'append', dir, '--file', 'state', '--digest', minted, '--b64', good],
+      { encoding: 'utf8' })
+  } catch (err) {
+    threw = err
+  }
+
+  assert.ok(threw, 'a token carrying a different line must exit non-zero')
+  assert.match(JSON.parse(threw.stdout).error, /digest mismatch/)
+})
+
 test('a line with no kind is refused: every reader indexes on it', () => {
   assert.match(entryProblem({ seq: 1 }), /non-empty "kind"/)
 })
