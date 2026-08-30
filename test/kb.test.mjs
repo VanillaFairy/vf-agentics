@@ -19,14 +19,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  appendEntries, chainFor, chainNodes, compactTree, digestEntry, entryProblem, lcaOf, readNode,
-  safePath, stateOf, treeNodes, verifyTree,
+  appendEntries, chainFor, chainNodes, compactTree, digestEntry, entryProblem, indexTree, lcaOf,
+  readNode, safePath, stateOf, treeNodes, verifyTree,
 } from '../lib/kb.mjs'
 
 const KB = fileURLToPath(new URL('../lib/kb.mjs', import.meta.url))
@@ -457,6 +459,69 @@ test('the reported entry carries the state and leaves the anchors behind', () =>
     ['about', 'claim', 'id', 'kind', 'node', 'observed_at', 'reason', 'source', 'state'])
 })
 
+// ── the index: where this repository knows anything, bought before any path is known ─────────
+//
+// Increment 14's mechanism fix. Before a decomposition runs, the only known paths are the
+// question's roots, whose chain is the level-0 node alone — so a planner handed "the chain at
+// the roots" is handed almost nothing. The index says where knowledge SITS, the decomposition
+// names subtrees against it, and the chains are bought per topic afterwards.
+
+test('the index reports every node that holds something, with counts and kinds', () => {
+  const { dir, head } = repo()
+
+  deposit(dir, [
+    entry({ id: 'repo-wide', about: ['src/a.js', 'src/ui/b.js'], observed_at: head }),
+    entry({ id: 'ui-only', about: ['src/ui/b.js'], observed_at: head }),
+    entry({
+      id: 'command:build', kind: 'command', about: ['src/ui/b.js'], observed_at: head,
+      command: { name: 'build', value: 'npm run build', absent: false },
+    }),
+  ])
+
+  const payload = indexTree(dir)
+  assert.deepEqual(payload.nodes.map((n) => n.node), ['src', 'src/ui/b.js'])
+  assert.deepEqual(payload.nodes.find((n) => n.node === 'src'), { node: 'src', entries: 1, kinds: { gotcha: 1 } })
+  assert.deepEqual(payload.nodes.find((n) => n.node === 'src/ui/b.js').kinds, { gotcha: 1, command: 1 })
+  assert.deepEqual(payload.counts, { nodes: 2, entries: 3 })
+})
+
+test('the index computes no state, and does not pretend to have asked', () => {
+  const { dir, head } = repo()
+  deposit(dir, [entry({ observed_at: head })])
+  commit(dir, { 'src/a.js': 'alpha changed\n' }, 'a hand moves the subject')
+
+  const payload = indexTree(dir)
+
+  // The same entry reads `stale` through a chain. The index says only that a node holds one
+  // gotcha — freshness costs a git call per entry, and this command exists to be affordable
+  // before anybody knows which paths matter.
+  assert.equal(stateFor(dir, 'the-trap').state, 'stale')
+  assert.deepEqual(payload.nodes[0].kinds, { gotcha: 1 })
+  assert.ok(!('dirty_readable' in payload),
+    'the absent field is the honest signal that no freshness question was asked here')
+  assert.ok(!/fresh|stale|orphaned/.test(JSON.stringify(payload.nodes)),
+    'an index that named a state would be a status written down, which is the one thing this ' +
+    'tree does not do')
+})
+
+test('the index of a repository with no knowledge base is an empty index, not an error', () => {
+  const { dir } = repo()
+  const payload = indexTree(dir)
+
+  assert.deepEqual(payload.nodes, [])
+  assert.deepEqual(payload.counts, { nodes: 0, entries: 0 })
+})
+
+test('a malformed line is counted by the index rather than counted as knowledge', () => {
+  const { dir, head } = repo()
+  deposit(dir, [entry({ observed_at: head })])
+  appendFileSync(join(dir, '.claude/vfa/kb/src/a.js/node.jsonl'), '{"id":"broken"}\n', 'utf8')
+
+  const payload = indexTree(dir)
+  assert.equal(payload.malformed, 1)
+  assert.equal(payload.counts.entries, 1, 'a line the reader cannot use is not a thing known')
+})
+
 // ── the CLI: one envelope, one digest, the pattern every courier in this plugin carries ──────
 
 test('the read commands print a digest-covered envelope and exit 0', () => {
@@ -469,6 +534,18 @@ test('the read commands print a digest-covered envelope and exit 0', () => {
   assert.equal(typeof parsed.payload_digest, 'string')
   assert.equal(parsed.payload.counts.fresh, 1)
   assert.equal(parsed.payload.chains[0].entries[0].id, 'the-trap')
+})
+
+test('the index travels in the same envelope, under the same digest', () => {
+  const { dir, head } = repo()
+  deposit(dir, [entry({ observed_at: head })])
+
+  const out = execFileSync(process.execPath, [KB, 'index', dir], { encoding: 'utf8' })
+  const parsed = JSON.parse(out)
+
+  assert.equal(typeof parsed.payload_digest, 'string')
+  assert.deepEqual(parsed.payload.counts, { nodes: 1, entries: 1 })
+  assert.deepEqual(parsed.payload.nodes[0].kinds, { gotcha: 1 })
 })
 
 test('the writer prints the ledger\'s shape, so its dispatch reads like the recorder\'s', () => {
@@ -511,7 +588,7 @@ test('an unknown command names what it expected instead of doing something adjac
   } catch (err) {
     out = err.stdout
   }
-  assert.match(JSON.parse(out).error, /expected chain, verify, compact or append/)
+  assert.match(JSON.parse(out).error, /expected chain, index, verify, compact or append/)
 })
 
 // ── stateOf is callable on its own, which is what a later increment will extend ──────────────
