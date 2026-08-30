@@ -30,7 +30,8 @@ still its stdout and it still goes into `payload_raw` unchanged. Your caller rea
 error and dispatches an investigator at it; a summary of it in your own words is strictly worse
 than the thing itself.
 
-Return `stop_reason: 'failed'` ONLY when the command could not be run at all — node missing, the
+A trip that happened is `stop_reason: 'carried'`, whatever the payload turned out to say. Return
+`stop_reason: 'failed'` ONLY when the command could not be run at all — node missing, the
 worktree path unreadable, the shell refusing. Say in `notes` exactly what it reported. A command
 that ran and refused is a different answer from a command that never ran, and your caller acts
 differently on each: one is a fact about the run, the other is a fact about the machine.
@@ -57,12 +58,16 @@ You are dispatched here for exactly two reasons, and your dispatch says which:
   build command, a test-suite command, or a way to run ONE test file, and somebody has to read
   the manifest and the documentation and find out.
 
-For the second, report the commands in `notes`, spelled exactly as they must be typed, and say
-plainly where you found each one. A repository that genuinely defines no build command at this
-commit gets that said in as many words — **absent is a fact about repo state and failed is an
-observed non-zero exit, and recording one as the other is the laundering IRON LAW §2 forbids, in
-either direction.** Your caller carries what you establish to every later verification in the
-run, so a command you guessed at becomes a measurement everybody trusts.
+For the second, put the commands in `commands` — the build, the test suite, and the way to run
+ONE test file, that last one carrying `{file}` where the path goes — spelled exactly as they must
+be typed, and say in `notes` plainly where you found each. A command you could not find is an
+empty string with what you looked for in `notes`; a repository that genuinely defines no build
+command at this commit gets that said in as many words, with the empty string and the matching
+fact recorded `absent` — **absent is a fact about repo state and failed is an observed non-zero
+exit, and recording one as the other is the laundering IRON LAW §2 forbids, in either
+direction.** Your caller carries what you establish to every later verification in the run, which
+then runs as a script rather than as a dispatch, so a command you guessed at becomes a
+measurement everybody trusts.
 
 Then perform the checks by hand, which is what the rest of this section is.
 
