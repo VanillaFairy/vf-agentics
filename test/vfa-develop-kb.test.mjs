@@ -401,6 +401,150 @@ test('a command adopted from the base is not deposited again', async () => {
     're-writing it would restamp somebody else\'s measurement with this run\'s base sha')
 })
 
+// ── the null survey: the first phase whose PRESENCE is derived ───────────────────────────────
+//
+// Increment 14 §4. Two halves of two kinds. The judgment — is this change's shape settled —
+// stays in the caller's seat and arrives as a flag; the arithmetic — does the base cover every
+// path the caller named, with entries a program found still standing — is computed here and is
+// never anybody's claim. Both must hold. A survey skipped on the strength of leads would be the
+// laundering the whole plugin exists to prevent, so the stale case is pinned as hard as the
+// firing case.
+
+const GROUND = { ...ARGS, settled_shape: true, ground: ['src/W1.js'] }
+
+/** A run that never reaches the nested survey needs no survey handler to prove it. */
+const runGround = (over, args = GROUND) => runWorkflow(WF, {
+  args,
+  workflow: () => { throw new Error('the survey was invoked') },
+  agent: cast({ 'kb-ground': carriedChain({ 'src/W1.js': [{ claim: 'a fact about W1 ground' }] }), ...over }),
+})
+
+test('a fully fresh chain over the named ground collapses the survey to nothing', async () => {
+  const { result, prompts, logs } = await runGround()
+
+  assert.deepEqual(labelsOf(prompts).filter((l) => l === 'kb-ground'), ['kb-ground'],
+    'one chain read decides the whole question')
+  assert.match(logs.join(' '), /No survey: the knowledge base covers every named path/)
+  assert.deepEqual(result.integration.merged, ['W1'], 'everything downstream runs as it would have')
+
+  // The evidence phase did not run, and this block is the only account of that anybody gets.
+  const from = result.coverage.from_kb
+  assert.ok(from.length >= 2)
+  assert.match(from[0], /no survey phase ran/)
+  assert.match(from[0], /NOTHING BELOW WAS RE-SEARCHED BY THIS RUN/)
+  assert.match(from[1], /^src\/W1\.js: 1 fresh entry, observed at base1234$/)
+  assert.equal(result.coverage.complete, true,
+    'nothing was dropped and nothing left unreached — what makes that honest is that the ' +
+    'block above says where the evidence came from')
+})
+
+test('the chain becomes the planner\'s evidence base, named as recalled rather than searched', async () => {
+  const { prompts } = await runGround()
+  const plan = promptFor(prompts, 'plan')
+
+  assert.match(plan, /EVIDENCE BASE: THE PROJECT KNOWLEDGE BASE, NOT A SEARCH RUN TODAY/)
+  assert.match(plan, /a fact about W1 ground/)
+  assert.match(plan, /It is not a search: anything this change needs that these entries do not name/)
+  assert.ok(!/no survey evidence was gathered/.test(plan),
+    'a run with a fresh chain in hand is not a run planning blind, and saying so would be false')
+})
+
+test('a stale chain REFUSES the collapse — a lead is not evidence', async () => {
+  const { logs } = await runWorkflow(WF, {
+    args: GROUND,
+    workflow: () => surveyResult(),
+    agent: cast({
+      'kb-ground': carriedChain({
+        'src/W1.js': [{ claim: 'a claim whose ground has since moved', state: 'stale' }],
+      }),
+    }),
+  })
+
+  assert.match(logs.join(' '), /Surveying in full: the knowledge base does not cover src\/W1\.js/)
+  assert.match(logs.join(' '), /1 entry, none fresh — a lead is not evidence/)
+})
+
+test('one uncovered path among several refuses the collapse for all of them', async () => {
+  const { logs } = await runWorkflow(WF, {
+    args: { ...GROUND, ground: ['src/W1.js', 'src/W2.js'] },
+    workflow: () => surveyResult(),
+    agent: cast({
+      'kb-ground': carriedChain({
+        'src/W1.js': [{ claim: 'a fact about W1 ground' }],
+        'src/W2.js': [],
+      }),
+    }),
+  })
+
+  assert.match(logs.join(' '), /does not cover src\/W2\.js \(nothing recorded\)/)
+  assert.ok(!/No survey:/.test(logs.join(' ')),
+    'the ground is what the caller named, all of it — a partial chain covers a partial change')
+})
+
+test('a settled shape with no named ground surveys in full and buys no chain', async () => {
+  const { prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, settled_shape: true },
+    workflow: () => surveyResult(),
+    agent: cast(),
+  })
+
+  assert.ok(!labelsOf(prompts).includes('kb-ground'),
+    'with nothing named there is no arithmetic to do, and a chain over nothing decides nothing')
+})
+
+test('named ground without the settled-shape judgment surveys in full', async () => {
+  const { prompts } = await runWorkflow(WF, {
+    args: { ...ARGS, ground: ['src/W1.js'] },
+    workflow: () => surveyResult(),
+    agent: cast(),
+  })
+
+  assert.ok(!labelsOf(prompts).includes('kb-ground'),
+    'the judgment half is the caller\'s, and this script never infers it from the paths')
+})
+
+test('a ground chain that cannot be read surveys in full rather than assuming either way', async () => {
+  const { result, logs } = await runWorkflow(WF, {
+    args: GROUND,
+    workflow: () => surveyResult(),
+    agent: cast({
+      'kb-ground': { stop_reason: 'failed', payload_raw: '', notes: 'node is not on the PATH' },
+    }),
+  })
+
+  assert.match(logs.join(' '), /could not be read.*surveying in full/i)
+  assert.deepEqual(result.coverage.from_kb, [],
+    'nothing was recalled, and a result that claimed otherwise would be claiming provenance ' +
+    'for evidence it does not have')
+})
+
+test('a survey that used the base carries that provenance out of the run', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    workflow: () => ({
+      ...surveyResult(),
+      coverage: {
+        ...surveyResult().coverage,
+        from_kb: ['loader: 2 fresh knowledge-base entries for src/game, observed at abc1234'],
+      },
+    }),
+    agent: cast(),
+  })
+
+  assert.deepEqual(result.coverage.from_kb,
+    ['loader: 2 fresh knowledge-base entries for src/game, observed at abc1234'],
+    'the evidence phase decides what was recalled; this layer inherits it rather than re-deriving it')
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a run whose survey named no provenance reads as nothing recalled', async () => {
+  // The degrade direction that matters. An older survey carries no `from_kb` at all, and the
+  // safe reading of a missing field is "nothing came from cache" — never the reverse.
+  const { result } = await run()
+
+  assert.deepEqual(result.coverage.from_kb, [])
+})
+
 // ── the side channel degrades, and says so ───────────────────────────────────────────────────
 
 test('a knowledge base that cannot be read costs the run nothing it already paid for', async () => {

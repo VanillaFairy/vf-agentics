@@ -871,6 +871,24 @@ const retryEscalated = Array.isArray(input.retry_escalated) ? input.retry_escala
 // end of that: the one entry point that cannot forget to look is this script itself.
 const confirmedDuplicate = input.confirmed_duplicate === true
 
+// The two halves of the null-survey decision, and they are deliberately different KINDS of
+// input (increment 14 §4).
+//
+// `settled_shape` is the judgment half and it stays in the caller's seat: whether a change's
+// approach is decided rather than something the change has to discover is exactly the question
+// the develop skill's triage already asks out loud, and no arithmetic in this script can answer
+// it. Nothing here infers it from anything.
+//
+// `ground` is what makes the other half computable: the paths the caller says this change is
+// about. The triage has already established them — "one obvious locus" is its first property —
+// so naming them is making an existing judgment legible rather than asking for a new one. What
+// this script then computes, and never takes on anybody's word, is whether the knowledge base
+// covers every one of them with a FRESH entry. Both must hold, or the survey runs in full.
+const settledShape = input.settled_shape === true
+const ground = (Array.isArray(input.ground) ? input.ground : [])
+  .map((p) => String(p || '').split('\\').join('/').replace(/^\.\//, '').replace(/\/+$/, '').trim())
+  .filter(Boolean)
+
 // Where the integration worktree branches from. Absent is today's behaviour: the repository's
 // current HEAD. Present, it is A NAMED REF AND NOTHING ELSE — a bare sha is refused at input,
 // below, rather than accepted and quietly stored.
@@ -1422,6 +1440,11 @@ function coverageOf(parts) {
       .concat(deferred.map(deferredNote))
       .concat(escalations.map(escalationNote))
       .concat(extraUnreached),
+    // Provenance, inherited rather than re-derived: whatever the evidence phase rested on the
+    // knowledge base for is what this run rested on, and the one place that is decided is the
+    // evidence phase. A null survey (increment 14 §4) writes its whole account here, because
+    // then there IS no nested survey and this block is the only thing a reader gets.
+    from_kb: (surveyCoverage && surveyCoverage.from_kb) || [],
     resumable: {
       runId: RUN_ID,
       // Deduped: a failed wave verification and an open integration critical both point at
@@ -1446,6 +1469,7 @@ if (!change.trim()) {
       incomplete: [],
       failed_channels: [],
       unreached: ['no change was supplied, so nothing was planned or implemented'],
+      from_kb: [],
       resumable: { runId: RUN_ID, remaining: [] },
     },
   })
@@ -1471,6 +1495,7 @@ if (baseRef && SHA_RE.test(baseRef)) {
         'drift observation would compare the anchor against the anchor and report a moved ' +
         'tree as unchanged. Pass the branch or tag name instead.',
       ],
+      from_kb: [],
       resumable: { runId: RUN_ID, remaining: [] },
     },
   })
@@ -3727,6 +3752,7 @@ try {
             .concat(['the run directory at ' + resumePath + ' did not yield the plan that was ' +
                      'written there; nothing was dispatched, and no order was reported as ' +
                      'coupled. Read plan.json yourself, or re-plan.']),
+          from_kb: [],
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
@@ -3816,6 +3842,7 @@ try {
             'session as work to do by hand: some of it is already built, reviewed and merged. ' +
             'Re-invoke to try again, or read plan.json and state.jsonl yourself.',
           ],
+          from_kb: [],
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
@@ -3848,6 +3875,7 @@ try {
             JSON.stringify(change.trim()) + '. Nothing was dispatched. Re-invoke with the ' +
             'recorded change, or plan afresh.',
           ],
+          from_kb: [],
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
@@ -4126,6 +4154,7 @@ try {
               'half-built run gets planned a second time. Re-invoke to try again; if you ' +
               'are recovering an interrupted run, re-invoke with resume_path instead.',
             ],
+            from_kb: [],
             resumable: { runId: RUN_ID, remaining: [] },
           },
         })
@@ -4171,12 +4200,79 @@ try {
               'confirmed_duplicate true if a second, parallel run of the same change is ' +
               'genuinely intended.',
             ],
+            from_kb: [],
             resumable: { runId: RUN_ID, remaining: [] },
           },
         })
       }
     } else {
       log('confirmed_duplicate supplied: the existing-run guard is bypassed by request.')
+    }
+
+    // ------------------------------------------------- 1b. is a survey earned at all?
+    //
+    // The survey is the first phase whose PRESENCE is derived rather than assumed, and this is
+    // where that derivation lives (increment 14 §4). Two halves, deliberately of two kinds.
+    //
+    // The judgment half arrived as `settled_shape` from the caller — whether the approach is
+    // decided or is something this change has to discover is not a question arithmetic can
+    // answer, and inventing an inference for it here would be this script claiming a judgment.
+    //
+    // The arithmetic half is computed below and is never anybody's claim: the caller NAMES the
+    // ground, one chain is read over it, and the survey collapses only if every named path
+    // carries a FRESH entry — one a program checked against the current tree and found
+    // untouched since it was observed. A stale entry is a lead, and a phase skipped on the
+    // strength of leads is the laundering this whole plugin exists to prevent, so a chain with
+    // any uncovered path refuses the collapse and says which path and why.
+    //
+    // What collapses is the evidence PHASE, never a verdict: everything downstream — planning,
+    // verification, review — runs exactly as it would have. And the chain becomes the evidence
+    // base in the open, in `from_kb`, naming what it covered, at which commits, and what was
+    // therefore not re-searched.
+    let nullSurvey = null
+
+    if (settledShape && ground.length > 0) {
+      phase('Survey')
+      log(`Settled shape with named ground (${ground.join(', ')}): checking whether the ` +
+        `knowledge base already covers it.`)
+
+      const carried = carriedVerify(await agent(kbChainPrompt(ground), {
+        agentType: 'vf-agentics:kb', effort: 'low', model: 'haiku', schema: CARRIED,
+        phase: 'Survey', label: 'kb-ground',
+      }).catch((e) => {
+        log(`WARNING: the knowledge-base read failed to run: ${e && e.message}`)
+        return null
+      }), 'the knowledge-base reader')
+
+      if (!carried.payload) {
+        log(`The knowledge base could not be read (${carried.why}); surveying in full.`)
+      } else {
+        const byPath = new Map()
+        for (const chain of carried.payload.chains || []) {
+          byPath.set(kbPath(chain.path), chain.entries || [])
+        }
+
+        const covered = []
+        const uncovered = []
+        for (const path of ground) {
+          const entries = byPath.get(kbPath(path)) || []
+          const fresh = entries.filter((e) => e && e.state === 'fresh')
+          if (fresh.length > 0) covered.push({ path, fresh })
+          else uncovered.push({ path, stale: entries.filter((e) => e && e.state === 'stale').length })
+        }
+
+        if (uncovered.length > 0) {
+          log(`Surveying in full: the knowledge base does not cover ` +
+            uncovered.map((u) => u.path + (u.stale > 0
+              ? ` (${u.stale} entr${u.stale === 1 ? 'y' : 'ies'}, none fresh — a lead is not ` +
+                `evidence)`
+              : ' (nothing recorded)')).join(', ') + '.')
+        } else {
+          nullSurvey = covered
+          log(`No survey: the knowledge base covers every named path with fresh entries, and ` +
+            `the caller reports the shape settled. The chain is this run's evidence base.`)
+        }
+      }
     }
 
     // Registered workflows are plugin-namespaced, so the qualified name is tried first and
@@ -4192,29 +4288,34 @@ try {
       roots,
       notes,
       intelligence,
+      // The nested survey reads the knowledge base itself, and a script's cwd is not an
+      // agent's, so the root travels rather than being guessed at on the far side.
+      plugin_root: pluginRoot,
     }
     const notFound = (e) => /not found/i.test((e && e.message) || '')
     let surveyUnresolved = false
     let surveyFailure = ''
 
-    try {
-      survey = await workflow('vf-agentics:vfa-survey', surveyArgs)
-    } catch (e) {
-      if (!notFound(e)) {
-        surveyFailure = String((e && e.message) || e)
-        log(`WARNING: the survey failed: ${surveyFailure}`)
-        survey = null
-      } else {
-        try {
-          survey = await workflow('vfa-survey', surveyArgs)
-        } catch (e2) {
-          if (notFound(e2)) {
-            surveyUnresolved = true
-          } else {
-            surveyFailure = String((e2 && e2.message) || e2)
-            log(`WARNING: the survey failed: ${surveyFailure}`)
-          }
+    if (!nullSurvey) {
+      try {
+        survey = await workflow('vf-agentics:vfa-survey', surveyArgs)
+      } catch (e) {
+        if (!notFound(e)) {
+          surveyFailure = String((e && e.message) || e)
+          log(`WARNING: the survey failed: ${surveyFailure}`)
           survey = null
+        } else {
+          try {
+            survey = await workflow('vfa-survey', surveyArgs)
+          } catch (e2) {
+            if (notFound(e2)) {
+              surveyUnresolved = true
+            } else {
+              surveyFailure = String((e2 && e2.message) || e2)
+              log(`WARNING: the survey failed: ${surveyFailure}`)
+            }
+            survey = null
+          }
         }
       }
     }
@@ -4233,12 +4334,43 @@ try {
             'Nothing was planned or dispatched: planning without the evidence phase is the ' +
             'silent degradation this stop exists to prevent.',
           ],
+          from_kb: [],
           resumable: { runId: RUN_ID, remaining: [] },
         },
       })
     }
 
-    if (!survey || !survey.coverage) {
+    if (nullSurvey) {
+      // The evidence phase did not run, and this block is the only account anybody gets of
+      // that, so it says all of it: which ground the chain covered, at which commits it was
+      // observed, and — first, because it is the part a reader would otherwise assume — that
+      // none of it was re-searched by this run.
+      //
+      // `complete` is true and that is not a courtesy. Nothing was dropped and nothing was
+      // left unreached: every path the caller named is covered by an entry a program checked
+      // against the current tree just now. What makes this honest rather than laundering is
+      // that it cannot be told apart from a searched result WITHOUT this block — and with it,
+      // it can. That is the whole job of `from_kb`.
+      surveyCoverage = {
+        complete: true,
+        dropped: [],
+        incomplete: [],
+        failed_channels: [],
+        unreached: [],
+        from_kb: [
+          'no survey phase ran: the caller reported the shape settled and named the ground, ' +
+          'and the project knowledge base covers every named path with entries a program ' +
+          'checked against the current tree just now. NOTHING BELOW WAS RE-SEARCHED BY THIS ' +
+          'RUN — the chain is this run\'s evidence base, and any claim resting on it rests on ' +
+          'an earlier observation rather than on a search performed today.',
+        ].concat(nullSurvey.map(({ path, fresh }) => {
+          const shas = [...new Set(fresh.map((e) => e.observed_at || 'an unrecorded commit'))]
+          return `${path}: ${fresh.length} fresh entr${fresh.length === 1 ? 'y' : 'ies'}, ` +
+            `observed at ${shas.join(', ')}`
+        })),
+        resumable: { runId: RUN_ID, remaining: [] },
+      }
+    } else if (!survey || !survey.coverage) {
       // IRON LAW §5: a failed evidence channel must not discard the run. Planning continues
       // with the gap declared, and the gap keeps `complete` false all the way out. The two
       // ways of arriving here are different answers (§7: "I couldn't" is not "there is
@@ -4256,6 +4388,7 @@ try {
         incomplete: [],
         failed_channels: ['survey'],
         unreached: [surveyGap],
+        from_kb: [],
         resumable: { runId: RUN_ID, remaining: [] },
       }
     } else {
@@ -4274,8 +4407,22 @@ try {
         (surveyCoverage.complete ? '' :
           `WARNING: the survey did not complete. Not covered: ${gaps.join('; ')}. Your plan ` +
           `inherits that limit — say so in notes rather than planning around the hole.`)
-      : `WARNING: no survey evidence was gathered. Confirm every locus against the ` +
-        `repository yourself before declaring it, and say in notes what that leaves uncertain.`
+      : nullSurvey
+        ? `EVIDENCE BASE: THE PROJECT KNOWLEDGE BASE, NOT A SEARCH RUN TODAY. No survey was ` +
+          `bought for this change — the caller reported its shape settled and named the ` +
+          `ground, and every named path is covered by entries a program checked against the ` +
+          `current tree just now and found still standing. What follows was OBSERVED EARLIER ` +
+          `and recalled:\n` +
+          nullSurvey.map(({ path, fresh }) => `\n${path}:\n` + fresh
+            .map((e) => `  - [${e.kind}, seen at ${e.observed_at || 'an unrecorded commit'}] ` +
+              e.claim).join('\n')).join('\n') +
+          `\n\nPlan against it, and treat it as what it is. It is fresh by arithmetic — no ` +
+          `commit has touched the ground since it was observed — so it is sound evidence about ` +
+          `SHAPE. It is not a search: anything this change needs that these entries do not ` +
+          `name was not looked for by anybody. Where a locus you are about to declare rests on ` +
+          `that gap, say so in notes and in blocking_gaps rather than declaring it confidently.`
+        : `WARNING: no survey evidence was gathered. Confirm every locus against the ` +
+          `repository yourself before declaring it, and say in notes what that leaves uncertain.`
 
     planned = await agent(plannerPrompt(evidence), {
       agentType: 'vf-agentics:planner', effort: 'high',
@@ -4311,6 +4458,9 @@ try {
         incomplete: [],
         failed_channels: failedChannels,
         unreached: [`${change}: planning produced no work orders, so nothing was attempted`],
+        // This exit is downstream of the evidence phase, so it inherits that phase's
+        // provenance rather than asserting there was none.
+        from_kb: (surveyCoverage && surveyCoverage.from_kb) || [],
         resumable: { runId: RUN_ID, remaining: [] },
       },
     })
