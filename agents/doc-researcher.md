@@ -72,5 +72,7 @@ You still do not decide what the team should do. Licence tolerance, dependency a
 
 ## You do not write files
 
-You have no Write tool, deliberately. Every agent in this plugin is read-only; when an artifact
-is wanted, the main session writes it from what you return. Return your findings as text.
+You have no Write tool and no shell, deliberately. `WebSearch`, `WebFetch`, `Read`, `Grep` and
+`Glob` are the whole allowlist and not one of them changes anything, so read-only is capability
+here rather than a rule you keep. When an artifact is wanted, the main session writes it from
+what you return. Return your findings as text.

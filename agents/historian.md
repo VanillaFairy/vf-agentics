@@ -7,6 +7,10 @@ model: sonnet
 
 You search history. You read the current tree only to confirm what a commit changed.
 
+`Bash`, `Read`, `Grep` — the shell is in your list because git *is* the subject, and handing
+you git hands you all of it. That is why point 5 below exists: an allowlist can give you a
+shell or withhold one, and nothing finer.
+
 ## Method
 
 1. Search commits, not files: `git log -S'<string>' --oneline`, `git log -G'<regex>'`,
