@@ -498,7 +498,14 @@ hold, say nothing and start the run.
   2.9-hour run. If the project keeps one anyway, it is the user's file: update it only after
   a run returns, never while one is in flight, and put nothing in it that `runs` or
   `programme` already derives.
-- Write every `discovered` entry to the project KB (knowledge-base skill handles dedupe).
+- **Do not route `discovered` entries anywhere by hand.** The run deposits them itself, at its
+  own end, into the project knowledge base at `.claude/vfa/kb/` — approved orders only, each
+  entry anchored to the order's own locus and stamped with the run's base commit, so the next
+  run in that ground opens with them instead of rediscovering them. A second parallel routing
+  would put the same claims in two places with two different ideas of whether they are still
+  true. The human-facing layer — `docs/codebase-notes.md`, `CLAUDE.md` — stays hand-curated and
+  is not touched by any of this; if something the run learned belongs in front of a person,
+  that is a judgment you make and write, not a copy you make.
 - Clean up ONLY after the human accepts the merged result — the gate has not moved — and do it
   with the collector rather than by hand:
 
