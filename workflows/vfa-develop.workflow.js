@@ -984,6 +984,13 @@ const weightOf = (order) => (WEIGHTS.has(order && order.weight) ? order.weight :
  * `light` drops to sonnet; everything else sits at the run's ceiling. A trivial order does not
  * stop being reviewed — it stops being reviewed by the most expensive reader in the run, which
  * is where a mixed plan's judging cost actually goes.
+ *
+ * Difficulty does not move this floor, and that is deliberate: a judge's product is sometimes
+ * *refusal* — a planner naming a blocking gap, a reviewer minting a critical, evidence reaching
+ * the human gate — and a cheaper judge does not refuse less often because the work turned out
+ * easy, it refuses less often full stop. That failure is silent, because the run still goes
+ * green. `light` is the one sanctioned move against this floor, and it is downward and per-order
+ * only — nothing here escalates a judge the way `coderFor` now escalates a coder.
  */
 function judgeFor(order) {
   return weightOf(order) === 'light'
@@ -991,25 +998,35 @@ function judgeFor(order) {
     : judge
 }
 
+// An order whose output BECOMES THE STANDARD later work is measured against cannot be checked
+// by anything downstream, because everything downstream is fenced to it: a red order pins the
+// acceptance criteria in failing tests; the green coder is fenced to those criteria and
+// implements a wrong reading faithfully; the reviewer is fenced to the same criteria and has no
+// standing to object. The defect surfaces at the integration review or the human gate — the
+// expensive end — where a contract order's defect surfaces in every order built against it.
+// `red` and `contract` are the two current instances of that rule, not the rule itself.
+const outputIsTheYardstick = (order) =>
+  Boolean(order) && (order.role === 'red' || order.contract === true)
+
 /**
  * Which model implements this order.
  *
- * A floor sits under the dial here, and it is not a per-order preference: `red` and `contract`
- * orders implement at opus at EVERY dial position, which `docs/2026-08-17-intelligence-
- * tiering.md` §6.3 states as an ALWAYS and §7 never waived. The reason is that their defects
- * are the ones nothing downstream can catch. A red order pins the acceptance criteria in
- * failing tests; the green coder is fenced to those criteria and implements a wrong reading
- * faithfully; the reviewer is fenced to the same criteria and has no standing to object. The
- * defect surfaces at the integration review or the human gate — the expensive end — where a
- * contract order's defect surfaces in every order built against it.
+ * The floor from `outputIsTheYardstick` sits under the dial at EVERY dial position, which
+ * `docs/2026-08-17-intelligence-tiering.md` §6.3 states as an ALWAYS and §7 never waived.
+ * `light` still drops to sonnet, but never through that floor: a red order is never light.
  *
- * `light` still drops to sonnet, but never through the floor: a red order is never light.
+ * A second, later-arriving reason floors it the same way: a fix dispatched in review round 2
+ * or later follows a round that did not clear its blockers, which is measured evidence the
+ * tier was too low rather than a prediction that it might be — so `round` proves the order hard
+ * exactly as surely as `outputIsTheYardstick` declares it hard up front, and it is checked
+ * before `weightOf` so a light order's discount does not survive being proven wrong.
  */
-function coderFor(order) {
-  const structural = order && (order.role === 'red' || order.contract === true)
+function coderFor(order, round) {
+  const structural = outputIsTheYardstick(order)
   const base = coderTier.model || 'sonnet'
+  const proven = Number(round) >= 2
 
-  if (structural) return { model: higherOf(base, 'opus') }
+  if (structural || proven) return { model: higherOf(base, 'opus') }
   if (weightOf(order) === 'light') return { model: lowerOf(base, 'sonnet') }
   return coderTier
 }
@@ -1718,6 +1735,10 @@ function plannerPrompt(surveyEvidence) {
     `need it and is the same as marking nothing. Marking a subtle order light is the more ` +
     `expensive mistake: it buys a cheap implementation and a cheap review of it, and the two ` +
     `agree.\n\n` +
+    `A plan where nearly every order carries the same non-standard weight has not actually ` +
+    `judged them — it has picked one label and stamped it across the board, which reads no ` +
+    `differently from never having weighed anything at all. The run logs the distribution once ` +
+    `dispatch starts, so a plan that skipped this step is visible to the user reading the log.\n\n` +
     `Compare the survey's coverage gaps against what the change itself names or leans on. ` +
     `A gap the change explicitly depends on goes in blocking_gaps — one entry per gap: the ` +
     `gap, then what depends on it. A non-empty blocking_gaps makes the workflow withhold ` +
@@ -2572,7 +2593,17 @@ const orderStageLine = (kind, wave, state) => ({
   measured: (state.measured || []).slice(),
 })
 
-const orderLine = (wave, state) => orderStageLine('order-approved', wave, state)
+// 'charter' rather than a guessed model name, on all three tier fields: when a tier spreads
+// {} the run never named a model, and writing the charter's current default into a durable
+// record would state as fact something a later edit to the agent's own frontmatter silently
+// falsifies.
+const orderLine = (wave, state, wo, trail) => ({
+  ...orderStageLine('order-approved', wave, state),
+  weight: weightOf(wo),
+  coder_model: coderFor(wo).model || 'charter',
+  judge_model: judgeFor(wo).model || 'charter',
+  review_rounds: trail.filter((t) => t.kind === 'review').length,
+})
 
 // An escalation recorded where it happens, not only in the wave line that eventually closes
 // over it. A run killed mid-wave loses that wave line, and with it every escalation the
@@ -3410,10 +3441,17 @@ async function reviewLoop(wo, state, trail) {
     churnedBefore = churnedBefore || churned
 
     const headBefore = state.head_sha
+    const fixTier = coderFor(wo, round)
+    // Logged only when this round is the one that actually moved the tier — comparing against
+    // the PRIOR round rather than a hardcoded "round 2" so the log stays honest if the escalation
+    // rule above ever changes shape.
+    if (fixTier.model !== coderFor(wo, round - 1).model) {
+      log(`${wo.id}: round ${round} — the first fix did not clear; implementing at opus.`)
+    }
     const fixCall = await dispatch(wo, state, trail, 'the review fix round for ' + wo.id, open,
       () => agent(coderFixPrompt(wo, state, reviewFixInstruction(open)), {
         agentType: 'vf-agentics:coder', effort: 'medium', schema: CODER_RESULT,
-        phase: 'Review', label: `fix:${wo.id}#${round}`, ...coderFor(wo),
+        phase: 'Review', label: `fix:${wo.id}#${round}`, ...fixTier,
       }), coherentFix)
     if (fixCall.escalation) return fixCall.escalation
 
@@ -3621,7 +3659,7 @@ async function verifyAndReview(carried, wo, waveNumber) {
       // review loop, at full price, to rediscover a verdict this run had reached.
       await appendState(escalationLine(waveNumber, wo, escalation.reason), `escalated:${wo.id}`)
     } else {
-      await appendState(orderLine(waveNumber, held.state), `record:${wo.id}`)
+      await appendState(orderLine(waveNumber, held.state, wo, held.trail), `record:${wo.id}`)
     }
 
     return { wo, state: held.state, trail: held.trail, escalation }
@@ -5070,6 +5108,16 @@ try {
   const plannedDispatches = waves.reduce((n, ids) => n + waveCost(ids), 0)
   log(`Plan size: ${orders.length} order(s) across ${waves.length} wave(s) — at least ` +
     `${plannedDispatches} agent dispatches before the integration review.`)
+
+  // A missing `weight` counts as `standard` here, matching exactly what weightOf prices it as —
+  // so this line and the tier a resumed order actually pays never disagree about what it is.
+  const weightCounts = orders.reduce((counts, wo) => {
+    const w = weightOf(wo)
+    counts[w] = (counts[w] || 0) + 1
+    return counts
+  }, {})
+  log(`Weights: ${weightCounts.light || 0} light / ${weightCounts.standard || 0} standard / ` +
+    `${weightCounts.heavy || 0} heavy.`)
 
   if (hasTarget) {
     log(`Token target set: ${Math.round(remainingNow() / 1000)}k remaining. Waves will stop at ` +
