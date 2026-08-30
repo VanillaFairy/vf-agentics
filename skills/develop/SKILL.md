@@ -126,6 +126,50 @@ that already has a `planned` or `in-flight` run recording the same change string
 `existing_run`, step 3), so a cache miss can no longer silently buy a duplicate — but that
 refusal is a stop, and passing `resume_path` up front is the version of it that keeps moving.
 
+## Triage — is this change worth the pipeline?
+
+**One honest question, asked once, before any survey is bought.** It applies to fresh work
+only: a resume (step 0) is a plan somebody already paid for, and `--plan-only` is a user who
+asked for a plan in so many words. Neither gets triaged.
+
+Three properties. The answer only points one way when **all three** hold:
+
+- **one obvious locus** — the file or small cluster of files that changes is already known,
+  and finding it is not part of the work;
+- **a settled shape** — the approach is decided rather than something this change has to
+  discover;
+- **nothing to partition** — no independent pieces to run side by side, and no red/green
+  split worth holding, because it is one series of commits by one author.
+
+When all three hold, offer the work back, in these terms: **this fits a direct session with a
+reviewer pass; the pipeline would cost more than it protects.**
+
+**Say why, with the numbers.** They are in `docs/2026-08-29-eva-plays-2-field-audit.md`, which
+read ten sessions end to end and asked of each whether a naive "do X" would have served
+better. Seven of ten: yes. A run buys ~400–500k tokens of survey before a line is written; a
+TDD'd behaviour costs 10–12 dispatches across its red and green halves; a five-line
+camera-rounding fix carried its own 48-line pinned test through two dedicated worktrees. The
+best direct session in that audit landed ~1,300 lines, 62 tests and four clean commits in 35
+minutes with zero corrections. That comparison is the user's to make, and they can only make
+it if you put it in front of them.
+
+**Say what a direct session should keep.** The audit's other half is that the periphery is
+what paid: adversarial review and the discriminator caught real defects that would otherwise
+have shipped. So the recommendation is not "just write it" — it is write it directly, then
+dispatch a fresh `vf-agentics:reviewer` over the diff, and where the change is a fix, write
+the test that fails first. That is the cheap two-thirds of what the pipeline is for.
+
+**Declining is a recommendation, never a refusal.** The user's "run it anyway" is the end of
+the conversation, not the start of a second round of it — proceed to step 1 and say nothing
+further about cost. A skill that argues twice has turned advice into a gate, and the IRON LAW
+does not have a cost exception for the pipeline's own opinion of the work.
+
+**And do not reach for it where it does not fit.** Several loci, an unsettled approach, a
+contract other code depends on, anything with independent pieces, or a change the user wants
+reviewed adversarially — all of those are what this pipeline is for. A triage that declines
+those is not saving money, it is declining the work. When the three properties do not all
+hold, say nothing and start the run.
+
 ## Run the pipeline
 
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working tree
