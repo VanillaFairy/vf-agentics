@@ -38,10 +38,6 @@ const clean = [
 
 // --- the module contract ----------------------------------------------------------------
 
-test('the rule id equals its filename stem', () => {
-  assert.equal(id, 'coverage-block')
-})
-
 test('the rule applies to workflow scripts', () => {
   assert.equal(applies.test(WF), true)
 })

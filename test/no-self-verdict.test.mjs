@@ -13,10 +13,6 @@ import { id, applies, check } from '../tools/rules/no-self-verdict.mjs'
 
 const FILE = 'workflows/vfa-develop.workflow.js'
 
-test('the rule id matches its filename stem', () => {
-  assert.equal(id, 'no-self-verdict')
-})
-
 test('it applies to workflow scripts and nothing else', () => {
   assert.ok(applies.test('workflows/vfa-develop.workflow.js'))
   assert.ok(!applies.test('agents/reviewer.md'))

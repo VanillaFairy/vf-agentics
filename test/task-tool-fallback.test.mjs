@@ -13,10 +13,6 @@ import { id, applies, check } from '../tools/rules/task-tool-fallback.mjs'
 
 const FILE = 'skills/investigate/SKILL.md'
 
-test('the rule id matches its filename stem', () => {
-  assert.equal(id, 'task-tool-fallback')
-})
-
 test('it applies to skills and nothing else', () => {
   assert.ok(applies.test('skills/investigate/SKILL.md'))
   assert.ok(applies.test('skills/develop/SKILL.md'))

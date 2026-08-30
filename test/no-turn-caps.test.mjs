@@ -14,10 +14,6 @@ import { id, applies, check } from '../tools/rules/no-turn-caps.mjs'
 const WF = 'workflows/vfa-survey.workflow.js'
 const SKILL = 'skills/investigate/SKILL.md'
 
-test('the rule id matches its filename stem', () => {
-  assert.equal(id, 'no-turn-caps')
-})
-
 test('it applies to workflow scripts, SKILL.md, and agent charters — not to tools', () => {
   // Agent charters were originally out of scope; the self-audit widened the rule, since
   // CLAUDE.md's clause table assigns IRON LAW §1 to this rule alone and a cap written

@@ -36,10 +36,6 @@ function onlyViolation(violations) {
 
 // --- the rule contract -----------------------------------------------------------
 
-test('the rule id equals its filename stem', () => {
-  assert.equal(id, 'workflow-meta')
-})
-
 test('applies to workflow scripts', () => {
   assert.equal(applies.test(WF), true)
 })

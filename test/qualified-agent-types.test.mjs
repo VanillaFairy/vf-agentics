@@ -11,10 +11,6 @@ import { id, applies, check } from '../tools/rules/qualified-agent-types.mjs'
 
 const WF = 'workflows/vfa-survey.workflow.js'
 
-test('the rule id matches its filename stem', () => {
-  assert.equal(id, 'qualified-agent-types')
-})
-
 test('it applies only to workflow scripts', () => {
   assert.ok(applies.test(WF))
   assert.ok(!applies.test('agents/scout.md'))

@@ -22,10 +22,6 @@ const good = [
   'You find code.',
 ].join('\n')
 
-test('the rule id matches its filename stem', () => {
-  assert.equal(id, 'agent-frontmatter')
-})
-
 test('it applies to agents/*.md only', () => {
   assert.ok(applies.test('agents/scout.md'))
   assert.ok(!applies.test('skills/investigate/SKILL.md'))

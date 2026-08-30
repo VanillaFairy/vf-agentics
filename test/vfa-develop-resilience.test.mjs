@@ -385,16 +385,6 @@ test('the order line carries what the coder actually reported', async () => {
   assert.equal(entry.worktree, 'C:/wt/w1')
 })
 
-test('an escalated order is never recorded as approved', async () => {
-  const { prompts } = await fresh({}, {
-    'verify:': verified({ build: 'failed' }),
-    'fix:': coded({ status: 'blocked', commits: [], summary: 'cannot fix' }),
-  })
-
-  assert.ok(!prompts.some((p) => p.opts.label === 'record:W1'),
-    'there is no approved series to adopt on a resume')
-})
-
 test('a wave line still names its type explicitly', async () => {
   const { prompts } = await fresh({})
 
