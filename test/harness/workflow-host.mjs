@@ -131,15 +131,59 @@ const BLANK_MEASUREMENT = {
  * @param {(envelope: object) => void} [damage]  mutate the payload after its digest is taken
  */
 export function carriedPayload(measurement = {}, damage) {
-  const payload = { ...BLANK_MEASUREMENT, ...measurement }
+  return carriedEnvelope({ ...BLANK_MEASUREMENT, ...measurement }, damage,
+    'ran the check runner and pasted its stdout')
+}
+
+/**
+ * Any digest-covered payload, carried by a courier.
+ *
+ * The envelope is the same one `lib/verify.mjs`, `lib/run-verdict.mjs`, `lib/merge.mjs`,
+ * `lib/gc.mjs` and `lib/kb.mjs` all print, so the trip is the same trip whatever computed it.
+ */
+export function carriedEnvelope(payload, damage, notes = 'ran the command and pasted its stdout') {
   const envelope = { payload, payload_digest: fnv1a(canonical(payload)) }
   if (damage) damage(envelope)
 
-  return {
-    stop_reason: 'carried',
-    payload_raw: JSON.stringify(envelope),
-    notes: 'ran the check runner and pasted its stdout',
-  }
+  return { stop_reason: 'carried', payload_raw: JSON.stringify(envelope), notes }
+}
+
+/**
+ * `lib/kb.mjs chain`'s payload, carried — one chain per locus path.
+ *
+ * A scenario writes only what it cares about (`{ 'src/W1.js': [{ claim: 'x', state: 'stale' }] }`)
+ * and the rest of each entry is filled in the way the program fills it: fresh unless the scenario
+ * says otherwise, a `gotcha` unless it says otherwise, and every field the workflow reads present.
+ */
+export function carriedChain(byPath = {}, damage) {
+  const chains = Object.entries(byPath).map(([path, entries]) => ({
+    path,
+    nodes: [''],
+    entries: entries.map((entry, i) => ({
+      id: path + '#' + i,
+      claim: 'something known about ' + path,
+      kind: 'gotcha',
+      about: [path],
+      observed_at: 'base1234',
+      source: { runstamp: '20260830-101500', via: 'coder-discovered' },
+      node: '',
+      state: 'fresh',
+      reason: 'no commit has touched its subject since base1234',
+      ...entry,
+    })),
+  }))
+
+  const all = chains.flatMap((c) => c.entries)
+  const count = (state) => all.filter((e) => e.state === state).length
+
+  return carriedEnvelope({
+    repo: 'C:/repo',
+    chains,
+    counts: { fresh: count('fresh'), stale: count('stale'), orphaned: count('orphaned') },
+    malformed: 0,
+    dirty_readable: true,
+    notes: 'read ' + chains.length + ' chain(s)',
+  }, damage)
 }
 
 /**

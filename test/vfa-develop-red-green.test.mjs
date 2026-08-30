@@ -16,7 +16,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedChain, carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict } from './harness/resume-fixture.mjs'
 import { manifestOf } from '../lib/plan-digest.mjs'
 import { digestEntry } from '../lib/ledger.mjs'
@@ -133,6 +133,8 @@ const cast = (over = {}) => scriptedAgents({
   'merge:': merged(),
   'wave-verify:': verified({ discriminator: [], suite: 'passed' }),
   'record:': recorded(),
+  'kb-chain': carriedChain(),
+  'kb-write': { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'appended' },
   'review:integration': reviewed(),
   ...over,
   'code:': over['code:'] || coded(),

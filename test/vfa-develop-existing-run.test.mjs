@@ -18,7 +18,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedChain, carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
 /**
  * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
@@ -101,6 +101,8 @@ const cast = (over = {}) => scriptedAgents({
     failing_tests: [], discriminator: [], series_findings: [], notes: 'merged head',
   }),
   'record:': { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' },
+  'kb-chain': carriedChain(),
+  'kb-write': { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'appended' },
   'review:integration': { findings: [], fix_verdicts: [] },
   'code:': {
     status: 'done', worktree: 'C:/wt/w1', branch: 'wo-w1', base_sha: A40, head_sha: B40,

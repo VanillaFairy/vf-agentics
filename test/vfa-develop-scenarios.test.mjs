@@ -12,7 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { carriedPayload, recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedChain, carriedPayload, recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 import { digestOrder } from '../lib/plan-digest.mjs'
 
@@ -113,6 +113,8 @@ const integrationCast = (over = {}) => ({
   'merge:': merged(),
   'wave-verify:': verified({ discriminator: [], notes: 'built and tested the merged head' }),
   'record:': recorded(),
+  'kb-chain': carriedChain(),
+  'kb-write': { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'appended' },
   'review:integration': reviewed(),
   ...over,
 })

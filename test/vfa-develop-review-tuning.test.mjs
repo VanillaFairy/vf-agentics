@@ -13,7 +13,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedChain, carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
@@ -79,6 +79,8 @@ const cast = (over = {}) => scriptedAgents({
   'merge:': { stop_reason: 'completed', merged_sha: M40, conflicts: [], notes: 'merged' },
   'wave-verify:': verified(),
   'record:': { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' },
+  'kb-chain': carriedChain(),
+  'kb-write': { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'appended' },
   'review:integration': { findings: [], fix_verdicts: [] },
   'code:': coded(),
   'verify:': verified(),

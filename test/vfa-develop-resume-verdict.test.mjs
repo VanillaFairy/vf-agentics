@@ -32,7 +32,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedChain, carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 
 const resumeLoad = resumeVerdict
@@ -95,6 +95,8 @@ const cast = (over = {}) => scriptedAgents({
     failing_tests: [], discriminator: [], series_findings: [], notes: 'the merged head',
   }),
   'record:': { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' },
+  'kb-chain': carriedChain(),
+  'kb-write': { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'appended' },
   'review:integration': { findings: [], fix_verdicts: [] },
   'code:': {
     status: 'done', worktree: 'C:/wt/w2', branch: 'wo-w2', base_sha: A40, head_sha: B40,
