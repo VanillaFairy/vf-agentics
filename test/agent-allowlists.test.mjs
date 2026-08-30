@@ -43,6 +43,7 @@ const ALLOWLISTS = {
   reviewer: ['Bash', 'Glob', 'Grep', 'Read'],
   'run-state': ['Bash', 'Read', 'Write'],
   scout: ['Glob', 'Grep', 'Read'],
+  'test-author': ['Edit', 'Glob', 'Grep', 'Read', 'Write'],
   verifier: ['Bash', 'Grep', 'Read'],
 }
 
@@ -52,8 +53,12 @@ const ALLOWLISTS = {
  *
  * Everything else in the roster carries Bash, and a shell subsumes writing — which is why the
  * read-only claims in those charters are discipline plus a post-hoc audit, and say so.
+ *
+ * `test-author` is the one whose membership was designed rather than inherited: it authors the
+ * failing tests and must not be able to run, implement or commit them, so a Bash added here would
+ * dissolve the separation the whole role exists for without changing a word of its charter.
  */
-const NO_SHELL = ['analyst', 'doc-researcher', 'scout']
+const NO_SHELL = ['analyst', 'doc-researcher', 'scout', 'test-author']
 
 /** `tools:` out of the frontmatter block. CR-stripped: core.autocrlf is true on Windows. */
 function toolsOf(source) {
