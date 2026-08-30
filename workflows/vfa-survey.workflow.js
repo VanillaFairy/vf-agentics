@@ -98,12 +98,23 @@ const PLAN = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['key', 'find'],
+        required: ['key', 'find', 'kb_path'],
         properties: {
           key: { type: 'string', description: 'Short kebab-case identifier, unique within the plan.' },
           find: {
             type: 'string',
             description: 'A precise instruction for a read-only search agent: what to find and where to look.',
+          },
+          kb_path: {
+            type: 'string',
+            description:
+              'The one subtree this topic is about, as a repo-relative POSIX path — a directory ' +
+              'or a single file. The project knowledge base is read at exactly this path before ' +
+              'the search runs, so a path naming the topic\'s real ground is what decides whether ' +
+              'anything already known reaches it. Take it from the index you were shown where a ' +
+              'node covers the topic; otherwise name where you expect the topic to live. Send an ' +
+              'empty string — never omit the field — when the topic is genuinely repository-wide; ' +
+              'the repository-wide level is then what it gets.',
           },
         },
       },
@@ -188,6 +199,25 @@ const DOCS = evidenceSchema(
   'Every search query and URL you actually read.',
 )
 
+// What a knowledge-base courier hands back: one command's stdout, byte-exact, in one string.
+// Copied from `vfa-develop`'s CARRIED rather than shared, because a workflow script cannot
+// import — the two are diffed against each other and against `lib/kb.mjs`'s output, never
+// re-derived from memory.
+//
+// `failed` is the courier unable to run the command AT ALL — node missing, the path unreadable,
+// the shell refusing. A knowledge base that ran and holds nothing is not that: it prints an empty
+// payload, which is the ordinary state of a repository nobody has surveyed twice.
+const CARRIED = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['stop_reason', 'payload_raw', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['carried', 'failed'] },
+    payload_raw: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
 const VERDICT = {
   type: 'object',
   additionalProperties: false,
@@ -231,6 +261,105 @@ const JUDGE_TIER = { low: { model: 'sonnet' }, normal: { model: 'opus' }, max: {
 const intelligence = Object.hasOwn(JUDGE_TIER, input.intelligence) ? input.intelligence : 'normal'
 const judge = JUDGE_TIER[intelligence]
 
+// ---------------------------------------------------------------- the knowledge base
+//
+// Where `lib/kb.mjs` lives, resolved the way `vfa-develop` resolves it: the caller's value, then
+// the environment, then the shell form expanded in the agent's own shell. A script's cwd is not
+// the agent's, so a relative path is never guessed at — and when the shell form is used, the
+// dispatch carries an instruction to halt loudly rather than substitute one.
+const SHELL_ROOT = '$CLAUDE_PLUGIN_ROOT'
+
+function resolvePluginRoot() {
+  if (typeof input.plugin_root === 'string' && input.plugin_root.trim()) {
+    return input.plugin_root.trim().split('\\').join('/')
+  }
+
+  const fromEnv = typeof process !== 'undefined' && process && process.env
+    ? process.env.CLAUDE_PLUGIN_ROOT
+    : ''
+
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim().split('\\').join('/')
+  return SHELL_ROOT
+}
+
+const pluginRoot = resolvePluginRoot()
+
+const rootWarning = pluginRoot === SHELL_ROOT
+  ? '\n   If ' + SHELL_ROOT + ' is empty in your shell that path cannot resolve. Stop and say ' +
+    'so in the way your result shape allows — never substitute a relative path or a guess.\n'
+  : '\n'
+
+// A knowledge base is PER REPOSITORY — no sharing and no merging across roots — so a question
+// spanning several reads the first, which is the repository the question is anchored in.
+const kbRepo = String(roots).split(/[,;\n]/)[0].trim() || '.'
+
+// The normalization `lib/kb.mjs` performs on every path it is handed, written here so the key a
+// chain comes back under is the key this side looks it up by. `.` and `` are the same node — the
+// repository-wide level — and `.` is what travels on a command line, because an empty argv slot
+// is a shell argument nobody can read.
+const kbKey = (p) => {
+  const norm = String(p == null ? '' : p).split('\\').join('/').trim()
+    .replace(/^\.\//, '').replace(/\/+$/, '')
+  return norm === '.' ? '' : norm
+}
+const kbArg = (p) => kbKey(p) || '.'
+
+// The digest transport, in the one direction this workflow uses it. A payload computed on disk
+// arrives through a model, so it is re-digested here before a field of it is believed — a copy
+// that drifted by one character is refused rather than read. Both functions are copies of
+// `lib/plan-digest.mjs`'s: scripts cannot import, and the suite pins them together.
+function canonical(value) {
+  if (value === undefined) return 'null'
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']'
+
+  return '{' + Object.keys(value).sort()
+    .map((key) => JSON.stringify(key) + ':' + canonical(value[key]))
+    .join(',') + '}'
+}
+
+function fnv1a(text) {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+/** @returns {{payload: object|null, why: string|null}} */
+function carriedRead(held) {
+  if (!held) return { payload: null, why: 'the dispatch returned nothing' }
+  if (held.stop_reason !== 'carried') {
+    return { payload: null, why: held.notes || 'the courier could not run the command' }
+  }
+
+  let parsed = null
+  try {
+    parsed = JSON.parse(held.payload_raw)
+  } catch (e) {
+    return { payload: null, why: 'it did not survive transcription: ' + (e && e.message) }
+  }
+
+  if (parsed && parsed.error) return { payload: null, why: 'the reader refused: ' + parsed.error }
+  if (!parsed || !parsed.payload || typeof parsed.payload_digest !== 'string') {
+    return { payload: null, why: 'what came back is not a digest-covered envelope' }
+  }
+
+  const actual = fnv1a(canonical(parsed.payload))
+  if (actual !== parsed.payload_digest) {
+    return {
+      payload: null,
+      why: 'digest mismatch: it was computed as ' + parsed.payload_digest +
+        ', what arrived digests to ' + actual,
+    }
+  }
+
+  return { payload: parsed.payload, why: null }
+}
+
 // ---------------------------------------------------------------- coverage
 //
 // IRON LAW §4 as a data structure. `complete` is DERIVED here and never taken from an
@@ -248,12 +377,27 @@ const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Work
 // a survey with no question: it returns a coverage-honest empty result in milliseconds and
 // the interrupted run's cached agents become unreachable. Field-observed 2026-08-27. They
 // travel with the block a caller actually reads when deciding how to resume.
-const LAUNCH_ARGS = { question, roots, notes, max_topics: maxTopics, intelligence }
+const LAUNCH_ARGS = { question, roots, notes, max_topics: maxTopics, intelligence,
+                      plugin_root: pluginRoot }
 
 const RESUME_NOTE = 'a resume must re-pass `args` alongside resumeFromRunId — the script is ' +
   're-executed and reads nothing from the prior run; `args` here is that object'
 
-function coverageOf(dropped, incomplete, failedChannels, unreached) {
+// `from_kb` is the seventh field, and it exists for the same reason the other six do: a result
+// built partly on what a previous run recorded looks exactly like one built entirely on this
+// run's own search. It names, per topic, what came out of the project knowledge base and at which
+// commit it was observed, so a reader can tell the two apart (IRON LAW §2 and §4).
+//
+// It is DERIVED from what this script actually handed to a dispatch, never from an agent's
+// account of what it used — the same stance `complete` takes. Absence therefore degrades in the
+// safe direction: no line means nothing came from cache, which is the reading that under-claims
+// rather than over-claims, and it is what an older result with no field at all must be read as.
+//
+// A knowledge base that could not be read leaves a line here rather than in `failed_channels`,
+// and that is deliberate: `failed_channels` is a conjunct of `complete` in this workflow, and an
+// unreadable base costs a survey nothing it was going to have. It searches every topic from
+// scratch, exactly as every survey before this increment did. More work, not less evidence.
+function coverageOf(dropped, incomplete, failedChannels, unreached, fromKb = []) {
   return {
     complete:
       dropped.length === 0 &&
@@ -264,6 +408,7 @@ function coverageOf(dropped, incomplete, failedChannels, unreached) {
     incomplete,
     failed_channels: failedChannels,
     unreached,
+    from_kb: fromKb,
     resumable: { runId: RUN_ID, remaining: dropped.concat(incomplete),
                  args: LAUNCH_ARGS, note: RESUME_NOTE },
   }
@@ -290,6 +435,87 @@ log(`Question: ${question}`)
 
 phase('Plan')
 
+// What this repository already knows, and where — read BEFORE the decomposition, because the
+// decomposition is what turns it into paths.
+//
+// The obvious design was chains at the question's roots, and it is the one the probe killed:
+// before any scout runs the only known paths ARE the roots, and a chain at a root is the
+// repository-wide node alone, so a planner handed it is handed almost nothing. The index is
+// cheap for the opposite reason — it computes no state, only where entries sit and of what kind
+// — and it is exactly what a decomposition can aim at. Chains come after, per topic, at the
+// subtree each topic names.
+//
+// A side channel with IRON LAW §5 treatment: a base that cannot be read costs this survey
+// nothing it was going to have. Every topic is then searched from scratch, which is how every
+// survey before this increment ran.
+const kbNotes = []
+
+const kbIndex = await (async () => {
+  const held = await agent(
+    `READ MODE. Report what this repository's knowledge base holds, and where — verbatim. You ` +
+    `run one command and paste its output; you decide nothing and you interpret nothing.\n\n` +
+    `REPOSITORY: ${kbRepo}\n\n` +
+    `Run exactly this:\n\n` +
+    `   node "${pluginRoot}/lib/kb.mjs" index "${kbRepo}"\n` +
+    rootWarning +
+    `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, do ` +
+    `not reformat it, do not summarise it, and do not drop a node that looks unimportant to ` +
+    `you. It is one line of JSON carrying its own digest: your caller recomputes that digest ` +
+    `over what arrives, so a copy that drifted by a single character is detected rather than ` +
+    `believed.\n\n` +
+    `The index carries node paths, entry counts and kinds, and NO freshness — that is worked ` +
+    `out per path later, and there is nothing here for you to add.\n\n` +
+    `A repository with no knowledge base prints an index holding nothing, and that IS the good ` +
+    `case. Return stop_reason failed ONLY when the command could not be run at all, with what ` +
+    `the shell reported in notes.`,
+    { agentType: 'vf-agentics:kb', effort: 'low', model: 'haiku', schema: CARRIED,
+      phase: 'Plan', label: 'kb-index' },
+  ).catch((e) => {
+    log(`WARNING: the knowledge-base index failed to run: ${e && e.message}`)
+    return null
+  })
+
+  const carried = carriedRead(held)
+  if (!carried.payload) {
+    log(`WARNING: the knowledge base could not be read (${carried.why}); every topic is ` +
+      `searched from scratch.`)
+    kbNotes.push('the project knowledge base could not be read (' + carried.why + '), so ' +
+      'nothing in this result came from it: every topic was searched from scratch, exactly as ' +
+      'every survey before the base existed')
+    return null
+  }
+
+  const counts = carried.payload.counts || {}
+  log(`Knowledge base: ${counts.entries || 0} entr(ies) across ${counts.nodes || 0} node(s).`)
+  return carried.payload
+})()
+
+// The index, as the planner reads it: one line per node that holds something. Bounded by how many
+// nodes hold anything rather than by how much any of them holds, so it does not grow with the
+// base the way a chain dump would.
+function indexSection() {
+  const nodes = (kbIndex && kbIndex.nodes) || []
+  if (nodes.length === 0) {
+    return `\nThis repository's knowledge base holds nothing yet, so every topic is a topic ` +
+      `nobody has searched before. Set kb_path to where you expect each topic to live anyway — ` +
+      `it costs nothing and it is what a later run reads.\n`
+  }
+
+  return `\nWHAT THIS REPOSITORY ALREADY KNOWS, AND WHERE. The project knowledge base holds ` +
+    `observations from earlier runs, filed under the narrowest directory each one is about. ` +
+    `This is the SHAPE of it — paths, how many entries, of which kinds — and it says nothing ` +
+    `about whether any of them is still true; that is checked per path, after you decompose.\n` +
+    nodes.map((n) => `  ${n.node === '' ? '(repository-wide)' : n.node} — ${n.entries} ` +
+      `entr${n.entries === 1 ? 'y' : 'ies'} (${Object.entries(n.kinds || {})
+        .map(([kind, count]) => kind + ': ' + count).join(', ') || 'none'})`).join('\n') +
+    `\n\nDecompose against this. Where a node covers a topic, set that topic's kb_path to the ` +
+    `node's path and what is known there will be checked and handed to the search — a topic on ` +
+    `covered ground becomes a VERIFICATION rather than a rediscovery, which is the whole reason ` +
+    `this list is in front of you. Where nothing is recorded, plan the topic exactly as you ` +
+    `would have anyway: the base is a saving where it applies and never a reason to search ` +
+    `less.\n`
+}
+
 const plan = await agent(
   `Break this investigation into at most ${maxTopics} independent search topics.\n\n` +
   `QUESTION: ${question}\n` +
@@ -315,6 +541,11 @@ const plan = await agent(
   `a confident wrong answer.\n\n` +
   `Set docs_needed only if answering the question requires vendor or standards ` +
   `documentation that is not in these repositories. Put that question in docs_question.\n\n` +
+  indexSection() +
+  `\nGive every topic a kb_path: the one subtree it is about, repo-relative, or an empty ` +
+  `string when the topic is genuinely repository-wide. It is read before the search runs, so a ` +
+  `path that names the topic's real ground is what decides whether anything already known ` +
+  `reaches it.\n\n` +
   `Leave a question field as an empty string when its flag is false. When a flag is true ` +
   `the matching question must be non-empty — a true flag with no question skips the track ` +
   `entirely and the answer silently loses that evidence.\n` +
@@ -327,7 +558,7 @@ const plan = await agent(
 
 if (!plan || !plan.topics || plan.topics.length === 0) {
   return surveyResult([], [], null, null,
-    coverageOf([], [], [], ['planning produced no topics, so nothing was searched']))
+    coverageOf([], [], [], ['planning produced no topics, so nothing was searched'], kbNotes))
 }
 
 // The cap in the prompt is sizing guidance to the planner, never a licence to drop work:
@@ -348,6 +579,90 @@ log(`Plan: ${plan.topics.length} topic(s)` +
     `${commonFind ? ' + common ground' : ''}` +
     `${plan.history_needed ? ' + git history' : ''}` +
     `${plan.docs_needed ? ' + documentation' : ''}`)
+
+// ------------------------------------------------- 1b. the chains, one per topic's subtree
+//
+// Now that the topics exist, their ground has names — so the chains are fetched at those names
+// rather than at the roots. One courier carries all of them: a chain is bounded by depth, the
+// chains are independent of each other, and buying one dispatch per topic would buy the same
+// courier N times for a payload that arrives once.
+//
+// A topic with no path named is chained at the repository-wide level, which is what `.` resolves
+// to inside the reader. Nothing is chained at all when the index already said the base holds
+// nothing: a chain over an empty tree is a dispatch bought for nothing.
+const kbChains = new Map()
+
+// Keyed per topic, not per path, because two topics may name the same subtree and each still has
+// its own account to give.
+const topicPath = (topic) => kbKey(topic && topic.kb_path)
+
+const kbFetch = kbIndex && (kbIndex.counts || {}).entries > 0
+  ? [...new Set(plan.topics.map((t) => kbArg(topicPath(t))))]
+  : []
+
+if (kbFetch.length > 0) {
+  const held = await agent(
+    `READ MODE. Read what this repository's knowledge base already holds about the ground ` +
+    `these searches are about to cover, and return it verbatim. You run one command and paste ` +
+    `its output; you decide nothing and you interpret nothing.\n\n` +
+    `REPOSITORY: ${kbRepo}\n\n` +
+    `Run exactly this:\n\n` +
+    `   node "${pluginRoot}/lib/kb.mjs" chain "${kbRepo}" ` +
+    kbFetch.map((p) => '"' + p + '"').join(' ') + `\n` +
+    rootWarning +
+    `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, do ` +
+    `not reformat it, do not summarise it, and do not drop an entry that reads stale or ` +
+    `redundant to you. It is one line of JSON carrying its own digest: your caller recomputes ` +
+    `that digest over what arrives, so a copy that drifted by a single character is detected ` +
+    `rather than believed.\n\n` +
+    `Every entry in it arrives with a state the program COMPUTED — fresh, stale or orphaned — ` +
+    `from git and from the bytes of the files each entry is anchored to. You do not agree or ` +
+    `disagree with those and you never re-check one.\n\n` +
+    `Return stop_reason failed ONLY when the command could not be run at all, with what the ` +
+    `shell reported in notes.`,
+    { agentType: 'vf-agentics:kb', effort: 'low', model: 'haiku', schema: CARRIED,
+      phase: 'Plan', label: 'kb-chain' },
+  ).catch((e) => {
+    log(`WARNING: the knowledge-base chain read failed to run: ${e && e.message}`)
+    return null
+  })
+
+  const carried = carriedRead(held)
+  if (!carried.payload) {
+    log(`WARNING: the chains could not be read (${carried.why}); every topic is searched from ` +
+      `scratch.`)
+    kbNotes.push('the knowledge base was indexed but its chains could not be read (' +
+      carried.why + '), so nothing in this result came from it: every topic was searched from ' +
+      'scratch')
+  } else {
+    for (const chain of carried.payload.chains || []) {
+      kbChains.set(kbKey(chain.path), chain.entries || [])
+    }
+    const counts = carried.payload.counts || {}
+    log(`Chains: ${counts.fresh || 0} fresh, ${counts.stale || 0} stale, ` +
+      `${counts.orphaned || 0} orphaned across ${kbFetch.length} subtree(s). Fresh entries are ` +
+      `evidence and turn their topic into a verification; stale ones are leads for the search.`)
+  }
+}
+
+/**
+ * What the base holds for one topic, split by what each state is worth.
+ *
+ * Fresh is EVIDENCE: a program checked the ground it is about and found it untouched since the
+ * observation. Stale is a LEAD: the ground moved, so the claim is a place to look and never a
+ * fact to report — which is exactly what a search can use and a coder mid-order cannot.
+ * Orphaned is about ground that is gone and rides nothing.
+ */
+function kbForTopic(topic) {
+  const entries = kbChains.get(topicPath(topic)) || []
+  return {
+    fresh: entries.filter((e) => e && e.state === 'fresh'),
+    leads: entries.filter((e) => e && e.state === 'stale'),
+  }
+}
+
+const entryLine = (e) => '- [' + e.kind + ', seen at ' + (e.observed_at || 'an unrecorded commit') +
+  '] ' + e.claim
 
 // ---------------------------------------------------------- 2. the resume engine
 //
@@ -575,15 +890,37 @@ async function scoutUntilComplete(topic) {
     ? `\n\nA separate scout covers this shared ground — do not search it:\n${commonFind}`
     : ''
 
+  // What the base holds about this topic's ground, said in the two ways the two states are
+  // worth. The distinction is the whole of increment 14 at this seam, and it is stated
+  // verbatim-clearly rather than left for a scout to infer: fresh entries make this topic a
+  // VERIFICATION, and stale ones are places to look that no report may rest on.
+  const known = kbForTopic(topic)
+
+  const kbBrief =
+    (known.fresh.length === 0 ? '' :
+      `\n\nALREADY RECORDED ABOUT THIS GROUND — a program checked each of these against the ` +
+      `current tree just now and found the ground it is about untouched since it was observed. ` +
+      `They are EVIDENCE, not a search you have to redo:\n` +
+      known.fresh.map(entryLine).join('\n') +
+      `\n\nSo this topic is a VERIFICATION rather than a rediscovery. Confirm the locations ` +
+      `these name still exist and report them as hits, and spend the rest of your pass on what ` +
+      `they do NOT cover. If one of them turns out to be wrong about the current tree, that is ` +
+      `a finding: say so in no_match rather than reporting the claim as a location.`) +
+    (known.leads.length === 0 ? '' :
+      `\n\nLEADS — the base held these and the ground has moved since, so nothing attests them. ` +
+      `They are places to look and never facts to report: confirm anything you use against the ` +
+      `current tree, and never report a location you have not seen for yourself:\n` +
+      known.leads.map(entryLine).join('\n'))
+
   const prompt = (round, prev) => round === 1
-    ? `${topic.find}${exclude}\n\nRepositories: ${roots}\n\n` +
+    ? `${topic.find}${exclude}${kbBrief}\n\nRepositories: ${roots}\n\n` +
       `Report every location you find, and search to exhaustion: you stop when the surface ` +
       `is covered or you are genuinely stuck, never because the list is getting long or ` +
       `the work feels large. If one pass truly cannot cover the request, report what you ` +
       `have, set stop_reason to "unfinished", and name exactly what remains in ` +
       `not_reached — you will be resumed until the search is done.`
     : `Continue an unfinished search — do not start over.\n\n` +
-      `ORIGINAL REQUEST: ${topic.find}${exclude}\n` +
+      `ORIGINAL REQUEST: ${topic.find}${exclude}${kbBrief}\n` +
       `Repositories: ${roots}\n\n` +
       `ALREADY SEARCHED (do not repeat these):\n${searched.join('\n')}\n\n` +
       `ALREADY FOUND (do not report these again):\n` +
@@ -626,6 +963,23 @@ function sharedGroundSection(common) {
         `limit — state what your conclusion rests on.`)
 }
 
+// The fresh entries this topic's analyst reasons over, and the one instruction that makes them
+// distinguishable in the verdict. Leads are deliberately NOT here: a lead is for somebody going
+// looking, and this agent is judging what was found rather than going anywhere.
+function cachedEvidenceSection(topic) {
+  const fresh = kbForTopic(topic).fresh
+  if (fresh.length === 0) return ''
+
+  return `\n\nKNOWN BEFORE THIS RUN (the project knowledge base, checked against the current ` +
+    `tree just now and still standing) — this is CACHED evidence: an earlier run observed it, ` +
+    `and this run did not go and see it again:\n` +
+    fresh.map(entryLine).join('\n') +
+    `\n\nWhere your conclusion rests on one of these rather than on a location above, say so in ` +
+    `the evidence line itself — "from the knowledge base, observed at <commit>". A conclusion ` +
+    `that cannot be told apart from one built on a search this run actually performed is the ` +
+    `one failure this whole workflow exists to prevent.`
+}
+
 const findings = await pipeline(
   plan.topics,
 
@@ -640,6 +994,7 @@ const findings = await pipeline(
     `\n\nSEARCH SURFACE ACTUALLY COVERED:\n${found.searched.join('\n')}` +
     (found.noMatch ? `\n\nSEARCHED AND NOT FOUND (this is evidence of absence):\n${found.noMatch}` : '') +
     (found.notReached ? `\n\nNEVER SEARCHED: ${found.notReached}` : '') +
+    cachedEvidenceSection(topic) +
     sharedGroundSection(await commonGround) +
     (found.complete
       ? `\n\nThe search was exhausted. Judge the search surface above for yourself: if it ` +
@@ -721,10 +1076,43 @@ const unreached = []
 const droppedKeys = new Set(dropped)
 const incomplete = partial.filter((k) => !droppedKeys.has(k)).concat(truncatedChannels)
 
+// Provenance, computed from what this script actually handed to a dispatch — never from an
+// analyst's account of what it leaned on. One line per topic that received cached evidence,
+// naming how much and the commits it was observed at, so a reader can see which part of this
+// result was searched for today and which part was recalled.
+//
+// A topic that received only leads gets no line: a lead is not evidence, no verdict rests on
+// one, and claiming provenance for something nothing was built on would make this field mean
+// less rather than more.
+const fromKb = kbNotes.slice()
+let verificationTopics = 0
+
+for (const topic of plan.topics) {
+  const fresh = kbForTopic(topic).fresh
+  if (fresh.length === 0) continue
+  verificationTopics++
+
+  const shas = [...new Set(fresh.map((e) => e.observed_at || 'an unrecorded commit'))]
+  fromKb.push(`${topic.key}: ${fresh.length} fresh knowledge-base entr` +
+    `${fresh.length === 1 ? 'y' : 'ies'} for ${topicPath(topic) || '(repository-wide)'} entered ` +
+    `this topic's evidence, observed at ${shas.join(', ')}. This run did not re-establish what ` +
+    `they carry; the search covered what they do not.`)
+}
+
+// The degenerate case the topology rule names: every topic already covered, so what ran was one
+// verification pass rather than a discovery survey. Said out loud, because a phase that shrinks
+// without saying so is exactly the silent maximalism-in-reverse the coverage block exists against.
+if (verificationTopics > 0 && verificationTopics === plan.topics.length) {
+  fromKb.push('every topic in this plan rested on fresh knowledge-base ground, so what ran was ' +
+    'a verification pass rather than a discovery survey: the searches confirmed what was ' +
+    'already recorded and covered what it did not reach.')
+  log('Every topic was a verification topic — this survey ran as a verification pass.')
+}
+
 return surveyResult(
   plan.topics.map((t) => t.key),
   verdicts,
   channelEvidence(history),
   channelEvidence(docs),
-  coverageOf(dropped, incomplete, failedChannels, unreached),
+  coverageOf(dropped, incomplete, failedChannels, unreached, fromKb),
 )

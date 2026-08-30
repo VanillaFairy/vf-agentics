@@ -10,16 +10,30 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedChain, carriedEnvelope, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-survey.workflow.js', import.meta.url))
 
 const PLAN = (over = {}) => ({
-  topics: [{ key: 'a', find: 'find a' }],
+  topics: [{ key: 'a', find: 'find a', kb_path: 'src/a' }],
   docs_needed: false, docs_question: '',
   history_needed: false, history_question: '',
   ...over,
 })
+
+/** `lib/kb.mjs index`'s payload, carried: `{ '<node>': { <kind>: <count> } }`. */
+const INDEX = (byNode = {}, damage) => {
+  const nodes = Object.entries(byNode).map(([node, kinds]) => ({
+    node, entries: Object.values(kinds).reduce((a, b) => a + b, 0), kinds,
+  }))
+  return carriedEnvelope({
+    repo: 'C:/repo',
+    nodes,
+    counts: { nodes: nodes.length, entries: nodes.reduce((n, x) => n + x.entries, 0) },
+    malformed: 0,
+    notes: 'indexed ' + nodes.length + ' node(s)',
+  }, damage)
+}
 
 const HITS = (over = {}) => ({
   hits: [{ path: 'src/x.js', line: 1, note: 'the thing' }],
@@ -35,10 +49,17 @@ const EVIDENCE = (over = {}) => ({
 
 const VERDICT = (topic) => ({ topic, conclusion: 'c', evidence: ['src/x.js:1'], risks: [] })
 
+// Every survey reads the knowledge base, so every scenario scripts the two couriers. The
+// defaults are the ordinary state of a repository nobody has surveyed twice — an index holding
+// nothing, and no chain bought over it — which is what keeps the tests below about the thing
+// each one is testing.
 const run = (script, over = {}) => runWorkflow(WF, {
-  args: { question: 'how does X work', ...over },
-  agent: scriptedAgents(script),
+  args: { question: 'how does X work', plugin_root: 'C:/plugin', ...over },
+  agent: scriptedAgents({ 'kb-index': INDEX(), 'kb-chain': carriedChain(), ...script }),
 })
+
+const promptFor = (prompts, label) => (prompts.find((p) => p.opts.label === label) || {}).prompt || ''
+const labelsOf = (prompts) => prompts.map((p) => p.opts.label || '')
 
 // ------------------------------------------- the intelligence dial
 
@@ -500,6 +521,230 @@ test('a plan from before common_ground existed reads as no shared ground, not as
 
   assert.equal(prompts.filter((p) => String(p.opts.label).startsWith('scout:common-ground')).length, 0)
   assert.doesNotMatch(prompts.find((p) => p.opts.label === 'analyze:a').prompt, /SHARED GROUND/)
+  assert.equal(result.coverage.complete, true)
+})
+
+// ------------------------------------------------------ the knowledge base, consumed
+//
+// Increment 14. The mechanism the probe forced: the Plan phase receives the tree INDEX — where
+// this repository knows anything, and of what kind — because before a decomposition exists the
+// only known paths are the roots, whose chain is the repository-wide node alone. Chains are then
+// bought per topic, at the subtree each topic named.
+//
+// Everything below is about who receives what, and in which of the two grades. Fresh entries are
+// EVIDENCE and turn their topic into a verification; stale ones are LEADS for the search and
+// reach no analyst; and a finding resting on either kind is distinguishable from one this run
+// searched for, because `from_kb` says so and is computed here rather than claimed by a model.
+//
+// Contract: docs/superpowers/specs/2026-08-30-increment-14-contracts.md.
+
+test('the index is read before the decomposition, at courier grade, and reaches the planner', async () => {
+  const { prompts } = await run({
+    'kb-index': INDEX({ 'src/game': { gotcha: 3 }, 'src/game/ui/Gate.ts': { gotcha: 1, command: 1 } }),
+    plan: PLAN(),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  const at = labelsOf(prompts).indexOf('kb-index')
+  assert.equal(at, 0, 'an index read after the decomposition informs no decomposition')
+
+  const index = prompts[at]
+  assert.equal(index.opts.agentType, 'vf-agentics:kb')
+  assert.equal(index.opts.model, 'haiku', 'pasting a payload back is not judgment')
+  assert.match(index.prompt, /node "C:\/plugin\/lib\/kb\.mjs" index "\."/)
+
+  const plan = promptFor(prompts, 'plan')
+  assert.match(plan, /WHAT THIS REPOSITORY ALREADY KNOWS, AND WHERE/)
+  assert.match(plan, /src\/game — 3 entries \(gotcha: 3\)/)
+  assert.match(plan, /src\/game\/ui\/Gate\.ts — 2 entries \(gotcha: 1, command: 1\)/)
+  assert.match(plan, /Give every topic a kb_path/)
+})
+
+test('the chain is fetched at the subtree the topic named, not at the roots', async () => {
+  // The probe's finding, pinned. A chain at the roots reaches the repository-wide node alone,
+  // so a deep entry — the kind a mature base is mostly made of — would never reach anybody.
+  const { prompts } = await run({
+    'kb-index': INDEX({ 'src/game/ui/Gate.ts': { gotcha: 1 } }),
+    plan: PLAN({ topics: [{ key: 'a', find: 'find a', kb_path: 'src/game/ui/Gate.ts' }] }),
+    'kb-chain': carriedChain({
+      'src/game/ui/Gate.ts': [{ claim: 'the gate swallows pointer events while a tween runs' }],
+    }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  const chain = promptFor(prompts, 'kb-chain')
+  assert.match(chain, /node "C:\/plugin\/lib\/kb\.mjs" chain "\." "src\/game\/ui\/Gate\.ts"/)
+  assert.match(promptFor(prompts, 'scout:a'), /the gate swallows pointer events while a tween runs/)
+})
+
+test('a fresh entry makes its topic a verification and reaches the analyst as cached evidence', async () => {
+  const { result, prompts } = await run({
+    'kb-index': INDEX({ 'src/a': { gotcha: 1 } }),
+    'kb-chain': carriedChain({
+      'src/a': [{ claim: 'the loader is registered in src/a/boot.ts', observed_at: 'abc1234' }],
+    }),
+    plan: PLAN(),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  const scout = promptFor(prompts, 'scout:a')
+  assert.match(scout, /ALREADY RECORDED ABOUT THIS GROUND/)
+  assert.match(scout, /They are EVIDENCE, not a search you have to redo/)
+  assert.match(scout, /this topic is a VERIFICATION rather than a rediscovery/)
+  assert.match(scout, /the loader is registered in src\/a\/boot\.ts/)
+
+  const analyze = promptFor(prompts, 'analyze:a')
+  assert.match(analyze, /KNOWN BEFORE THIS RUN/)
+  assert.match(analyze, /this run did not go and see it again/)
+  assert.match(analyze, /from the knowledge base, observed at <commit>/,
+    'a conclusion resting on cache has to be sayable as one')
+
+  assert.equal(result.coverage.complete, true)
+  assert.equal(result.coverage.from_kb.length, 2)
+  assert.match(result.coverage.from_kb[0], /^a: 1 fresh knowledge-base entry for src\/a/)
+  assert.match(result.coverage.from_kb[0], /observed at abc1234/)
+  assert.match(result.coverage.from_kb[0], /did not re-establish what they carry/)
+})
+
+test('a stale entry is a lead for the search and reaches no analyst', async () => {
+  const { result, prompts } = await run({
+    'kb-index': INDEX({ 'src/a': { gotcha: 2 } }),
+    'kb-chain': carriedChain({
+      'src/a': [
+        { claim: 'the loader used to be registered in src/a/boot.ts', state: 'stale' },
+        { claim: 'a claim about ground that is gone', state: 'orphaned' },
+      ],
+    }),
+    plan: PLAN(),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  const scout = promptFor(prompts, 'scout:a')
+  assert.match(scout, /LEADS — the base held these and the ground has moved since/)
+  assert.match(scout, /never report a location you have not seen for yourself/)
+  assert.match(scout, /the loader used to be registered/)
+  assert.ok(!/ground that is gone/.test(scout), 'orphaned ground is not a place to look')
+  assert.ok(!/ALREADY RECORDED ABOUT THIS GROUND/.test(scout),
+    'a lead is not evidence, and a scout told otherwise reports a claim as a location')
+
+  const analyze = promptFor(prompts, 'analyze:a')
+  assert.ok(!/KNOWN BEFORE THIS RUN/.test(analyze))
+  assert.ok(!/the loader used to be registered/.test(analyze),
+    'an analyst judges what was found; a lead is for somebody going looking')
+
+  assert.deepEqual(result.coverage.from_kb, [],
+    'no verdict rests on a lead, so claiming provenance for one would make the field mean less')
+})
+
+test('a topic on ground the base knows nothing about is planned and searched exactly as before', async () => {
+  const { result, prompts } = await run({
+    'kb-index': INDEX({ 'src/a': { gotcha: 1 } }),
+    plan: PLAN({
+      topics: [{ key: 'a', find: 'find a', kb_path: 'src/a' }, { key: 'b', find: 'find b', kb_path: 'src/b' }],
+    }),
+    'kb-chain': carriedChain({ 'src/a': [{ claim: 'a fact about a ground' }], 'src/b': [] }),
+    'scout:': HITS(),
+    'analyze:a': VERDICT('a'),
+    'analyze:b': VERDICT('b'),
+  })
+
+  assert.ok(!/ALREADY RECORDED|LEADS —/.test(promptFor(prompts, 'scout:b')))
+  assert.ok(!/a fact about a ground/.test(promptFor(prompts, 'scout:b')),
+    'chains are bounded by path, and so is what a search is taxed with reading')
+  assert.equal(result.coverage.from_kb.length, 1)
+  assert.match(result.coverage.from_kb[0], /^a: /)
+})
+
+test('every topic on fresh ground is stated as a verification pass, not left to be inferred', async () => {
+  const { result, logs } = await run({
+    'kb-index': INDEX({ 'src/a': { gotcha: 1 } }),
+    'kb-chain': carriedChain({ 'src/a': [{ claim: 'a fact about a ground' }] }),
+    plan: PLAN(),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  // The degenerate case of the topology rule: a phase that shrank must say it shrank, or the
+  // leanness is invisible and re-maximalizes the moment nobody is watching.
+  assert.ok(result.coverage.from_kb.some((l) => /verification pass rather than a discovery survey/.test(l)))
+  assert.ok(logs.some((l) => /ran as a verification pass/.test(l)))
+  assert.equal(result.coverage.complete, true)
+})
+
+test('an empty index buys no chain at all', async () => {
+  const { result, prompts } = await run({ plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') })
+
+  assert.ok(!labelsOf(prompts).includes('kb-chain'),
+    'a chain over a tree holding nothing is a dispatch bought for nothing')
+  assert.deepEqual(result.coverage.from_kb, [])
+  assert.equal(result.coverage.complete, true)
+})
+
+test('a knowledge base that cannot be read costs the survey nothing it was going to have', async () => {
+  const { result, prompts, logs } = await run({
+    'kb-index': { stop_reason: 'failed', payload_raw: '', notes: 'node is not on the PATH' },
+    plan: PLAN(),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.match(logs.join(' '), /the knowledge base could not be read/)
+  assert.ok(!labelsOf(prompts).includes('kb-chain'))
+
+  // An unreadable base means MORE searching, not less evidence: every topic is searched from
+  // scratch, exactly as every survey before this increment ran. So it is not a failed channel
+  // here — `failed_channels` is a conjunct of `complete` in this workflow — and the loss is
+  // recorded where a reader looks for provenance.
+  assert.deepEqual(result.coverage.failed_channels, [])
+  assert.equal(result.coverage.complete, true)
+  assert.ok(result.coverage.from_kb.some((l) => /could not be read/.test(l)))
+  assert.ok(result.coverage.from_kb.some((l) => /searched from scratch/.test(l)))
+  assert.ok(!/ALREADY RECORDED|LEADS —/.test(promptFor(prompts, 'scout:a')))
+})
+
+test('a chain damaged in transit is refused rather than believed', async () => {
+  const { result, prompts, logs } = await run({
+    'kb-index': INDEX({ 'src/a': { gotcha: 1 } }),
+    'kb-chain': carriedChain(
+      { 'src/a': [{ claim: 'a fact about a ground' }] },
+      (env) => { env.payload.chains[0].entries[0].claim = 'a claim nobody wrote' },
+    ),
+    plan: PLAN(),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.match(logs.join(' '), /digest mismatch/)
+  assert.ok(!/a claim nobody wrote/.test(promptFor(prompts, 'scout:a')))
+  assert.deepEqual(result.coverage.failed_channels, [])
+  assert.equal(result.coverage.complete, true)
+  assert.ok(result.coverage.from_kb.some((l) => /chains could not be read/.test(l)))
+})
+
+test('a plan from before kb_path existed reads as repository-wide, not as a crash', async () => {
+  const legacy = {
+    topics: [{ key: 'a', find: 'find a' }],
+    docs_needed: false, docs_question: '',
+    history_needed: false, history_question: '',
+  }
+  assert.ok(!('kb_path' in legacy.topics[0]), 'the legacy topic shape genuinely omits the field')
+
+  const { result, prompts } = await run({
+    'kb-index': INDEX({ '': { gotcha: 1 } }),
+    plan: legacy,
+    'kb-chain': carriedChain({ '': [{ claim: 'this repository builds with npm' }] }),
+    'scout:': HITS(),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.match(promptFor(prompts, 'kb-chain'), /chain "\." "\."/,
+    'the repository-wide level travels as ".", because an empty argv slot is unreadable')
+  assert.match(promptFor(prompts, 'scout:a'), /this repository builds with npm/)
+  assert.match(result.coverage.from_kb[0], /\(repository-wide\)/)
   assert.equal(result.coverage.complete, true)
 })
 
