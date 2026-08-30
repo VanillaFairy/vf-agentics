@@ -117,6 +117,7 @@ deliberately *unequal* — each one is denied something, and the denial is the p
 | `verifier` | carry a measurement; perform the checks by hand when the script cannot | judge quality, or fix anything |
 | `reviewer` | attack one series adversarially | approve, or edit |
 | `run-state` | carry a verdict or append one line | read anything outside the run directory |
+| `kb` | carry a computed chain, or append a batch of observations | open a file, or judge what it carries |
 
 The two sharpest asymmetries:
 
@@ -250,10 +251,13 @@ work order's failing tests and must not be able to run, implement or commit them
 that wrote the exam is structurally not the agent that watched it pass.
 
 *Restrained by discipline* — `historian`, `reviewer`, `verifier`, `coder`, `planner`,
-`run-state` all carry `Bash`, and **a shell subsumes writing**. Every restraint in those six is a
-rule the agent keeps: the historian's read-only git command list, the reviewer's `log`/`show`/
-`diff`-only shell, the planner's three writable files. Each charter now says which half it is,
-because a restraint that reads like a fence and is not one is worse than no claim at all.
+`run-state`, `kb` all carry `Bash`, and **a shell subsumes writing**. Every restraint in those
+seven is a rule the agent keeps: the historian's read-only git command list, the reviewer's
+`log`/`show`/`diff`-only shell, the planner's three writable files. Each charter now says which
+half it is, because a restraint that reads like a fence and is not one is worse than no claim at
+all. `kb` is the narrowest of the seven — `Bash` alone, no `Read` and no `Write` — which grants no
+capability its shell lacks and does remove the tools by which a helpful courier would tidy a
+knowledge base by hand.
 
 **The allowlists are pinned mechanically** (`test/agent-allowlists.test.mjs`): agent name to
 sorted tool list, both directions, plus the shell-free set as its own assertion. Widening a list,
@@ -296,8 +300,63 @@ increment 16 extends it with the test-migration lane.*
 
 ## Knowledge base
 
-*Empty. Increments 13, 14 and 18 fill this section — the anchored-observation store, its survey
-consumption, and guardians and absences.*
+Runs used to open blind on ground a previous run had already paid to see. The survey re-bought
+repository shape at 400–500k tokens a time; the run's own `knowledge` set — the coders' discovered
+gotchas — died at the run boundary, so run N+1 started as ignorant as run 1. Two consecutive runs
+in the same subsystem shared 21 of 44 paths.
+
+`.claude/vfa/kb/` in the target repository is where that stops. It mirrors the source tree, one
+append-only `node.jsonl` per node, and `lib/kb.mjs` owns it: `chain`, `verify`, `compact`, `append`.
+
+**It stores observations and computes everything judgmental on read.** That is the same objection
+answered the same way as everywhere else in this system — a status computed cannot be stale, while
+a status written down outlives the thing it described. A line says what was seen, where, and at
+which commit. Whether it is still true is never on the line.
+
+**Depth is arithmetic.** An entry's node is `LCA(about)`, the narrowest directory containing every
+path it names, computed segment-wise and recomputed on every read. Nobody files an entry under
+anything, so an entry whose subject moves is re-filed by arithmetic rather than by memory. A
+consumer reads a **chain** — root down to the narrowest node covering its path, never the tree
+below — so a dispatch payload is bounded by depth rather than by how much the repository knows.
+
+**Freshness is event-invalidated, and the event log is git.** `git log <observed_at>..HEAD --
+<about>` empty means fresh: nothing has touched the subject since it was seen, so no file is read
+at all. Non-empty demotes to the digest check — which is not the same as stale, since a commit that
+moved a file and moved it back is an event about nothing. The log had to be git rather than this
+pipeline's own ledger, because the base outlives runs: hand commits and the direct sessions the
+triage gate routes work to write no ledger line, so ledger arithmetic would have certified stale
+entries fresh. `git log` sees committed history only, so one `git status` per invocation keeps an
+entry whose subject is dirty from taking the shortcut — an unobserved change must never read as no
+change.
+
+Three states, and each gates what an entry may be used as. **Fresh** is evidence. **Stale** is a
+lead — worth a look when somebody is going looking, worth nothing as proof. **Orphaned** is a claim
+about ground that is gone. One anchor class exists today, the file anchor; an anchor class the
+checker cannot yet attest demotes its entry rather than passing, because unchecked and clean are
+different answers.
+
+**Inside a run, two seams.** Before the first order, one chain read covers every locus the plan
+touches, and each coder is seeded from its own locus chain — fresh entries only, with the existing
+"observations, not instructions; verify before relying" wording unchanged. After the last order,
+approved orders' discoveries are deposited, anchored to the order's own locus and stamped with the
+run's base commit. Escalated orders' discoveries stay out: unreviewed claims about a repository
+that rejected the work.
+
+**The verifier still receives nothing**, and that asymmetry is what the whole design rests on. A
+coder may act on hearsay and be caught by verification; verification has nothing behind it. The one
+thing a verification takes from the base is the `command` entries — the build and suite commands an
+earlier investigation established — and they arrive as arguments to a script rather than as prose
+to a judge, admitted only when the entry is fresh *and* its source says a verification wrote it. A
+coder's report can enter the base as a claim; it can never enter it wearing that source.
+
+Both seams are advisory side channels. A base that cannot be read or written costs the run nothing
+it has already paid for: coders open as they did before it existed, the loss lands in
+`failed_channels`, and `coverage.complete` is untouched, because nothing is verified on it.
+
+Contract: `docs/superpowers/specs/2026-08-30-increment-13-contracts.md`. Increment 14 adds survey
+consumption — the tree index into the Plan phase, fresh ground becoming verification topics and
+stale ground becoming leads. Increment 18 adds the guardian and surface-glob anchor classes,
+absence entries, `kb init` harvesting and the optional `INDEX.md` render for the human layer.
 
 ## Planning horizon
 

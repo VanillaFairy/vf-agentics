@@ -6,6 +6,12 @@ develop runs of 2026-08-28/29 in eva-plays-2 (`20260828-142354`, `20260829-14074
 `workflows/vfa-develop.workflow.js`, and the hand-maintained knowledge routing observed in
 the Stage 5 session of 2026-08-27.
 
+**Amended 2026-08-30, in place, by increment 13 as it landed.** One section is new — §3a, the
+event log is git — and it settles the third staleness path the way the other two were already
+settled. Nothing else in this document changed; increment 1 is implemented as written, and
+[its contracts doc](superpowers/specs/2026-08-30-increment-13-contracts.md) is where the shipped
+detail lives.
+
 ## What keeps happening
 
 Every run opens blind on ground a previous run already paid to see.
@@ -141,8 +147,47 @@ Per entry it computes one state: **fresh** (all anchors clean, guardian green or
 absent), **stale** (an anchor moved), **orphaned** (every `about` path is gone).
 Nothing is ever written back by the checker — same stance as the run verdict: the
 JSONL files are records of what was observed; status is always derived. Output is one
-JSON payload with a digest, carried by the run-state courier the way the resume
-verdict already is.
+JSON payload with a digest, carried by a courier the way the resume verdict already is
+— its own courier, not the run-state one, whose constitution confines it to a run
+directory (increment 13 §6).
+
+### 3a. The event log is git, not the run ledger
+
+*Amended in place 2026-08-30, after the probe. This is the third staleness path, brought
+into line with the two the entry section already settles.*
+
+The principle is `reasonable` §16's: **trust is event-invalidated, never churn-re-checked.**
+Re-reading a file to ask whether it changed is work; being told that something touched it is
+free. The tempting event log was this pipeline's own run ledger — it is already append-only,
+already ordered, already read on every resume.
+
+It is the wrong log, and the reason is the same one that makes this whole store worth
+building: **the knowledge base outlives runs.** Hand commits write no ledger line. Neither do
+the direct sessions the triage gate deliberately routes work to, which the field audit says
+were the better path for seven of ten sessions. A ledger with no event in it would therefore
+certify a stale entry fresh — the precise failure this design exists to prevent, arriving
+through the mechanism meant to prevent it. (The ledger also carries no loci on its
+`order-approved` lines, so the join it would need was never there.)
+
+So the incremental check is git:
+
+    git log <observed_at>..HEAD -- <about>
+
+Empty means fresh by event arithmetic — nothing has touched the subject since it was seen, so
+nothing can have invalidated it, and no file is read at all. Non-empty **demotes to the digest
+check**, which is a different statement from "stale": a commit that moved a file and moved it
+back is an event about nothing, and the bytes say so.
+
+This makes all three anchor classes consistent, which they were not before. The file anchor's
+check was already a digest, and the surface glob's was already "any commit touching the
+surface since `observed_at`" — the same git question this section asks. What is corrected is
+that the invalidation path be keyed to git for every class, rather than to a log only this
+pipeline writes.
+
+One honest limit, and it is stated rather than papered over: `git log` sees committed history,
+and an uncommitted edit is not yet an event. So the checker asks `git status` once per
+invocation and lets no entry whose subject sits among the moved paths take the shortcut. An
+unobserved change must never read as no change.
 
 ### 4. Consumption: develop
 
@@ -174,8 +219,12 @@ already fresh in the chain.
 ### 6. Write-back
 
 At run end — the same seam where the wave line is written — the run deposits what it
-learned, through the existing ledger writer (`lib/ledger.mjs append`, base64 + digest,
-the transport that already survived what heredocs did not):
+learned, through a writer of its own (`lib/kb.mjs append`, base64 + digest, the transport
+that already survived what heredocs did not). *Amended in place 2026-08-30: the sentence
+above used to say "the existing ledger writer". `lib/ledger.mjs` writes exactly two files
+inside one run directory, and a knowledge-base append computes its destination from the
+entry's `about` — so reusing it would mean importing this document's depth arithmetic into
+the run ledger. What is shared is the discipline, not the code path (increment 13 §5).*
 
 - **`discovered` entries from approved orders** — the exact set `knowledge` holds
   today, now durable. Escalated orders' discoveries stay excluded for the reason the

@@ -132,15 +132,30 @@ subsumes writing, and every restraint in those six is prose their constitution n
 prose. Locus enforcement stays post-hoc in `lib/commit-series.mjs` — the criterion is **zero
 breaches surviving to review**, never zero breach attempts.
 
+**What a run learns outlives the run, and none of it is stored as a status.** The project knowledge
+base at `.claude/vfa/kb/` mirrors the source tree, one append-only `node.jsonl` per node, holding
+anchored observations: what was seen, where, and at which commit. Depth is `LCA(about)` and
+freshness is `git log <observed_at>..HEAD -- <about>`, both recomputed on every read by
+`lib/kb.mjs` — a status computed cannot be stale, while a status written down outlives the thing it
+described. The event log is **git and not this pipeline's ledger**, because the base outlives runs:
+hand commits and triage-routed direct sessions write no ledger line, so ledger arithmetic would
+certify a stale entry fresh. A coder is seeded with the fresh entries of its own locus chain; a
+verifier is seeded with nothing, exactly as it always was; the one thing a verification takes from
+the base is the build and suite commands an earlier investigation established, admitted only when
+the entry is fresh **and** its source says a verification wrote it. Both seams are advisory side
+channels and neither can make a run incomplete.
+
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
 `2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md`,
 `2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md`,
-`2026-08-30-increment-11-contracts.md` and `2026-08-30-increment-12-contracts.md`. **Any change to
+`2026-08-30-increment-11-contracts.md`, `2026-08-30-increment-12-contracts.md` and
+`2026-08-30-increment-13-contracts.md`. **Any change to
 the plan envelope's field list cites the registry in increment 5 §1, any change to a `state.jsonl`
 line cites increment 6 §2, any change to a `journal.jsonl` line cites increment 7 §4, any change
 to `seq` cites increment 8 §3, any change to the verify payload's field list cites increment
-11 §1b, and any change to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the
+11 §1b, any change to the knowledge-base entry's field list cites increment 13 §1, and any change
+to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the
 same commit** — nothing finds any of those copies for you.
 
 **Docs land with the code, in the same commit series.** A behaviour-changing increment ships
