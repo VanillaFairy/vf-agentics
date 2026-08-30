@@ -20,13 +20,18 @@ import { readFile } from 'node:fs/promises'
 
 const design = await readFile(new URL('../docs/design.md', import.meta.url), 'utf8')
 
-/** The sections increments 11 through 18 owe content to, spelled exactly. */
+/** The sections increments 11 through 20 owe content to, spelled exactly. */
 const OWED_SECTIONS = [
   'Verification',
   'Capability layer',
   'Lane catalogue',
   'Knowledge base',
   'Planning horizon',
+  // Increment 20, and the one section here that no plan reserved: model tiering had no home
+  // in design.md while `coderFor` and `judgeFor` carried the whole argument in code comments.
+  // It is pinned for the same reason as the others — a section that erodes without anything
+  // failing is the failure mode this file exists to catch.
+  'Model tier, earned',
 ]
 
 /** The body of one `## <title>` section: everything up to the next heading or the end. */

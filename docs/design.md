@@ -169,6 +169,56 @@ Order grain follows from the same thinking. The recovery surface is one order's 
 planner aims at series of dozens of lines rather than hundreds: a session limit then costs dozens.
 **Order grain is a correctness property, not tidiness.**
 
+## Model tier, earned
+
+Which brain runs a step is a topology choice like any other, and it is earned the same way. The
+governing question is not how hard the work looks. It is **what catches this if the model is
+wrong.**
+
+Where a discriminator, a build, a suite and a fresh adversarial reviewer stand behind an output, a
+cheaper executor is a bet the pipeline is built to win — that is what all that machinery is *for*.
+Where the output becomes the standard later work is measured against, nothing stands behind it and
+the bet has no counterparty. A red order pins the acceptance criteria in failing tests; the green
+coder is fenced to those criteria and implements a wrong reading faithfully; the reviewer is fenced
+to the same criteria and has no standing to object. So `outputIsTheYardstick` — today, a red order
+or a contract order — floors at Opus at every dial position, and no dial waives it.
+
+Three things move a tier, and they are deliberately unequal.
+
+**The dial is a ceiling, derived from the session.** Fable → `max`, Opus → `normal`, Sonnet and
+below → `low`. A session never chooses its own position: one that dialled itself up because the
+change felt important would be charging the user for its own self-assessment, and one that judged
+its work with a weaker model than the user is talking to would be hiding behind a cheaper reader.
+Only the user moves it off that mapping.
+
+**`weight` moves an order down from the ceiling, and only down.** An upward move would let the
+planner buy a tier the user never authorized — the same self-upgrade the derivation rule forbids a
+session, arriving by proxy through an agent the session dispatched. A trivial order does not stop
+being reviewed; it stops being reviewed by the most expensive reader in the run, which is where a
+mixed plan's judging cost actually goes.
+
+**Measurement moves an order up.** A fix round that did not clear its blockers is evidence, not a
+prediction: the tier was too low, and the next round implements at the Opus floor. This is the one
+sanctioned rise above the ceiling, and it is licensed by an observed failure rather than by anyone's
+opinion of the work. One step, never past Opus, and it does not end anything — the round count
+selects an instrument, while the loop's exits stay the computed, goal-shaped ones they were.
+
+Prediction and escalation are the two available strategies, and escalation is the stronger one
+wherever failure is mechanically detectable, because it needs nobody to be right in advance. This
+pipeline can afford it precisely because its checks are scripts.
+
+**Judges do not adapt upward at all.** A judging agent's product is sometimes *refusal* — a planner
+naming a blocking gap, a reviewer minting a critical, the evidence that reaches the human gate. A
+cheaper judge does not refuse less often because the work turned out easy; it refuses less often
+full stop, and that failure is silent, because the run still goes green. A reviewer that got
+stronger because its own earlier rounds found nothing would be a reviewer whose tier is set by its
+own output, which is the self-assessment this whole design refuses everywhere else.
+
+What each order's tier bought is recorded on its approval line — `weight`, the two model decisions,
+and the review-round count — so the mapping is auditable across runs instead of permanently a
+matter of taste. Nothing reads it back yet: a pipeline that re-tiered future orders from its own
+past outcomes would be setting its own price from its own output, and that needs its own argument.
+
 ## Verdicts, computed
 
 Nothing in this pipeline is green because somebody said so.
