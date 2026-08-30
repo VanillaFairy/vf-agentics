@@ -122,11 +122,13 @@ test('a two-commit log parses to two records, oldest first, split on the delimit
     {
       sha: SHA_A,
       subject: 'add the commit series parser',
+      trailers: '',
       files: ['lib/commit-series.mjs'],
     },
     {
       sha: SHA_B,
       subject: 'cover the locus checks',
+      trailers: '',
       files: ['test/commit-series.test.mjs', 'lib/commit-series.mjs'],
     },
   ])
@@ -161,10 +163,11 @@ test('a commit with no file lines gets an empty files array', () => {
     record(SHA_B, 'cover the locus checks', ['test/commit-series.test.mjs'])
 
   assert.deepEqual(parseLog(text), [
-    { sha: SHA_A, subject: 'merge: T01', files: [] },
+    { sha: SHA_A, subject: 'merge: T01', trailers: '', files: [] },
     {
       sha: SHA_B,
       subject: 'cover the locus checks',
+      trailers: '',
       files: ['test/commit-series.test.mjs'],
     },
   ])
@@ -235,6 +238,7 @@ test('a backslash path comes back with its backslashes, and so does the subject'
     {
       sha: SHA_A,
       subject: 'add lib\\commit-series.mjs',
+      trailers: '',
       files: ['lib\\commit-series.mjs'],
     },
   ])
@@ -518,6 +522,86 @@ test('the bare squash! prefix is what matches, not the words following it', () =
   assert.deepEqual(idsOf(analyzeSeries(commits, LOCUS)), [`${SHA_A} wip-subject true`])
 })
 
+// --- case 10b: checkpoint commits (increment 10) -------------------------------------------
+//
+// A checkpoint is the deliberate stop: a coder that notices it is running long commits its
+// work in progress rather than leaving a dirty tree nothing vouches for. It is a legitimate
+// artifact right up until the series is measured, and at that moment it is the opposite of
+// one — its author committed it to say "unfinished". So its PRESENCE at verification time is
+// what is blocking, not its creation, and the continuation coder dissolves it by squashing it
+// into its next commit.
+//
+// Two marks, either sufficient. The trailer is load-bearing (it survives a reworded subject,
+// which is what lets the resume ladder trust it); the subject prefix is the readable one.
+
+test('a checkpoint subject is a blocking finding at verification time', () => {
+  const commits = [
+    commit(SHA_A, 'feat: the parser', ['lib/commit-series.mjs']),
+    commit(SHA_B, 'checkpoint: half of the locus checks', ['lib/commit-series.mjs']),
+  ]
+
+  assert.deepEqual(idsOf(analyzeSeries(commits, LOCUS)),
+    [`${SHA_B} checkpoint-commit true`])
+})
+
+test('the trailer alone is enough — a reworded subject does not hide a checkpoint', () => {
+  // The case the trailer exists for. A continuation coder that renamed the subject and
+  // stopped short of actually squashing would otherwise present an unfinished series as a
+  // finished one, which is the single failure mode this plugin exists to prevent.
+  const commits = [
+    { sha: SHA_A, subject: 'feat: most of the parser', trailers: 'W3', files: ['lib/commit-series.mjs'] },
+  ]
+
+  assert.deepEqual(idsOf(analyzeSeries(commits, LOCUS)), [`${SHA_A} checkpoint-commit true`])
+})
+
+test('the checkpoint prefix is matched without regard to case', () => {
+  const commits = [commit(SHA_A, 'Checkpoint: stopping here', ['lib/commit-series.mjs'])]
+
+  assert.deepEqual(idsOf(analyzeSeries(commits, LOCUS)), [`${SHA_A} checkpoint-commit true`])
+})
+
+test('a dissolved series carries no checkpoint and no finding', () => {
+  // What the continuation coder is supposed to leave behind: ordinary commits, empty trailer
+  // fields, nothing to dissolve.
+  const commits = [
+    { sha: SHA_A, subject: 'feat: the parser', trailers: '', files: ['lib/commit-series.mjs'] },
+    { sha: SHA_B, subject: 'test: cover the locus checks', trailers: '', files: ['test/commit-series.test.mjs'] },
+  ]
+
+  assert.deepEqual(analyzeSeries(commits, LOCUS), [])
+})
+
+test('a subject merely mentioning a checkpoint is not one', () => {
+  // The prefix is anchored for the same reason the wip alternatives carry `\b`: ordinary
+  // prose about checkpoints is ordinary work.
+  const commits = [commit(SHA_A, 'feat: checkpoint the parser state', ['lib/commit-series.mjs'])]
+
+  assert.deepEqual(analyzeSeries(commits, LOCUS), [])
+})
+
+test('the checkpoint finding names the commit a human has to go and look at', () => {
+  const commits = [commit(SHA_A, 'checkpoint: stopped mid-series', ['lib/commit-series.mjs'])]
+
+  const found = only(analyzeSeries(commits, LOCUS), 'checkpoint-commit')
+  assert.ok(found.message.includes(SHA_A))
+  assert.ok(found.message.includes('checkpoint: stopped mid-series'))
+})
+
+test('the trailer field rides the parsed record, and an absent one is empty', () => {
+  // parseLog's own half of the contract: the third field is optional, so a two-field header
+  // written by an older caller parses exactly as it always did.
+  const withTrailer = parseLog(`\x01${SHA_A}\x02checkpoint: half done\x02W3\n\nlib/a.mjs\n`)
+  const without = parseLog(`\x01${SHA_B}\x02feat: done\x02\n\nlib/a.mjs\n`)
+  const legacy = parseLog(`\x01${SHA_C}\x02feat: done\n\nlib/a.mjs\n`)
+
+  assert.equal(withTrailer[0].trailers, 'W3')
+  assert.equal(withTrailer[0].subject, 'checkpoint: half done')
+  assert.equal(without[0].trailers, '')
+  assert.equal(legacy[0].trailers, '')
+  assert.equal(legacy[0].subject, 'feat: done')
+})
+
 test('a wip word further along the subject line does not make it a wip subject', () => {
   // The `^` is as load-bearing as the `\b`, and in a different direction: these five
   // subjects each contain a wip token that WOULD match on its own, in a position where the
@@ -781,7 +865,7 @@ test('a CRLF record parses exactly like the same record with LF endings', () => 
   const out = parseLog(crlf(record(SHA_A, 'add the parser', ['lib/commit-series.mjs'])))
 
   assert.deepEqual(out, [
-    { sha: SHA_A, subject: 'add the parser', files: ['lib/commit-series.mjs'] },
+    { sha: SHA_A, subject: 'add the parser', trailers: '', files: ['lib/commit-series.mjs'] },
   ])
 })
 

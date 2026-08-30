@@ -45,7 +45,7 @@ test('text before the first delimiter is still dropped, not treated as a record'
   const text = `warning: something harmless\n\x01${SHA_A}\x02add the parser\n\nlib/a.mjs\n`
 
   assert.deepEqual(parseLog(text), [
-    { sha: SHA_A, subject: 'add the parser', files: ['lib/a.mjs'] },
+    { sha: SHA_A, subject: 'add the parser', trailers: '', files: ['lib/a.mjs'] },
   ])
 })
 
