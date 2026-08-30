@@ -4232,7 +4232,6 @@ try {
     let nullSurvey = null
 
     if (settledShape && ground.length > 0) {
-      phase('Survey')
       log(`Settled shape with named ground (${ground.join(', ')}): checking whether the ` +
         `knowledge base already covers it.`)
 
