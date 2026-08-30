@@ -251,6 +251,53 @@ test('a run recorded before coder-done existed is measured, never "continued"', 
   assert.match(row.stage_note, /measured as they stand/)
 })
 
+// --- checkpoint tips: the one piece of positive evidence the ladder gets --------------------
+
+test('a checkpoint tip is carried on even in a run that never spoke coder-done', () => {
+  // The absence of a completion line says nothing on its own (the legacy case above). A
+  // checkpoint says something: its author committed it to record that it stopped short. So it
+  // does not wait on `speaksCoderDone`, which exists only to interpret silence.
+  const row = actionFor('W1', {
+    state: [waveLine()],
+    branches: { W1: branchRow('W1', { checkpoint_head: true }) },
+  })
+
+  assert.equal(row.next_action, 'continue-series')
+  assert.match(row.stage_note, /checkpoint/)
+})
+
+test('a checkpoint tip outranks a coder-done line for the same order', () => {
+  // They contradict — one says finished, the other says stopped short — and a contradiction
+  // resolves in the direction that cannot manufacture a false whole: carrying the series on
+  // costs a coder round, measuring it as complete ships an unfinished series as a finished one.
+  const row = actionFor('W1', {
+    journal: [{ kind: 'coder-done', seq: 5, order: 'W1', head_sha: C40, commits: [] }],
+    branches: { W1: branchRow('W1', { head_sha: C40, checkpoint_head: true }) },
+  })
+
+  assert.equal(row.next_action, 'continue-series')
+})
+
+test('an ordinary tip is unaffected, checkpoint machinery or not', () => {
+  const row = actionFor('W1', {
+    journal: [{ kind: 'coder-done', seq: 5, order: 'W1', head_sha: C40, commits: [] }],
+    branches: { W1: branchRow('W1', { head_sha: C40, checkpoint_head: false }) },
+  })
+
+  assert.equal(row.next_action, 'verify')
+})
+
+test('a checkpoint tip does not resurrect an order that already merged', () => {
+  // The rungs above it still win. A merged order is done, and a checkpoint somewhere in the
+  // history it merged from is archaeology, not an action.
+  const row = actionFor('W1', {
+    state: [waveLine({ merged: ['W1'] })],
+    branches: { W1: branchRow('W1', { checkpoint_head: true }) },
+  })
+
+  assert.equal(row.next_action, 'none')
+})
+
 test('uncommitted work is reported as a fact and adopted by nobody', () => {
   const row = actionFor('W1', {
     branches: { W1: branchRow('W1', { dirty: [' M src/w1.js', '?? scratch.txt'] }) },

@@ -77,6 +77,61 @@ test('the commits survive the integration branch being deleted', () => {
   assert.equal(withBase.branches.W1.base_sha, baseSha)
 })
 
+// --- the checkpoint tip, read off a real commit ----------------------------------------------
+
+test('a vfa-checkpoint trailer on the tip is read off real git', () => {
+  // The trailer is the mark that survives a reworded subject, so it has to come from the
+  // commit object rather than from anything a model typed. This is the only test that proves
+  // the format string actually asks git for it.
+  const { dir } = repo({ commits: 1 })
+  git(dir, 'checkout', '-q', 'vfa/' + RUNSTAMP + '-W1')
+  writeFileSync(join(dir, 'half.txt'), 'partial\n')
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '-q', '-m', 'feat: most of the thing', '-m', 'vfa-checkpoint: W1')
+  git(dir, 'checkout', '-q', 'vfa/' + RUNSTAMP + '-integration')
+
+  const facts = gitFacts(dir, RUNSTAMP, ['W1'], true)
+
+  assert.equal(facts.branches.W1.checkpoint_head, true)
+  assert.equal(facts.branches.W1.commits.length, 2, 'and the enumeration still works')
+  assert.deepEqual(Object.keys(facts.branches.W1.commits[0]).sort(), ['sha', 'subject'],
+    'the trailer itself does not ride the payload — one boolean does')
+})
+
+test('a checkpoint subject with no trailer is caught too', () => {
+  const { dir } = repo({ commits: 1 })
+  git(dir, 'checkout', '-q', 'vfa/' + RUNSTAMP + '-W1')
+  writeFileSync(join(dir, 'half.txt'), 'partial\n')
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '-q', '-m', 'checkpoint: stopped mid-series')
+  git(dir, 'checkout', '-q', 'vfa/' + RUNSTAMP + '-integration')
+
+  assert.equal(gitFacts(dir, RUNSTAMP, ['W1'], true).branches.W1.checkpoint_head, true)
+})
+
+test('an ordinary series reports no checkpoint at its tip', () => {
+  const { dir } = repo({ commits: 2 })
+
+  assert.equal(gitFacts(dir, RUNSTAMP, ['W1'], true).branches.W1.checkpoint_head, false)
+})
+
+test('a checkpoint that is no longer the tip does not force a continuation', () => {
+  // Dissolving one is the continuation coder's job and squashing is how it does it — but a
+  // coder that instead landed real work on top has also moved past it. The tip is the
+  // question; the history is not.
+  const { dir } = repo({ commits: 1 })
+  git(dir, 'checkout', '-q', 'vfa/' + RUNSTAMP + '-W1')
+  writeFileSync(join(dir, 'half.txt'), 'partial\n')
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '-q', '-m', 'checkpoint: stopped mid-series')
+  writeFileSync(join(dir, 'rest.txt'), 'finished\n')
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '-q', '-m', 'feat: the rest of it')
+  git(dir, 'checkout', '-q', 'vfa/' + RUNSTAMP + '-integration')
+
+  assert.equal(gitFacts(dir, RUNSTAMP, ['W1'], true).branches.W1.checkpoint_head, false)
+})
+
 test('an order branch that was never created is simply absent', () => {
   const { dir } = repo()
   const facts = gitFacts(dir, RUNSTAMP, ['W1', 'W2'], true)
