@@ -4939,7 +4939,11 @@ try {
   // in `failed_channels`. It does not make the run incomplete: the base is advisory by
   // construction, and nothing is verified on it.
 
-  const kbPaths = [...new Set(orders.flatMap((wo) => (wo.locus || []).map(kbPath)).filter(Boolean))]
+  // Waved orders only. A coupled order is implemented by the session, which is not dispatched from
+  // here and reads the base for itself if it wants to; an all-coupled run buying a chain would be
+  // a dispatch bought for nobody.
+  const kbPaths = [...new Set(waves.flat()
+    .flatMap((id) => ((orderById.get(id) || {}).locus || []).map(kbPath)).filter(Boolean))]
 
   if (kbPaths.length > 0) {
     phase('Plan')

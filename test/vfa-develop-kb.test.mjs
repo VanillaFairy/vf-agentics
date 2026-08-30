@@ -153,6 +153,18 @@ test('a plan with no locus anywhere buys no chain at all', async () => {
     'there is no ground to ask about, and a chain over nothing is a dispatch bought for nothing')
 })
 
+test('a run whose orders all go to the session buys no chain either', async () => {
+  const { prompts } = await run({
+    plan: {
+      ...plan([order('W1')]),
+      partition_raw: JSON.stringify({ waves: [], coupled: ['W1'] }),
+    },
+  })
+
+  assert.ok(!labelsOf(prompts).includes('kb-chain'),
+    'a coupled order is implemented by the session, which is not dispatched from here')
+})
+
 // ── seeding: fresh reaches its own coder, stale reaches nobody ───────────────────────────────
 
 test('a fresh entry reaches the coder working on the ground it is about', async () => {
