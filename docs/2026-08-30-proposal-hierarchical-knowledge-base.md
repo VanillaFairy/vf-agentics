@@ -200,6 +200,11 @@ not ride coder dispatches at all; they are not worth a coder's attention mid-ord
 
 ### 5. Consumption: survey
 
+> **Amended in place at implementation (increment 14, 2026-08-30), for the reason §5a gives.**
+> The Plan phase receives the tree **index**, not chains at the roots; chains are fetched
+> **per topic** after the decomposition. Everything below about verification topics, leads and
+> `from_kb` stands unchanged — only where the chains come from moved.
+
 The survey's Plan phase receives the chain verdict for the question's roots, and the
 planner splits its topics along it:
 
@@ -215,6 +220,37 @@ planner splits its topics along it:
 This is where the measured 40–50% same-subsystem overlap is actually harvested: the
 second presentation-layer run of 2026-08-29 would have opened with 21 of its 54 paths
 already fresh in the chain.
+
+### 5a. The amendment: the index first, the chains per topic
+
+The probe killed "chains at the question's roots" and the correction is mechanical rather than
+philosophical. **Before a decomposition exists, the only known paths are the roots** — and a
+chain at a root is the repository-wide node alone, because a chain is bounded by depth and
+reaches nothing below the path it was asked for. So the Plan phase would have been handed
+almost nothing, and every deep entry, which is most of what a mature base holds, would have
+stayed invisible to the one phase that could have used it.
+
+The order inverts. The Plan phase receives the **tree index** — node paths, entry counts, kinds,
+and no state at all, which is what makes it cheap enough to buy before anything is known. The
+planner decomposes against it and names each topic's subtree. The **chains are fetched then**,
+at the subtrees the topics named, in one courier. Freshness — the expensive half, one `git log`
+per entry — is bought only for ground somebody decided to search.
+
+Everything else in §5 is unchanged, and the split it describes is exactly what the fetched
+chains feed: fresh entries make their topic a verification, stale ones enter the search as
+leads, and `from_kb` carries the provenance out.
+
+### 5b. The null survey
+
+The degenerate case §5 implies and does not name. Verification topics all the way down is a
+survey that discovers nothing, and the generator has to recognize it rather than run it: when
+the chain covers the ground a change names, fresh, **and** the change's shape is settled, the
+survey phase collapses — to a single verification pass inside the survey when its own topics
+are all verification topics, or to nothing at all when the caller can name the ground up front,
+with the chain cited as the evidence base and said so in the coverage block.
+
+This is the first phase whose *presence* is derived rather than assumed, and it is the effort
+level of the same earned-topology rule the plan states for every other level.
 
 ### 6. Write-back
 

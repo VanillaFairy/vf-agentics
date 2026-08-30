@@ -170,6 +170,34 @@ reviewed adversarially — all of those are what this pipeline is for. A triage 
 those is not saving money, it is declining the work. When the three properties do not all
 hold, say nothing and start the run.
 
+### The two properties the run can use
+
+The triage asks these questions whether or not it declines, and two of its answers are worth
+carrying into the run rather than throwing away — they are what lets the workflow decide
+whether the survey phase is earned at all (the **null survey**).
+
+- **`settled_shape: true`** — pass it when the second property held: the approach is decided,
+  and nothing about *how* to do this is something the change has to go and discover. This is a
+  judgment and it stays yours; no arithmetic in the workflow can make it, and the workflow
+  never infers it. Withholding it costs a survey and nothing else, so when you are unsure, do
+  not pass it.
+- **`ground: ['src/…', …]`** — pass the paths the first property established. This is not a
+  new judgment: you already had to know the locus to answer the triage question. It is what
+  makes the other half computable.
+
+What the workflow then does with them is arithmetic you do not have to reproduce: it reads one
+knowledge-base chain over the named paths and **skips the survey only if every one of them is
+covered by a fresh entry** — one a program checked against the current tree and found untouched
+since it was observed. A stale entry is a lead, not evidence, so a stale chain refuses; so does
+one uncovered path among several; so does a chain it could not read. Every refusal surveys in
+full and says which path and why.
+
+When it does fire, the result says so where a survey's coverage would have been:
+`coverage.from_kb` names that no survey ran, that nothing was re-searched, which paths the
+chain covered and at which commits. **Present that to the user with the result** — a run whose
+evidence was recalled rather than searched is a different claim from one whose evidence was
+gathered today, and they are entitled to know which one they have.
+
 ## Run the pipeline
 
 1. Confirm the tree is a git repo and note the current branch and HEAD. If the working tree
@@ -185,7 +213,7 @@ hold, say nothing and start the run.
    resolve:
 
    ```
-   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, intelligence, plugin_root, base_ref, programme, slice } })
+   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, intelligence, plugin_root, base_ref, programme, slice, settled_shape, ground } })
    ```
 
    `plugin_root` is this plugin's absolute root (`${CLAUDE_PLUGIN_ROOT}`); the workflow

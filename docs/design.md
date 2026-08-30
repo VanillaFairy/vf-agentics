@@ -69,6 +69,41 @@ The first instrument of this principle is the develop skill's triage gate (incre
 can decline the whole pipeline. The field audit found seven of ten sessions better served by a
 direct session, so a triage that never declines is itself a defect.
 
+### Phase presence, derived
+
+The survey is the first phase whose **presence** is derived rather than assumed, and the rule it
+established binds every phase that follows it into this pattern.
+
+A phase runs when something nameable about the effort earns it, and the derivation splits along a
+line that is not negotiable: **the judgment half stays with whoever can make it, and the arithmetic
+half is computed.** For the survey the judgment is "is this change's shape settled, or is the
+approach something the change has to discover" — a question no arithmetic answers, so it arrives
+from the caller as `settled_shape`, out of the triage conversation that already asks it. The
+arithmetic is "does the knowledge base cover the ground this change names, fresh" — the caller
+names the ground, one chain is read, and the phase collapses only if every named path carries an
+entry a program checked against the current tree and found untouched. Neither half alone decides
+anything.
+
+Three properties keep a derived absence from becoming a silent one.
+
+**It can only rest on a program's answer.** A stale entry is a lead, and a phase skipped on the
+strength of leads is the laundering the whole system is built against — so a stale chain refuses
+the collapse by construction rather than by policy, as does an unreadable one, as does a chain
+covering some of the named ground but not all of it.
+
+**It says so where the phase would have reported.** The coverage block gains the account the
+phase did not write: what the chain covered, at which commits, and — first, because a reader
+would otherwise assume it — that none of it was re-searched by this run. A phase that shrank
+without saying it shrank is leanness nobody can audit, and what nobody audits re-maximalizes.
+
+**It changes no verdict.** Planning, verification and review run exactly as they would have. What
+was not bought is a search; what a search would have produced is named as missing rather than
+assumed present.
+
+The degenerate case one level down is the same rule at topic grain: when every topic in a survey
+rests on fresh ground, what ran was a verification pass rather than a discovery survey, and the
+coverage block says that too.
+
 ## The ledger
 
 A run's durable state lives in `.claude/vfa/runs/<runstamp>/`: `plan.json` (what was decided),
@@ -342,6 +377,30 @@ approved orders' discoveries are deposited, anchored to the order's own locus an
 run's base commit. Escalated orders' discoveries stay out: unreviewed claims about a repository
 that rejected the work.
 
+**In the survey, the index comes first and the chains come per topic.** The tempting design was
+chains at the question's roots, and it reaches almost nothing: before a decomposition exists the
+only known paths are the roots, and a chain at a root is the repository-wide node alone. So the
+Plan phase receives the tree **index** — node paths, entry counts, kinds, and no state at all,
+which is exactly what makes it cheap enough to buy before anything is known. The planner
+decomposes against it and names each topic's subtree; the chains are then fetched at those
+subtrees, in one courier, and freshness is bought only for ground somebody decided to search.
+
+What each state is worth is said in the dispatch, not left to be inferred. A **fresh** entry is
+evidence and turns its topic into a verification — confirm what is recorded still stands, then
+spend the pass on what it does not cover, and report an entry that turns out wrong as a finding
+rather than as a location. A **stale** entry is a lead: a place to look, never a fact to report,
+and it reaches the search only. No analyst sees a lead, for the same reason no verifier sees an
+entry — an analyst judges what was found, and a claim it cannot check does not belong beside
+locations it can.
+
+**A result that recalled something says so.** `from_kb` is the coverage block's seventh field:
+one line per topic whose evidence came out of the base, naming how many entries, for which
+subtree, and at which commits they were observed. It is derived from what the script handed to a
+dispatch rather than from an analyst's account of what it leaned on, and its absence reads as
+"nothing came from cache" — the direction that under-claims. Without it a result built partly on
+recall is indistinguishable from one built entirely on today's search, which is the single failure
+this system exists to prevent.
+
 **The verifier still receives nothing**, and that asymmetry is what the whole design rests on. A
 coder may act on hearsay and be caught by verification; verification has nothing behind it. The one
 thing a verification takes from the base is the `command` entries — the build and suite commands an
@@ -353,10 +412,16 @@ Both seams are advisory side channels. A base that cannot be read or written cos
 it has already paid for: coders open as they did before it existed, the loss lands in
 `failed_channels`, and `coverage.complete` is untouched, because nothing is verified on it.
 
-Contract: `docs/superpowers/specs/2026-08-30-increment-13-contracts.md`. Increment 14 adds survey
-consumption — the tree index into the Plan phase, fresh ground becoming verification topics and
-stale ground becoming leads. Increment 18 adds the guardian and surface-glob anchor classes,
-absence entries, `kb init` harvesting and the optional `INDEX.md` render for the human layer.
+**And a change whose ground the base already covers buys no survey at all.** That is the null
+survey, and its rule is the phase-presence rule above: the caller supplies the judgment and names
+the ground, the arithmetic checks that every named path is covered by a fresh entry, and the chain
+becomes the run's evidence base with the coverage block saying so. A stale chain cannot take that
+path — the refusal is by construction, not by policy.
+
+Contracts: `docs/superpowers/specs/2026-08-30-increment-13-contracts.md` for the core,
+`2026-08-30-increment-14-contracts.md` for survey consumption and the null survey. Increment 18
+adds the guardian and surface-glob anchor classes, absence entries, `kb init` harvesting and the
+optional `INDEX.md` render for the human layer.
 
 ## Planning horizon
 

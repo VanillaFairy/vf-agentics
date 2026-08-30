@@ -145,16 +145,34 @@ the base is the build and suite commands an earlier investigation established, a
 the entry is fresh **and** its source says a verification wrote it. Both seams are advisory side
 channels and neither can make a run incomplete.
 
+**The survey consumes it too, and the order matters.** Its Plan phase receives the tree *index* —
+node paths, entry counts, kinds, no state at all — because before a decomposition exists the only
+known paths are the roots, and a chain at a root is the repo-wide node alone. The planner
+decomposes against the index and names each topic's subtree; the chains are fetched *then*, at
+those subtrees, so freshness is bought only for ground somebody decided to search. Fresh entries
+are evidence and turn their topic into a verification; stale ones are leads for the search and
+reach no analyst. Anything a result recalled rather than searched for is named in the coverage
+block's `from_kb`, derived from what the script handed out and never from an agent's account of
+what it used — and its absence reads as "nothing came from cache", never the reverse.
+
+**The survey is the first phase whose presence is derived.** When the caller reports the change's
+shape settled (a judgment, so it stays in the caller's seat) *and* names ground the base covers
+with fresh entries (arithmetic, so it is computed and never claimed), the phase collapses and the
+chain is the run's evidence base — stated in `from_kb`, including that nothing was re-searched. A
+stale chain, a partly covered one, or one that could not be read all refuse the collapse by
+construction: a phase skipped on the strength of leads is exactly the laundering §2 forbids.
+
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
 `2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md`,
 `2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md`,
-`2026-08-30-increment-11-contracts.md`, `2026-08-30-increment-12-contracts.md` and
-`2026-08-30-increment-13-contracts.md`. **Any change to
+`2026-08-30-increment-11-contracts.md`, `2026-08-30-increment-12-contracts.md`,
+`2026-08-30-increment-13-contracts.md` and `2026-08-30-increment-14-contracts.md`. **Any change to
 the plan envelope's field list cites the registry in increment 5 §1, any change to a `state.jsonl`
 line cites increment 6 §2, any change to a `journal.jsonl` line cites increment 7 §4, any change
 to `seq` cites increment 8 §3, any change to the verify payload's field list cites increment
-11 §1b, any change to the knowledge-base entry's field list cites increment 13 §1, and any change
+11 §1b, any change to the knowledge-base entry's field list cites increment 13 §1, any change to
+the coverage block's field list cites increment 14 §3, and any change
 to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the
 same commit** — nothing finds any of those copies for you.
 
@@ -260,7 +278,7 @@ A law with no enforcement is decoration. Its mechanical consequences:
 | §1 no counter-based termination | `tools/rules/no-turn-caps.mjs` (T05) |
 | §2 stop_reason enum, not a boolean | `HITS` schema (T15) + `coverage-block` (T06b) |
 | §3 resume, do not truncate | `scoutUntilComplete` in `vfa-survey` (T15) |
-| §4 partial ≠ whole | `tools/rules/coverage-block.mjs` (T06b) + `tools/rules/task-tool-fallback.mjs` |
+| §4 partial ≠ whole | `tools/rules/coverage-block.mjs` (T06b) + `tools/rules/task-tool-fallback.mjs` + `coverage.from_kb` (increment 14 §3) |
 | §5 side channels get `.catch` | `vfa-survey` (T15), reviewed at T18 |
 | §6 resumable halt | `coverage.resumable` (T15) |
 | §7 escalate, never abandon | agent prompts (T11–T14) |

@@ -74,6 +74,9 @@ test('the ratified law section matches its pinned hash', () => {
 
   assert.equal(
     createHash('sha256').update(law).digest('hex'),
-    '04e3ecad55b2fe25179f081db115dbac7c737d1351d13e2b142e2027e488077b',
+    // Amended 2026-08-30 (increment 14): the §4 enforcement row names `coverage.from_kb`
+    // alongside the lint rules. A result partly recalled from the knowledge base and one
+    // wholly searched are indistinguishable without it, which is the clause itself.
+    '36e5fe52d43ee96a12c8006810f563f99ebba55e1fed01bcb7525b44400984a1',
   )
 })

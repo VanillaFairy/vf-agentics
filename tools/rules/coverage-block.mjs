@@ -17,6 +17,17 @@
 //   V2 (line 0)     something is returned, but no returned object carries a coverage key
 //   V3 (that line)  a bare `return` — an early exit with no result and no coverage
 //
+// The block's field list is { complete, dropped, incomplete, failed_channels, unreached,
+// resumable }, plus `from_kb` since increment 14 — the provenance of anything a result recalled
+// from the project knowledge base rather than searched for today. It is deliberately NOT demanded
+// here, and this rule's behaviour is unchanged by it: absence must read as "nothing came from
+// cache", so a workflow that never touches the base is correct to omit it, and a rule insisting on
+// an empty array would turn the safe default into a lint failure. What a change to that field list
+// must cite is docs/superpowers/specs/2026-08-30-increment-14-contracts.md §3, and the question it
+// must answer is the one that section was written against: does this field let a reader tell a
+// partial result from a whole one? A field that does not is decoration on the one structure
+// IRON LAW §4 rests on.
+//
 // Both spellings of the key count: `coverage:` and ES shorthand `coverage`, the latter in
 // every position it can occupy — first key, last key, somewhere in the middle, with or
 // without a trailing comma, on one line or written out one key per line (D10/D11). The first
