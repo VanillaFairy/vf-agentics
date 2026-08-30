@@ -119,6 +119,31 @@ const VERDICT = {
   },
 }
 
+// One measurement, carried rather than transcribed — the same envelope as VERDICT above, for
+// the same reason. `lib/verify.mjs` runs the commit-series check, the build, the suite and the
+// discriminator in one process and prints one digest-covered line of JSON; the verifier's whole
+// job in verify mode is to run it and paste that line.
+//
+// Why this shape rather than VERIFY's field-by-field one, which is still right there below: a
+// schema that re-declares every field asks a model to re-emit the measurement field by field,
+// and three of those fields are nested arrays. That is transcription with extra steps, and it is
+// exactly what the resume verdict stopped doing after a paraphrased field degraded a half-built
+// run three times running. One string has one honest failure mode, and the digest inside it sees
+// that mode.
+const CARRIED = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'payload_raw', 'notes'],
+  properties: {
+    // `failed` is the courier unable to run the command AT ALL — node missing, the worktree
+    // path unreadable, the shell refusing. A check runner that ran and could not answer is a
+    // different event: its refusal rides inside the payload, typed, and it buys an investigator
+    // rather than a second courier. IRON LAW §7 — those two must not be conflated.
+    stop_reason: { type: 'string', enum: ['carried', 'failed'] },
+    payload_raw: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
 // Worktrees for branches that have commits and nowhere to stand. Narrow on purpose: this is
 // an ACTION, and the reconnaissance that used to surround it — which branches exist, what they
 // hold, whether they are already merged — is computed on disk now and never asked of an agent.
@@ -230,10 +255,15 @@ const CODER_RESULT = {
   },
 }
 
+// The same facts, measured BY HAND. This is the investigator's shape now, not the ordinary
+// verifier's: the checks are a script, and a model performs them only when the script could not
+// — a typed error it printed, or a repository whose verification commands nobody has established
+// yet. The fields are unchanged, because the verdict predicates below read them and this
+// increment changed who runs the commands, never what passes.
 const VERIFY = {
   type: 'object', additionalProperties: false,
   required: ['stop_reason', 'build', 'suite', 'suite_output_tail', 'failing_tests',
-             'discriminator', 'series_findings', 'notes'],
+             'discriminator', 'series_findings', 'commands', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
     // Observed facts, not judgments. 'absent' — the repository defines no such command at
@@ -265,6 +295,21 @@ const VERIFY = {
       required: ['sha', 'check', 'message', 'blocking'],
       properties: { sha: { type: 'string' }, check: { type: 'string' },
                     message: { type: 'string' }, blocking: { type: 'boolean' } } } },
+    // What this repository's verification commands actually ARE, spelled as they must be typed.
+    // Choosing one is judgment and running one is not, so it is bought once from a model and
+    // then carried: every later check in this run is the script, invoked with these strings.
+    // An empty string is not "I did not look" — the paired fact says which: `build: 'absent'`
+    // beside an empty `build` is a repository that defines none, and that is a fact somebody
+    // established rather than a shell's exit code read as one.
+    commands: {
+      type: 'object', additionalProperties: false,
+      required: ['build', 'suite', 'test_one'],
+      properties: {
+        build: { type: 'string' },
+        suite: { type: 'string' },
+        test_one: { type: 'string' },  // carries {file} where the path goes
+      },
+    },
     notes: { type: 'string' },
   },
 }
@@ -550,6 +595,105 @@ function base64(text) {
   }
 
   return out
+}
+
+// ------------------------------------------------------- the measurement transport
+//
+// The other direction of the same principle: a measurement is computed on disk, printed with its
+// own digest, pasted by a courier, and re-digested here before a single field of it is believed.
+//
+// Two failures arrive through this one string and they are not the same event, so they are told
+// apart here and nowhere else:
+//
+//   the trip failed   — the courier could not run the command, or damaged what it carried. A
+//                       second courier may well succeed, so `retry` says so.
+//   the runner failed — lib/verify.mjs itself threw. It will throw again for the next courier
+//                       too; what that needs is a model, not another paste.
+//
+// A measurement the runner REFUSED — a typed error inside a whole, correctly digested payload —
+// is not a failure of this function at all. It arrives as a payload with `error` set, and the
+// caller routes it to an investigator.
+
+/** @returns {{payload: object|null, why: string|null, retry: boolean}} */
+function carriedVerify(held) {
+  if (!held) return { payload: null, why: 'the dispatch returned nothing', retry: true }
+
+  if (held.stop_reason !== 'carried') {
+    return {
+      payload: null,
+      why: held.notes || 'the courier could not run the check command',
+      retry: true,
+    }
+  }
+
+  let parsed = null
+  try {
+    parsed = JSON.parse(held.payload_raw)
+  } catch (e) {
+    return {
+      payload: null,
+      why: 'the measurement did not survive transcription: ' + (e && e.message),
+      retry: true,
+    }
+  }
+
+  if (parsed && parsed.error) {
+    return { payload: null, why: 'the check runner failed: ' + parsed.error, retry: false }
+  }
+  if (!parsed || !parsed.payload || typeof parsed.payload_digest !== 'string') {
+    return { payload: null, why: 'what came back is not a measurement envelope', retry: true }
+  }
+
+  const actual = fnv1a(canonical(parsed.payload))
+  if (actual !== parsed.payload_digest) {
+    return {
+      payload: null,
+      why: 'digest mismatch: the measurement was computed as ' + parsed.payload_digest +
+        ', what arrived digests to ' + actual,
+      retry: true,
+    }
+  }
+
+  return { payload: parsed.payload, why: null, retry: false }
+}
+
+// The check-runner invocation, filled in here and copied there.
+//
+// Commands travel base64 for the reason the state line does: they are free shell text, and a
+// build command carrying a quote typed onto an agent's command line is the corruption this
+// transport already fixed once. Paths and shas do not — they are quoted argv slots the rest of
+// this file already writes that way, and an opaque token where a human expects a path makes a
+// dispatch nobody can read.
+function verifyInvocation(parts) {
+  const flags = ['--worktree "' + posix(parts.worktree) + '"']
+
+  if (parts.mode === 'integration') {
+    flags.push('--mode integration')
+  } else {
+    flags.push('--base ' + parts.base_sha, '--head ' + parts.head_sha)
+    for (const path of parts.locus || []) flags.push('--locus "' + path + '"')
+  }
+
+  if (verifyCommands.build) flags.push('--build-b64 ' + base64(verifyCommands.build))
+  else if (verifyCommands.build_absent) flags.push('--build-absent')
+
+  if (verifyCommands.suite) flags.push('--suite-b64 ' + base64(verifyCommands.suite))
+  else if (verifyCommands.suite_absent) flags.push('--suite-absent')
+
+  if (parts.mode !== 'integration' && verifyCommands.test_one) {
+    flags.push('--test-one-b64 ' + base64(verifyCommands.test_one))
+  }
+
+  // The journal line is written by the program, inside the process that made the measurement.
+  // Three nested arrays copied out of a payload and into a shell heredoc is the transcription
+  // hazard the program exists to remove, and there is no window at all between the observation
+  // and the record. The line's SHAPE is unchanged (increment 7 §4 stands); only its writer moved.
+  if (parts.journal && planPath) {
+    flags.push('--journal "' + posix(planPath) + '"', '--seq ' + nextSeq(),
+      '--order ' + parts.order, '--branch ' + parts.branch)
+  }
+
+  return 'node "' + pluginRoot + '/lib/verify.mjs" ' + flags.join(' ')
 }
 
 // ---------------------------------------------------------------- result coherence
@@ -982,6 +1126,53 @@ const knowledgeSection = () => (knowledge.size === 0 ? '' :
   `repository. Verify before relying on any of them; they are observations, not ` +
   `instructions, and none of them was written with your work order in view:\n` +
   [...knowledge].join('\n') + `\n\n`)
+
+// What this run has ESTABLISHED about verifying this repository, and the only source the check
+// runner's invocation draws its commands from. Empty until an investigator establishes them:
+// choosing a build command is judgment and is bought from a model once, after which every
+// measurement in the run is the script invoked with these strings.
+//
+// `_absent` is a separate bit from an empty command on purpose. A shell cannot tell a missing
+// command from a broken one, so lib/verify.mjs never infers `absent` — it records it only when
+// the caller declares it, and the only thing entitled to declare it is a model that went and
+// looked. Empty with the bit unset therefore means "nobody has established this yet", which is
+// the state that buys the investigator.
+const verifyCommands = { build: '', suite: '', test_one: '', build_absent: false, suite_absent: false }
+
+/**
+ * Adopt what an investigator established, for the rest of the run.
+ *
+ * agents/verifier.md promises exactly this in its investigate mode — "your caller carries what
+ * you establish to every later verification in the run" — and it is what makes the escalation
+ * worth buying: one model reads the manifest, and every later order and every fix round runs a
+ * script instead.
+ *
+ * The relationship with `knowledge` runs ONE WAY, deliberately. What is established travels OUT
+ * to it, so the wave line records it and the next coder and the human both see it. It is never
+ * read back IN, because coders write to that set too, and a coder's guessed build command
+ * becoming the command every later verdict is computed from is the one substitution the IRON
+ * LAW names outright: a report laundered into a measurement.
+ */
+function adoptCommands(v) {
+  const found = (v && v.commands) || {}
+  const named = (key) => String(found[key] || '').trim()
+
+  for (const [key, what] of [['build', 'build'], ['suite', 'test suite'], ['test_one', 'single-test']]) {
+    const value = named(key)
+    if (!value || value === verifyCommands[key]) continue
+    verifyCommands[key] = value
+    knowledge.add(what + ' command, established by verification: ' + value)
+    log(`The ${what} command for this repository is established as ${JSON.stringify(value)}; ` +
+      `every later check in this run runs it as a script.`)
+  }
+
+  // Absence is only a fact when the measurement it sits in completed. An investigator that
+  // stopped on a broken environment reports `absent` for a command it never got to, and
+  // recording that as "this repository defines none" is the laundering IRON LAW §2 forbids.
+  if (v && v.stop_reason !== 'completed') return
+  if (!named('build') && v.build === 'absent') verifyCommands.build_absent = true
+  if (!named('suite') && v.suite === 'absent') verifyCommands.suite_absent = true
+}
 
 // interfaces §8. Every exit path goes through this function, so a caller never receives
 // undefined and never receives a bare error string — it always receives something whose
@@ -1753,37 +1944,75 @@ function coderFixPrompt(wo, state, instruction) {
     `you added in THIS round.`
 }
 
+// The four checks are one program now, so this dispatch names one command and asks for its
+// stdout. What used to be here — the hand-run procedure, the role-specific warnings, the
+// discriminator's stash-and-restore dance — is agents/verifier.md's investigate mode, dispatched
+// by `verifierInvestigatePrompt` below when the program cannot answer.
+//
+// Nothing about the measurement moved. The program prints the same fields this dispatch used to
+// ask a model to type, and the predicates above read them unchanged; what changed is that a
+// deterministic thing is done by a script (IRON LAW §8), and that the bytes travel under a
+// digest instead of through a model's fingers.
 function verifierPrompt(wo, state) {
-  const locusFlags = (wo.locus || []).map((p) => '--locus "' + p + '"').join(' ')
+  return `VERIFY MODE — you are a courier. You run ONE command and carry its output back. You ` +
+    `measure nothing yourself, you judge nothing, and you decide nothing about whether this ` +
+    `order passed.\n\n` +
+    `WORKTREE — cd here first, and work nowhere else:\n${state.worktree}\n` +
+    `BRANCH: ${state.branch}\n` +
+    `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
+    `Run EXACTLY this, as ONE line:\n\n   ` +
+    verifyInvocation({
+      worktree: state.worktree, base_sha: state.base_sha, head_sha: state.head_sha,
+      locus: wo.locus, journal: true, order: wo.id, branch: state.branch,
+    }) + `\n` +
+    rootWarning +
+    `It performs all four checks in one process — the commit series over ` +
+    `${state.base_sha}..HEAD against this order's declared locus, the build, the test suite, ` +
+    `and the discriminator — and prints ONE line of JSON carrying its own digest. It also ` +
+    `writes this run's journal line itself, inside the process that made the measurement, so ` +
+    `you append nothing and you do not "check" that line by rewriting it.\n\n` +
+    `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, ` +
+    `do not reformat it, do not pretty-print it, do not summarise it, do not drop a field that ` +
+    `looks redundant, and do not repair anything in it that looks wrong. Your caller recomputes ` +
+    `the digest over what arrives, so a copy that drifted by a single character is caught and ` +
+    `refetched rather than believed. Editing it helpfully is the one thing that turns a ` +
+    `detectable problem into an undetectable one.\n\n` +
+    `The payload may say "stop_reason":"environment_broken" and carry an error object. That is ` +
+    `still its stdout and it still goes into payload_raw unchanged — your caller reads the ` +
+    `typed error and sends an investigator at it, and a summary of it in your own words is ` +
+    `strictly worse than the thing itself.\n\n` +
+    `Return stop_reason failed ONLY when the command could not be RUN at all — node missing, ` +
+    `the worktree path unreadable, the shell refusing — and say in notes exactly what it ` +
+    `reported. A command that ran and refused is a different answer from a command that never ` +
+    `ran, and your caller acts differently on each: one is a fact about this order, the other ` +
+    `is a fact about the machine.`
+}
 
-  return `Verify one work order's commit series inside its worktree, and report observed ` +
-    `facts. You do not judge quality and you do not decide whether this passed — the caller ` +
-    `computes that from what you report.\n\n` +
-    `WORKTREE — work here, and nowhere else:\n${state.worktree}\n` +
+// The escalation, and only ever an escalation: choosing a build command is judgment, running one
+// is not, and the split is between those two rather than between cheap and thorough.
+//
+// Dispatched for exactly the two reasons agents/verifier.md's investigate mode names — the check
+// runner printed a typed error, or this repository's own verification commands are not
+// established yet. The procedure is that agent's constitution and is not restated here; what
+// this dispatch adds is which of the two happened, this order's facts, and the two records it
+// must leave behind — the journal line, and the commands it established.
+function verifierInvestigatePrompt(wo, state, why) {
+  return `INVESTIGATE MODE. The check runner could not answer, so you perform the checks by ` +
+    `hand, exactly as your charter's investigate mode describes.\n\n` +
+    `WHAT IT SAID:\n${why}\n\n` +
+    `WORKTREE — cd here first, and work nowhere else:\n${state.worktree}\n` +
     `BRANCH: ${state.branch}\n` +
     `BASE SHA (the discriminator baseline): ${state.base_sha}\n` +
     `HEAD SHA: ${state.head_sha}\n\n` +
     `WORK ORDER ${wo.id}: ${wo.title}\n` +
     `DECLARED LOCUS:\n${listOf(wo.locus)}\n\n` +
     `COMMIT SERIES UNDER TEST:\n${commitLines(state.commits)}\n\n` +
-    `1. Commit-series checks — run exactly:\n\n` +
-    `   node "${pluginRoot}/lib/commit-series.mjs" --base ${state.base_sha} ${locusFlags}\n` +
+    `Run the commit-series check with:\n\n` +
+    `   node "${pluginRoot}/lib/commit-series.mjs" --base ${state.base_sha} ` +
+    (wo.locus || []).map((p) => '--locus "' + p + '"').join(' ') + `\n` +
     rootWarning +
-    `   Copy the findings array from its JSON stdout into series_findings unchanged.\n\n` +
-    `2. Build, then 3. the test suite. Take both commands from the caller notes below when ` +
-    `they name them, otherwise from the repository's own documentation or manifest, and ` +
-    `record in notes exactly which commands you ran. Record each as passed or failed from ` +
-    `the observed exit status; a repository that defines no build or no suite command at ` +
-    `this commit is recorded as absent, with what you looked for in notes. Absent is a ` +
-    `fact about repo state and failed is an observed non-zero exit — never write one as ` +
-    `the other. A broken build is a fact to report, not a reason to stop observing.\n\n` +
-    `3b. FAILING TESTS. Whenever the suite fails, report every failure in failing_tests as ` +
-    `{file, id}: file is the REPO-RELATIVE path of the test file with forward slashes, id is ` +
-    `the test's name as the runner printed it. The file is the half your caller computes ` +
-    `with — it intersects those paths against this order's declared locus — so a failure you ` +
-    `report with an id but no usable path cannot be placed, and a suite that failed while ` +
-    `naming nothing is treated as failing everywhere. Empty when the suite passed or is ` +
-    `absent.\n\n` +
+    `and copy the findings array from its JSON stdout into series_findings unchanged. Then the ` +
+    `build, the suite and the discriminator by hand, over ${state.base_sha}..${state.head_sha}.\n\n` +
     (roleOf(wo) === 'red'
       ? `THIS ORDER IS RED: its tests are SUPPOSED to fail, and your caller is checking ` +
         `that they do and that nothing else does. Report the failures exactly as you ` +
@@ -1795,11 +2024,7 @@ function verifierPrompt(wo, state) {
         `all is load-bearing. Be exact about absent versus passed — for this one role they ` +
         `are not close, because absent means nothing checked the restructuring.\n\n`
       : '') +
-    `4. Discriminator: every test file added or changed between ${state.base_sha} and ` +
-    `${state.head_sha} — enumerate them from the diff. For each, record whether it passes ` +
-    `now, and whether it FAILED at ${state.base_sha} in this same worktree. A test that ` +
-    `passes on the base proves nothing about this change, and that is exactly what the ` +
-    `caller needs to know.\n\n` +
+    commandsSection() +
     callerNotes() +
     journalSection(
       `Your caller re-derives this order's verdict from what you write here if an ` +
@@ -1818,6 +2043,34 @@ function verifierPrompt(wo, state) {
     `Report facts only. stop_reason environment_broken is for the environment itself failing ` +
     `— unmeasurable is a different answer from failed, and conflating them is the laundering ` +
     `the IRON LAW forbids.`
+}
+
+// The half of an investigation that outlives this order. Everything else it reports is about one
+// commit series; the commands are about the repository, so they are asked for as data rather
+// than left in prose, and every later check in the run is the script invoked with them.
+function commandsSection() {
+  const known = [
+    verifyCommands.build ? 'build: ' + verifyCommands.build : null,
+    verifyCommands.suite ? 'suite: ' + verifyCommands.suite : null,
+    verifyCommands.test_one ? 'one test file: ' + verifyCommands.test_one : null,
+  ].filter(Boolean)
+
+  return `NAME THE COMMANDS, in \`commands\`, spelled exactly as they must be typed: the ` +
+    `build, the test suite, and the way to run ONE test file — that one carries {file} where ` +
+    `the path goes. Take them from this repository's own manifest and documentation and say ` +
+    `in notes where you found each.\n\n` +
+    (known.length > 0
+      ? `Established earlier in this run, and worth confirming rather than rediscovering:\n` +
+        known.join('\n') + `\n\n`
+      : '') +
+    `This is the half of your work that outlives this order: your caller carries what you ` +
+    `establish to every later verification in the run, which then runs as a script rather ` +
+    `than as a dispatch. A command you GUESSED at therefore becomes a measurement everybody ` +
+    `trusts — so a command you could not find is an empty string with what you looked for in ` +
+    `notes, and a repository that genuinely defines none at this commit gets that said in as ` +
+    `many words, with the matching fact recorded absent. Absent is a fact about repo state ` +
+    `and failed is an observed non-zero exit; recording one as the other is the laundering ` +
+    `IRON LAW §2 forbids, in either direction.\n\n`
 }
 
 function mergePrompt(entry) {
@@ -1858,21 +2111,44 @@ function mergePrompt(entry) {
 }
 
 function waveVerifyPrompt(waveNumber) {
-  return `Verify the MERGED HEAD of this run's integration worktree, after wave ` +
-    `${waveNumber}. This is wave verification, not order verification.\n\n` +
+  return `VERIFY MODE — you are a courier, and this is WAVE verification: the merged head of ` +
+    `this run's integration worktree, after wave ${waveNumber}. Same job as any verify ` +
+    `dispatch: one command, and its stdout carried back untouched.\n\n` +
     `INTEGRATION WORKTREE — cd here first:\n${integration.worktree}\n` +
     `INTEGRATION BRANCH: ${integration.branch}\n` +
     `HEAD: ${integration.head_sha}\n\n` +
-    `Run TWO things only: the build, then the test suite. Take both commands from the caller ` +
-    `notes when they name them, otherwise from the repository's own documentation or ` +
-    `manifest, and name in notes exactly what you ran and that this was the integration ` +
-    `head. Record each as passed or failed from the observed exit status, or absent when the ` +
-    `repository defines no such command at this commit.\n\n` +
-    `Do NOT run the commit-series check and do NOT run the discriminator. There is no single ` +
-    `declared locus here and no one change under test, so both would measure nothing. Return ` +
-    `series_findings and discriminator as empty arrays — that emptiness means "not asked for", ` +
-    `your caller knows it did not ask, and filling them with something plausible would be a ` +
-    `fabricated measurement.\n\n` +
+    `Run EXACTLY this, as ONE line:\n\n   ` +
+    verifyInvocation({ worktree: integration.worktree, mode: 'integration' }) + `\n` +
+    rootWarning +
+    `--mode integration runs the build and the suite and nothing else: the merged head has no ` +
+    `single declared locus and no one change under test, so the commit-series check and the ` +
+    `discriminator are not asked for and come back as empty arrays. That emptiness means "not ` +
+    `asked for", and your caller knows it did not ask.\n\n` +
+    `Put its ENTIRE stdout into payload_raw, byte for byte, as one string — not parsed, not ` +
+    `reformatted, not summarised, and not repaired where it looks wrong. Your caller ` +
+    `recomputes the digest it carries. Return stop_reason failed ONLY when the command could ` +
+    `not be run at all, with what the shell said in notes.\n\n` +
+    `Every order in this wave passed its own verification in its own worktree. What this ` +
+    `measures is whether merging them together broke something none of them broke alone — and ` +
+    `if nobody measures that, the next wave inherits the breakage and reports it as its own ` +
+    `orders' defects.`
+}
+
+// Wave verification by hand, for a merged head the check runner could not measure.
+function waveInvestigatePrompt(waveNumber, why) {
+  return `INVESTIGATE MODE, at the MERGED HEAD. The check runner could not answer for wave ` +
+    `${waveNumber}, so you measure it by hand — your charter's "wave verification by hand" ` +
+    `section, which asks for the build and the suite and nothing else.\n\n` +
+    `WHAT IT SAID:\n${why}\n\n` +
+    `INTEGRATION WORKTREE — cd here first:\n${integration.worktree}\n` +
+    `INTEGRATION BRANCH: ${integration.branch}\n` +
+    `HEAD: ${integration.head_sha}\n\n` +
+    `Skip the commit-series check and skip the discriminator: there is no single declared ` +
+    `locus here and no one change under test, so both would measure nothing. Return ` +
+    `series_findings and discriminator as empty arrays and name in notes what you ran and ` +
+    `that this was the integration head. Never fill them with something plausible to look ` +
+    `thorough — your caller knows it did not ask.\n\n` +
+    commandsSection() +
     callerNotes() +
     `Every order in this wave passed its own verification in its own worktree. What you are ` +
     `measuring is whether merging them together broke something none of them broke alone — ` +
@@ -2569,6 +2845,109 @@ const stalledClaim = (fix, headBefore) =>
 // the defect is still there, and the review loop treats them identically.
 const unfixedVerdict = (v) => v.status === 'not_fixed' || v.status === 'regressed'
 
+// One order's measurement, and the ladder that gets it here intact.
+//
+//   the courier runs the script      — a haiku dispatch whose whole job is one paste
+//   damaged in transit               — one refetch, one tier up, exactly as the resume verdict
+//   carried by no tier               — an escalation: a measurement nobody can carry is not one
+//   the runner could not answer      — an investigator, because that part is judgment
+//
+// Nothing on this ladder decides whether the order passed. It decides only how the facts were
+// obtained, and the same predicates read them either way — which is the whole safety argument
+// for letting a script do the measuring in the first place.
+async function measureOrder(wo, state, trail) {
+  const carry = (label, opts) => dispatch(wo, state, trail, 'the verifier for ' + wo.id, [],
+    () => agent(verifierPrompt(wo, state), {
+      agentType: 'vf-agentics:verifier', effort: 'low', schema: CARRIED,
+      phase: 'Verify', label, ...opts,
+    }))
+
+  const first = await carry(`verify:${wo.id}`, { model: 'haiku' })
+  if (first.escalation) return first
+
+  let held = carriedVerify(first.value)
+
+  if (held.why && held.retry) {
+    log(`${wo.id}: the measurement did not survive the trip (${held.why}); refetching one tier up.`)
+    const second = await carry(`verify:${wo.id}#2`, {})
+    if (second.escalation) return second
+
+    held = carriedVerify(second.value)
+    if (held.why && held.retry) {
+      // Two couriers, and neither could carry it. A third would be typed by the same kind of
+      // agent into the same shell, and a measurement nobody can carry back is not a measurement
+      // — so the order stops here rather than being verified on a payload nothing vouches for.
+      return { escalation: haltedEsc(wo, state, trail, [],
+        'two couriers could not carry this order\'s measurement back: ' + held.why,
+        'verify_untransportable') }
+    }
+  }
+
+  if (!held.why && !held.payload.error) return { value: held.payload }
+
+  const why = held.why || held.payload.error.kind + ': ' + held.payload.error.message
+  log(`${wo.id}: the check runner could not answer (${why}); escalating to an investigator.`)
+
+  const investigated = await dispatch(wo, state, trail,
+    'the verification investigator for ' + wo.id, [],
+    () => agent(verifierInvestigatePrompt(wo, state, why), {
+      agentType: 'vf-agentics:verifier', effort: 'medium', schema: VERIFY,
+      phase: 'Verify', label: `verify-investigate:${wo.id}`,
+    }), coherentVerify)
+
+  if (investigated.escalation) return investigated
+  adoptCommands(investigated.value)
+  return investigated
+}
+
+/**
+ * The same ladder at the merged head, where there is no order to escalate.
+ *
+ * A wave that cannot be measured stops the line — which is what the caller already did when this
+ * dispatch failed to run — so the bottom rung here returns null rather than an escalation.
+ *
+ * @returns {Promise<object|null>} the observed facts, or null when nothing could be measured
+ */
+async function measureWave(waveNumber, label) {
+  const carry = (l, opts) => agent(waveVerifyPrompt(waveNumber), {
+    agentType: 'vf-agentics:verifier', effort: 'low', schema: CARRIED,
+    phase: 'Integrate', label: l, ...opts,
+  }).catch((e) => {
+    log(`WARNING: ${l} failed to run: ${e && e.message}`)
+    return null
+  })
+
+  let held = carriedVerify(await carry(label, { model: 'haiku' }))
+
+  if (held.why && held.retry) {
+    log(`Wave ${waveNumber}: the measurement did not survive the trip (${held.why}); ` +
+      `refetching one tier up.`)
+    held = carriedVerify(await carry(label + '#2', {}))
+
+    if (held.why && held.retry) {
+      log(`WARNING: two couriers could not carry the merged head's measurement back: ${held.why}`)
+      return null
+    }
+  }
+
+  if (!held.why && !held.payload.error) return held.payload
+
+  const why = held.why || held.payload.error.kind + ': ' + held.payload.error.message
+  log(`Wave ${waveNumber}: the check runner could not answer (${why}); measuring the merged ` +
+    `head by hand.`)
+
+  const measured = await agent(waveInvestigatePrompt(waveNumber, why), {
+    agentType: 'vf-agentics:verifier', effort: 'medium', schema: VERIFY,
+    phase: 'Integrate', label: label.replace('wave-verify', 'wave-investigate'),
+  }).catch((e) => {
+    log(`WARNING: the merged head could not be measured by hand either: ${e && e.message}`)
+    return null
+  })
+
+  if (measured) adoptCommands(measured)
+  return measured
+}
+
 // Verify, and fix until the facts come back clean. The exit is `verifyOk`, computed here
 // from the verifier's facts. The escalation is computed too: a fix round that lands no new
 // commit has made no progress, and an identical next round would make none either. No
@@ -2578,11 +2957,7 @@ async function verifyUntilGreen(wo, state, trail) {
   let priorFailureKey = null
 
   while (true) {
-    const call = await dispatch(wo, state, trail, 'the verifier for ' + wo.id, [],
-      () => agent(verifierPrompt(wo, state), {
-        agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
-        phase: 'Verify', label: `verify:${wo.id}`,
-      }), coherentVerify)
+    const call = await measureOrder(wo, state, trail)
     if (call.escalation) return call.escalation
 
     const v = call.value
@@ -4165,13 +4540,7 @@ try {
     // that made them died somewhere between the merge and the wave verification that would
     // have measured them. Every later wave is built on this head, so it is measured once here
     // rather than inherited on trust — the same reasoning as step 4b, one invocation later.
-    const wv = await agent(waveVerifyPrompt(lastRecordedWave || 1), {
-      agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
-      phase: 'Integrate', label: 'wave-verify:reconciled',
-    }).catch((e) => {
-      log(`WARNING: verification of the reconciled integration head failed to run: ${e && e.message}`)
-      return null
-    })
+    const wv = await measureWave(lastRecordedWave || 1, 'wave-verify:reconciled')
 
     if (!wv) {
       integration.wave_verify.push({ wave: lastRecordedWave || 1, build: 'unobserved', suite: 'unobserved' })
@@ -4602,13 +4971,7 @@ try {
     // escalate-for-someone-else's-defect signature, one level up.
 
     if (!lineStopped && integration.merged.length > 0) {
-      const wv = await agent(waveVerifyPrompt(waveNumber), {
-        agentType: 'vf-agentics:verifier', effort: 'low', schema: VERIFY,
-        phase: 'Integrate', label: `wave-verify:${waveNumber}`,
-      }).catch((e) => {
-        log(`WARNING: wave ${waveNumber} verification failed to run: ${e && e.message}`)
-        return null
-      })
+      const wv = await measureWave(waveNumber, `wave-verify:${waveNumber}`)
 
       if (!wv) {
         integration.wave_verify.push({ wave: waveNumber, build: 'unobserved', suite: 'unobserved' })

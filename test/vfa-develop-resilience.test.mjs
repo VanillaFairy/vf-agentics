@@ -24,7 +24,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedPayload, recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
@@ -69,7 +69,9 @@ const coded = (over = {}) => ({
   ...over,
 })
 
-const verified = (over = {}) => ({
+// The measurement a scenario writes, wrapped the way a verify courier delivers it: one
+// digest-covered line of lib/verify.mjs stdout in `payload_raw`.
+const verified = (over = {}) => carriedPayload({
   stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
   failing_tests: [],
   discriminator: [{ test_id: 'test/w1.test.js', failed_on_base: true, passes_now: true }],
@@ -279,37 +281,38 @@ test('an approved order is recorded before the wave it belongs to closes', async
     'recording the order after the wave records nothing an interruption could use')
 })
 
-test('a verification is journalled by the verifier, not recorded by a second dispatch', async () => {
+test('a verification is journalled where it was observed, not by a second dispatch', async () => {
   // The recorder dispatch this replaced had the very window it existed to close: the stage
   // finished, then something else had to be launched to write it down, and a limit landing
-  // in between lost the record while the work survived.
+  // in between lost the record while the work survived. The writer moved once more since —
+  // from the agent that ran the commands to the process that ran them — and the law is the
+  // same law: the record is written in the execution that made the observation.
   const { prompts } = await fresh({})
 
   const verify = promptFor(prompts, 'verify:W1')
-  assert.match(verify, /ledger\.mjs" append "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005" --file journal/,
-    'the verifier is told where to append, and through the writer that refuses a mangled line')
-  assert.match(verify, /"kind":"verify-observed"/)
-  assert.match(verify, /VFAJOURNAL/, 'and to append with a heredoc, not a quoted redirect')
+  assert.match(verify, /--journal "C:\/repo\/\.claude\/vfa\/runs\/20260816-143005"/,
+    'the check runner is told which run directory to append to')
+  assert.match(verify, /--order W1/)
+  assert.match(verify, /--branch wo-w1/)
+  assert.match(verify, /writes this run's journal line itself/,
+    'and the courier is told not to write one of its own')
 
   assert.ok(!prompts.some((p) => (p.opts.label || '').startsWith('record:verified')),
-    'nothing is dispatched afterwards to write down what the verifier already wrote')
+    'nothing is dispatched afterwards to write down what the measurement already wrote')
 })
 
-test('what the verifier journals is facts, never a verdict', async () => {
-  // The line is written by the agent that measured, which is only safe because the line
-  // carries no conclusion: the caller recomputes the verdict from these same facts on resume.
+test('the ordering a measurement is journalled under is minted here, never chosen there', async () => {
+  // The line's own shape — its ten fields, and the absence of any conclusion among them — is
+  // lib/verify.mjs's now, pinned by test/verify.test.mjs against the real file it writes. What
+  // is still decided HERE is `seq`, and it has to be: a counter is trustworthy exactly because
+  // the writer copies it rather than picking it. Without it every journalled measurement parses
+  // back at seq 0, no green ever supersedes a stamped escalation, and the whole ordering feature
+  // is inert while lint, tests and the contract all read as satisfied.
   const verify = promptFor((await fresh({})).prompts, 'verify:W1')
 
-  for (const field of ['"stop_reason"', '"build"', '"suite"', '"failing_tests"',
-                       '"discriminator"', '"series_findings"']) {
-    assert.ok(verify.includes(field), `the journal line carries ${field}`)
-  }
-  // The ordering, minted here and handed over as a literal. Without it every journalled
-  // measurement parses back at seq 0, no green ever supersedes a stamped escalation, and the
-  // whole ordering feature is inert while lint, tests and the contract all read as satisfied.
-  assert.match(verify, /"seq":\d+/, 'the line carries a minted ordering, not a placeholder')
-  assert.ok(!/"verified"|"green"|"passed_overall"/.test(verify),
-    'no agent in this pipeline certifies its own work')
+  assert.match(verify, /--seq \d+/, 'a minted ordering, not a placeholder')
+  assert.ok(!/verified|"green"|passed_overall/.test(verify),
+    'nothing in this dispatch invites a conclusion; the caller computes every verdict')
 })
 
 test('a merge is journalled by the agent that made it, and only when it completed', async () => {
@@ -694,8 +697,8 @@ test('a resumed run records the approval and nothing about the verification', as
 
   assert.deepEqual(labels, ['record:W2', 'record:wave-2'])
   assert.equal(recordedLine(promptFor(prompts, 'record:W2')).entry.kind, 'order-approved')
-  assert.match(promptFor(prompts, 'verify:W2'), /ledger\.mjs" append .* --file journal/,
-    'the verification records itself, in the dispatch that performs it')
+  assert.match(promptFor(prompts, 'verify:W2'), /--journal ".*20260816-143005" --seq \d+/,
+    'the verification records itself, in the execution that performs it')
 })
 
 test('the journal never rides a model at all — the courier pastes, it does not re-emit', async () => {

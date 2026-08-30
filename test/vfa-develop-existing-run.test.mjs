@@ -18,7 +18,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
 /**
  * Expand a single-loader-era fixture into the resume fan's two dispatch surfaces: the
@@ -96,22 +96,22 @@ const cast = (over = {}) => scriptedAgents({
     branch: 'vfa/20260819-062330-integration', head_sha: A40, notes: 'created',
   },
   'merge:': { stop_reason: 'completed', merged_sha: M40, conflicts: [], notes: 'merged' },
-  'wave-verify:': {
+  'wave-verify:': carriedPayload({
     stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
     failing_tests: [], discriminator: [], series_findings: [], notes: 'merged head',
-  },
+  }),
   'record:': { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' },
   'review:integration': { findings: [], fix_verdicts: [] },
   'code:': {
     status: 'done', worktree: 'C:/wt/w1', branch: 'wo-w1', base_sha: A40, head_sha: B40,
     commits: [{ sha: B40, subject: 'feat: w1' }], concerns: [], discovered: [], summary: 's',
   },
-  'verify:': {
+  'verify:': carriedPayload({
     stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
     failing_tests: [],
     discriminator: [{ test_id: 'test/w1.test.js', failed_on_base: true, passes_now: true }],
     series_findings: [], notes: 'ran node --test',
-  },
+  }),
   'review:': { findings: [], fix_verdicts: [] },
   ...over,
 })

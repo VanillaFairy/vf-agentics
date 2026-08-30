@@ -17,6 +17,8 @@
 
 import { readFileSync } from 'node:fs'
 
+import { canonical, fnv1a } from '../../lib/plan-digest.mjs'
+
 const AsyncFunction = (async function () {}).constructor
 
 /** Compile a workflow script. Throws on a syntax error — usable as a parse gate alone. */
@@ -107,6 +109,36 @@ export function scriptedAgents(script) {
       }
     }
     throw new Error('unscripted agent call: ' + (label || '(no label)'))
+  }
+}
+
+/** Every field lib/verify.mjs prints, in the state it prints them in when nothing was observed. */
+const BLANK_MEASUREMENT = {
+  stop_reason: 'completed', build: 'absent', suite: 'absent', suite_output_tail: '',
+  failing_tests: [], discriminator: [], series_findings: [], notes: '', error: null, journal: null,
+}
+
+/**
+ * A verify dispatch's answer: lib/verify.mjs's stdout, carried by a courier.
+ *
+ * A scenario writes the MEASUREMENT it wants — `{ build: 'failed' }` — and this wraps it the way
+ * the real trip does: every field filled in, the digest taken over the whole payload, the
+ * envelope serialized into `payload_raw`. The workflow recomputes that digest before believing a
+ * field of it, so `damage` (applied after the digest, exactly as the resume fixture does) is how
+ * a scenario exercises the transport ladder.
+ *
+ * @param {object} measurement  the fields this scenario cares about
+ * @param {(envelope: object) => void} [damage]  mutate the payload after its digest is taken
+ */
+export function carriedPayload(measurement = {}, damage) {
+  const payload = { ...BLANK_MEASUREMENT, ...measurement }
+  const envelope = { payload, payload_digest: fnv1a(canonical(payload)) }
+  if (damage) damage(envelope)
+
+  return {
+    stop_reason: 'carried',
+    payload_raw: JSON.stringify(envelope),
+    notes: 'ran the check runner and pasted its stdout',
   }
 }
 

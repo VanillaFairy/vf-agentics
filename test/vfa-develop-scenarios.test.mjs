@@ -12,7 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedPayload, recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
 import { digestOrder } from '../lib/plan-digest.mjs'
 
@@ -76,11 +76,14 @@ const coded = (over = {}) => ({
   ...over,
 })
 
-const verified = (over = {}) => ({
+// A verify dispatch answers with lib/verify.mjs's stdout now, carried by a courier under a
+// digest the workflow recomputes. Scenarios still write the MEASUREMENT — the wrapping is the
+// trip, and `carriedPayload` performs it exactly as the real one does.
+const verified = (over = {}, damage) => carriedPayload({
   stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
   discriminator: [{ test_id: 'test/w1.test.js', failed_on_base: true, passes_now: true }],
   series_findings: [], notes: 'ran node --test', ...over,
-})
+}, damage)
 
 const reviewed = (over = {}) => ({ findings: [], fix_verdicts: [], ...over })
 
@@ -171,8 +174,9 @@ test('the generated prompts carry the load-bearing clauses', async () => {
   assert.match(byLabel('plan'), /deps/)
   assert.match(byLabel('plan'), /contract/)
   assert.match(byLabel('plan'), /plan-digest\.mjs/)
-  assert.match(byLabel('verify:W1'), /absent/)
-  assert.match(byLabel('wave-verify:1'), /empty arrays/)
+  assert.match(byLabel('verify:W1'), /lib\/verify\.mjs/)
+  assert.match(byLabel('verify:W1'), /ENTIRE stdout into payload_raw/)
+  assert.match(byLabel('wave-verify:1'), /--mode integration/)
   assert.match(byLabel('merge:W1'), /NEVER resolve a conflict/)
   assert.match(byLabel('review:integration'), /only exists once they are together/)
 })
@@ -1052,7 +1056,10 @@ test('`low` puts every judging agent on sonnet and moves nothing else', async ()
   // TOUCH it. An explicit model here would mean `low` had grown a coder tier of its own, and
   // the next edit to coder.md would silently stop applying to low-tier runs.
   assert.equal(modelOf('code:W1'), undefined, 'the coder keeps its frontmatter at `low`')
-  assert.equal(modelOf('verify:W1'), undefined, 'the mechanical tier never moves with the dial')
+  // Courier grade, and a constant: the verify dispatch runs a script and pastes one line, so
+  // its tier is a property of the JOB rather than of what the user is willing to spend. A dial
+  // that reached it would be pricing transcription.
+  assert.equal(modelOf('verify:W1'), 'haiku', 'the mechanical tier never moves with the dial')
 })
 
 test('`max` moves the coder too, but to opus and not to the model the judges get', async () => {
@@ -1072,7 +1079,7 @@ test('`max` moves the coder too, but to opus and not to the model the judges get
   assert.equal(modelOf('code:W1'), 'opus')
   assert.notEqual(modelOf('code:W1'), modelOf('review:W1#1'),
     'the judge and the generator are priced apart at the top position, deliberately')
-  assert.equal(modelOf('verify:W1'), undefined)
+  assert.equal(modelOf('verify:W1'), 'haiku', 'even at `max`, pasting one line is pasting one line')
 })
 
 test('`normal` names opus rather than inheriting it', async () => {

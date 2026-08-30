@@ -13,7 +13,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
@@ -53,7 +53,8 @@ const coded = (over = {}) => ({
   ...over,
 })
 
-const verified = () => ({
+// One digest-covered line of lib/verify.mjs stdout, the way a verify courier delivers it.
+const verified = () => carriedPayload({
   stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
   failing_tests: [],
   discriminator: [{ test_id: 'test/w1.test.js', failed_on_base: true, passes_now: true }],

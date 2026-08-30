@@ -16,7 +16,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedPayload, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict } from './harness/resume-fixture.mjs'
 import { manifestOf } from '../lib/plan-digest.mjs'
 import { digestEntry } from '../lib/ledger.mjs'
@@ -73,8 +73,13 @@ const coded = (over = {}) => ({
   ...over,
 })
 
-/** An ordinary green verification: everything passes and the new test discriminates. */
-const verified = (over = {}) => ({
+/**
+ * An ordinary green verification: everything passes and the new test discriminates.
+ *
+ * Wrapped as a carried payload, because a verify dispatch answers with lib/verify.mjs's stdout
+ * now. The measurement a scenario writes is unchanged; only the trip around it is.
+ */
+const verified = (over = {}) => carriedPayload({
   stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
   discriminator: [{ test_id: 'src/G1.js', failed_on_base: true, passes_now: true }],
   failing_tests: [], series_findings: [], notes: 'ran node --test', ...over,
@@ -419,14 +424,22 @@ test('the green coder is told the tests are locked and outside its fence', async
   assert.match(green, /escalate/i)
 })
 
-test('the red verifier is asked which tests failed, by file', async () => {
+test('the red order is measured against its own declared locus, by the check runner', async () => {
+  // Which tests failed, by FILE, used to be an instruction in this prompt. It is a script now —
+  // lib/verify.mjs places every failure against a real test file and test/verify.test.mjs pins
+  // that it does. What still has to be true HERE is that the runner is pointed at this order's
+  // fence: the red verdict asks whether every failure sits inside the locus, and a dispatch that
+  // named the wrong one would answer a different question convincingly.
   const { prompts } = await run({
     'verify:': verifierSaying({ 'verify:R1': redVerified() }),
     'merge:': mergeSequence([M40, N40]),
   })
 
-  assert.match(promptFor(prompts, 'verify:R1'), /failing_tests/)
-  assert.match(promptFor(prompts, 'verify:R1'), /repo-relative/i)
+  const red = promptFor(prompts, 'verify:R1')
+  assert.match(red, /lib\/verify\.mjs/)
+  assert.match(red, /--locus "test\/widget\.test\.js"/)
+  assert.ok(!red.includes('--locus "src/widget.js"'),
+    "the green order's files are not the fence a red order's failures are placed against")
 })
 
 test('the planner is told when to split a behaviour into a pair', async () => {
