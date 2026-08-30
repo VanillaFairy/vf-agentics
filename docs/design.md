@@ -114,7 +114,7 @@ deliberately *unequal* — each one is denied something, and the denial is the p
 | `analyst` | judge, on gathered evidence | search for more |
 | `planner` | decompose into orders, run the partition | implement, or invent process |
 | `coder` | implement one order as a focused series | leave its locus, amend, or merge |
-| `verifier` | run the checks and transcribe output | judge quality, or fix anything |
+| `verifier` | carry a measurement; perform the checks by hand when the script cannot | judge quality, or fix anything |
 | `reviewer` | attack one series adversarially | approve, or edit |
 | `run-state` | carry a verdict or append one line | read anything outside the run directory |
 
@@ -137,7 +137,7 @@ planner aims at series of dozens of lines rather than hundreds: a session limit 
 
 Nothing in this pipeline is green because somebody said so.
 
-**Verification.** A verifier reports observations — build outcome, suite outcome, failing tests
+**Verification.** A measurement reports observations — build outcome, suite outcome, failing tests
 with their files, discriminator results, series findings. `verifyOk` derives pass or fail from
 those, *against the order's own role*: a plain order needs a green suite and a discriminator that
 failed on base and passes now; a `red` order needs the mirror image, and a green suite fails it;
@@ -175,8 +175,63 @@ approved. The cycle is read from `role` and `deps` — nothing new is asked of a
 
 ## Verification
 
-*Empty. Increment 11 fills this section, when the four mechanical checks become `lib/verify.mjs`
-and the verifier dispatch drops to courier grade.*
+The four mechanical checks of one work order — the commit series, the build, the test suite, the
+discriminator — are **one program**, `lib/verify.mjs`, run in one process. Nothing in it decides
+whether an order passed. It observes, and it prints exactly the fields the caller's verdict
+already read, which is the entire safety argument for letting a script do this work.
+
+That split is what makes the rest of the arrangement possible:
+
+**The dispatch is a courier.** The workflow names one invocation, fully filled in; the verifier
+runs it and pastes its stdout into `payload_raw`, byte for byte. It parses nothing, reformats
+nothing and repairs nothing. The output is one line of JSON carrying its own digest, and the
+workflow recomputes that digest over what arrived before believing a field of it — the same
+pattern the resume verdict uses, for the same reason: **bytes never ride a model.** The dispatch
+runs at courier grade and its tier does not move with the intelligence dial, because pasting one
+line is pasting one line.
+
+**Judgment is an escalation, not a default.** Choosing a build command is judgment; running one
+is not, and the split is between those two rather than between cheap and thorough. So a
+repository whose verification commands nobody has established yet comes back `command_unknown` —
+a typed error, never a repository quietly recorded as having no build — and a sonnet investigator
+goes and reads the manifest, performing the checks by hand while it is there. What it establishes
+is carried to every later check in the run, which is then a script again. A typed error of any
+other kind takes the same route: the environment needs a judgment a process cannot make.
+
+**Established commands travel one way.** They go *out* to the run's `knowledge` set, so the wave
+line records them and later coders see them, and they are never read back *in*. Coders write to
+that set too, and a coder's guessed build command becoming the command every later verdict is
+computed from is the one substitution the IRON LAW names outright: a report laundered into a
+measurement. A coder may act on hearsay and be caught by verification; verification has nothing
+behind it.
+
+**Three failures, told apart.** A courier that could not run the command, a payload damaged in
+transit, and a runner that ran and refused are three different events. The first two buy one
+refetch a tier up; a measurement no tier can carry escalates the order naming the *transport*
+rather than the work, because an order verified on bytes nothing vouches for is an order nobody
+verified. The third buys the investigator. Two rungs, never a loop — a third courier types into
+the same shell as the second.
+
+**Absent is never inferred, in either direction.** `absent` means the repository defines no such
+command at this commit; `failed` means a command ran and exited non-zero. A shell cannot tell
+them apart, so the program records `absent` only where somebody declared it. Likewise a test that
+could not be *launched* at base is `test_unrunnable`, never `failed_on_base`, and a suite failure
+that cannot be placed against a real test file raises `suite_failures_unnamed` rather than being
+guessed at — the load-bearing half of a failure is its file, because an order owns files and not
+test ids.
+
+**The environment check runs first and it refuses.** The discriminator stashes and moves HEAD, so
+the program establishes that it stands in a linked worktree — not the tree a human is working in
+— before it touches anything, and it always puts the tree back or says `tree_not_restored` out
+loud. A worktree left detached strands every commit a later fix round makes in it.
+
+**The observation journals itself.** The program writes the run's `verify-observed` line inside
+the same process that made the measurement, so there is no window at all between the work and the
+record. The line's shape did not change; only its writer moved, one step closer to the thing it
+describes. `seq` is still minted by the workflow and copied by the writer, because a counter is
+trustworthy exactly to the extent that the writer does not choose it.
+
+Contract: `docs/superpowers/specs/2026-08-30-increment-11-contracts.md`.
 
 ## Capability layer
 

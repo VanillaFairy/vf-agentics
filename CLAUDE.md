@@ -74,6 +74,15 @@ the caller's digest, and refuses a line it cannot prove intact. Order prose is n
 transported — a coder fetches its own order with `ledger.mjs order` and confirms the digest.
 Contract: `docs/superpowers/specs/2026-08-27-increment-9-contracts.md`.
 
+**Verification travels the same way, because it is a script now.** `lib/verify.mjs` runs the four
+mechanical checks — commit series, build, suite, discriminator — in one process and prints them
+under one digest; the verify dispatch is a courier that pastes that line, and the workflow
+recomputes the digest before believing a field of it. Running a command and copying its exit
+status is not judgment (IRON LAW §8). What stays a model's work is an *escalation*: choosing a
+build command nobody has established, and triaging a typed error the program could not resolve.
+No verdict predicate moved — the payload carries exactly the fields they already read, which is
+why a script may safely do the measuring.
+
 A digest makes corruption **detectable**; it cannot make the retry likelier to succeed, because
 the retry is typed by the same agent into the same shell. So a line the workflow mints whole
 travels **base64** on one argv slot — no path to escape, no apostrophe to close, no heredoc
@@ -118,11 +127,12 @@ session limit costs dozens.
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
 `2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md`,
-`2026-08-21-increment-8-contracts.md` and `2026-08-30-increment-10-contracts.md`. **Any change
-to the plan envelope's field list cites the registry in increment 5 §1, any change to a
-`state.jsonl` line cites increment 6 §2, any change to a `journal.jsonl` line cites increment
-7 §4, and any change to `seq` cites increment 8 §3** — nothing finds any of those copies for
-you.
+`2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md` and
+`2026-08-30-increment-11-contracts.md`. **Any change to the plan envelope's field list cites the
+registry in increment 5 §1, any change to a `state.jsonl` line cites increment 6 §2, any change
+to a `journal.jsonl` line cites increment 7 §4, any change to `seq` cites increment 8 §3, and any
+change to the verify payload's field list cites increment 11 §1b** — nothing finds any of those
+copies for you.
 
 **Docs land with the code, in the same commit series.** A behaviour-changing increment ships
 three doc artifacts or it is not done: its `docs/superpowers/specs/<date>-increment-N-contracts.md`,
