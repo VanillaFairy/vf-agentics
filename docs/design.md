@@ -235,8 +235,59 @@ Contract: `docs/superpowers/specs/2026-08-30-increment-11-contracts.md`.
 
 ## Capability layer
 
-*Empty. Increment 12 fills this section, with the tool-allowlist stance and the 2026-08-30
-no-hooks ruling behind it.*
+**There is one capability mechanism in this system: the agent's frontmatter tool allowlist.**
+Everything else that looks like a restraint is prose in a constitution, audited after the fact.
+That sentence is not a gap to be closed later — it is the settled design, and the sections below
+say what it buys, what it cannot buy, and why the thing that would have bought more was declined.
+
+**The roster splits in two, and the split is the whole content of the layer.**
+
+*Blind by capability* — `scout`, `analyst`, `doc-researcher`, `test-author` carry **no shell**.
+Nothing they can be talked into executes anything, reaches git, or writes outside the harness's
+own file tools. Their read-only and cannot-execute claims are facts. This is where the layer is
+load-bearing, and `test-author` is the case designed for it rather than inherited: it authors a
+work order's failing tests and must not be able to run, implement or commit them, so the agent
+that wrote the exam is structurally not the agent that watched it pass.
+
+*Restrained by discipline* — `historian`, `reviewer`, `verifier`, `coder`, `planner`,
+`run-state` all carry `Bash`, and **a shell subsumes writing**. Every restraint in those six is a
+rule the agent keeps: the historian's read-only git command list, the reviewer's `log`/`show`/
+`diff`-only shell, the planner's three writable files. Each charter now says which half it is,
+because a restraint that reads like a fence and is not one is worse than no claim at all.
+
+**The allowlists are pinned mechanically** (`test/agent-allowlists.test.mjs`): agent name to
+sorted tool list, both directions, plus the shell-free set as its own assertion. Widening a list,
+narrowing one, or adding a constitution with no entry fails the suite. Changing one means editing
+the pin in the same commit — the friction is deliberate, because a capability change should land
+in a diff a reviewer reads rather than in a frontmatter line nobody diffs twice.
+
+**No hooks.** Ruled 2026-08-30 and permanent. A `PreToolUse` locus fence, a `Stop` auto-commit
+and a `SessionStart` briefing were designed and are not built: field experience with the sibling
+plugin's hook layer was negative, plugin hooks fire in **every** session on the machine (a
+process spawn per tool call taxed on work this plugin is not even engaged in), path-shaped scoping
+risks fencing other plugins' agents because the harness's `wf_*` worktrees are shared territory,
+and the fence had no sound writer for its lane descriptor — the harness materializes the coder's
+worktree inside the coder's own dispatch. The sibling's fence never policed the Bash channel for
+locus anyway, so the property being ported did not exist. The cost is recorded rather than
+papered over: nothing replaces the crash-path auto-commit, and the coder's reach-your-first-commit-early
+rule is the only guard that survives a hard kill.
+
+**Enforcement is post-hoc, by design.** The locus fence is `lib/commit-series.mjs`, measuring a
+finished series against the order's declared paths — the audit of record, and always was. So the
+success criterion is **"zero breaches surviving to review"**, never "zero breach attempts". Those
+are different claims, and only the first one has ever been true here.
+
+**What is not claimed**, said plainly because each is easy to assume:
+
+- **Not read-blindness.** `test-author` holds `Read`. It is told not to read the implementation it
+  is testing, and that is discipline — backed by the reviewer, whose ladder already rules a test
+  pinning the implementation's shape `major` and a test that cannot fail `critical`.
+- **Not Bash-channel prevention.** Any agent holding a shell can write any file the process can
+  write. No allowlist, and no hook that was ever proposed here, changes that.
+- **Not path scoping.** An allowlist grants `Write`; it cannot grant `Write` to three paths. The
+  planner is the standing example, and the gap is named in its own charter.
+
+Contract: `docs/superpowers/specs/2026-08-30-increment-12-contracts.md`.
 
 ## Lane catalogue
 

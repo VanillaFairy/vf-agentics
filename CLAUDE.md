@@ -124,15 +124,24 @@ Because the recovery surface is one order's series, **order grain is a correctne
 tidiness**: the planner aims at commit series of dozens of lines rather than hundreds, so a
 session limit costs dozens.
 
+**Capability is one mechanism: the agent's frontmatter tool allowlist. There are no hooks, and
+there will be none** — ruled 2026-08-30 on field experience with the sibling plugin's hook layer
+plus the interference surface (plugin hooks fire in *every* session on the machine). Four agents
+carry no shell and their blindness is a fact about what they can do; six carry `Bash`, a shell
+subsumes writing, and every restraint in those six is prose their constitution now states as
+prose. Locus enforcement stays post-hoc in `lib/commit-series.mjs` — the criterion is **zero
+breaches surviving to review**, never zero breach attempts.
+
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
 `2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md`,
-`2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md` and
-`2026-08-30-increment-11-contracts.md`. **Any change to the plan envelope's field list cites the
-registry in increment 5 §1, any change to a `state.jsonl` line cites increment 6 §2, any change
-to a `journal.jsonl` line cites increment 7 §4, any change to `seq` cites increment 8 §3, and any
-change to the verify payload's field list cites increment 11 §1b** — nothing finds any of those
-copies for you.
+`2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md`,
+`2026-08-30-increment-11-contracts.md` and `2026-08-30-increment-12-contracts.md`. **Any change to
+the plan envelope's field list cites the registry in increment 5 §1, any change to a `state.jsonl`
+line cites increment 6 §2, any change to a `journal.jsonl` line cites increment 7 §4, any change
+to `seq` cites increment 8 §3, any change to the verify payload's field list cites increment
+11 §1b, and any change to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the
+same commit** — nothing finds any of those copies for you.
 
 **Docs land with the code, in the same commit series.** A behaviour-changing increment ships
 three doc artifacts or it is not done: its `docs/superpowers/specs/<date>-increment-N-contracts.md`,
