@@ -4946,11 +4946,11 @@ try {
     .flatMap((id) => ((orderById.get(id) || {}).locus || []).map(kbPath)).filter(Boolean))]
 
   if (kbPaths.length > 0) {
-    phase('Plan')
+    phase('Implement')
 
     const carried = carriedVerify(await agent(kbChainPrompt(kbPaths), {
       agentType: 'vf-agentics:kb', effort: 'low', model: 'haiku', schema: CARRIED,
-      phase: 'Plan', label: 'kb-chain',
+      phase: 'Implement', label: 'kb-chain',
     }).catch((e) => {
       log(`WARNING: the knowledge-base read failed to run: ${e && e.message}`)
       return null
