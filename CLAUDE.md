@@ -117,11 +117,12 @@ session limit costs dozens.
 
 Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
 `2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
-`2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md` and
-`2026-08-21-increment-8-contracts.md`. **Any change to the plan envelope's field list cites the
-registry in increment 5 §1, any change to a `state.jsonl` line cites increment 6 §2, any change
-to a `journal.jsonl` line cites increment 7 §4, and any change to `seq` cites increment 8 §3** —
-nothing finds any of those copies for you.
+`2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md`,
+`2026-08-21-increment-8-contracts.md` and `2026-08-30-increment-10-contracts.md`. **Any change
+to the plan envelope's field list cites the registry in increment 5 §1, any change to a
+`state.jsonl` line cites increment 6 §2, any change to a `journal.jsonl` line cites increment
+7 §4, and any change to `seq` cites increment 8 §3** — nothing finds any of those copies for
+you.
 
 **Docs land with the code, in the same commit series.** A behaviour-changing increment ships
 three doc artifacts or it is not done: its `docs/superpowers/specs/<date>-increment-N-contracts.md`,
