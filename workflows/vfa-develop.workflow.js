@@ -1696,6 +1696,14 @@ function coderContinuePrompt(wo, facts) {
     `— and work out how far the order actually got. Do NOT rebuild what is there, do not ` +
     `amend, do not rebase, do not squash. The series is append-only: you add the commits that ` +
     `are still missing.\n\n` +
+    `ONE EXCEPTION, and it is the only one in this pipeline. If the TIP commit is a checkpoint ` +
+    `— a "checkpoint:" subject or a vfa-checkpoint trailer, left by an earlier coder stopping ` +
+    `deliberately — you may squash THAT COMMIT AND ONLY THAT COMMIT into your next one: ` +
+    `confirm the mark with git log -1 --format='%s%n%(trailers:key=vfa-checkpoint)', then ` +
+    `git reset --soft HEAD~1 and commit the whole unit properly. A checkpoint left standing is ` +
+    `a blocking series finding, so it has to be dissolved and nothing else can dissolve it. A ` +
+    `tip WITHOUT that mark is somebody's finished work: squashing it is history rewriting, and ` +
+    `nothing deeper than the tip is ever in scope.\n\n` +
     dirty +
     `WORK ORDER ${wo.id}: ${wo.title}\n\n` +
     (orderFetch(wo) || `ACCEPTANCE CRITERIA, verbatim:\n${listOf(wo.acceptance)}\n\n`) +

@@ -51,6 +51,13 @@ as ONE unit; mechanical churn never mixed with logic.
 
 ## Commit discipline
 
+- **Reach your first commit early.** Cut the series so that the first unit is small and land
+  it before you go deep on anything. This is not tidiness — it is the only protection that
+  survives a hard kill. A usage limit or a crash gives you no turn at all: whatever is
+  committed is on the branch and salvageable by right, and whatever is not is uncommitted
+  work that no record vouches for and that the next coder is told to rule on rather than
+  trust. Every minute before your first commit is a minute in which everything you have done
+  can vanish.
 - Commit each unit when it is green. Never accumulate the whole order and slice at the end.
 - The series replays the work honestly, in the order it actually happened. A commit labeled
   refactor changes no behavior — if behavior moved, the fix comes first (or after, if the
@@ -63,6 +70,32 @@ as ONE unit; mechanical churn never mixed with logic.
 - Stay inside the locus. Every commit is checked mechanically against it. If the work
   genuinely needs a file outside the locus, STOP and return `blocked` explaining what and
   why — widening silently is the one unforgivable move.
+
+## Stopping deliberately, before the series is finished
+
+Sometimes you can see that you are going to stop short — the order is bigger than it read, the
+session is running long, or something outside the work is going to end the dispatch. That is a
+decision you get a turn to act on, and there is exactly one right way to act on it:
+
+**Commit what you have as a checkpoint. Never return a dirty tree.**
+
+    git commit -m "checkpoint: <what is done so far>" -m "vfa-checkpoint: <your order id>"
+
+Both marks matter. The `checkpoint:` subject is what a human reads in the log; the
+`vfa-checkpoint` trailer is what the machinery reads, and it is the one that survives the
+continuation coder rewording the subject as it squashes. Say in `concerns` what is done and
+what is not.
+
+A checkpoint commit is legitimate while it stands and illegitimate the moment anything measures
+the series: the commit-series check treats its presence as a blocking finding, because it is
+your own statement that the series is unfinished. That is the intent — it must be dissolved
+before the work is measured, and the resume ladder reads it as positive evidence that a
+continuation coder is owed rather than a verification.
+
+What this does **not** cover is a hard kill. A usage limit ends the dispatch with no turn for
+anybody, and nothing can commit on your behalf — which is why the first rule of commit
+discipline above is the one that actually protects you, and why this section is about the stop
+you can see coming.
 
 ## Locked tests
 
@@ -105,6 +138,21 @@ Read them first — `git log --reverse -p <base>..<head>` — and work out how f
 actually got. Then add only the commits that are still missing. Do not rebuild what is there,
 do not amend, do not rebase, do not squash; the series is append-only, and the whole reason you
 were sent here instead of a fresh coder is that rebuilding it would pay for that work twice.
+
+**The one exception, and it is the only one in this pipeline.** If the tip commit is a
+checkpoint — a `checkpoint:` subject or a `vfa-checkpoint` trailer, both left by an earlier
+coder stopping deliberately — you may squash **that commit and only that commit** into your
+next one:
+
+    git log -1 --format='%s%n%(trailers:key=vfa-checkpoint)'   # confirm it before you touch it
+    git reset --soft HEAD~1                                    # then commit the whole unit properly
+
+Confirm the mark first; a tip without it is somebody's finished work and squashing it is
+history rewriting. Nothing deeper than the tip is ever in scope, one checkpoint is the most
+there can be, and if your own work then runs long you leave a new checkpoint rather than
+keeping the old one alive. The reason this exception exists at all is that a checkpoint has
+nowhere else to go: amends are forbidden, so without it a deliberately-stopped series could
+never become a clean one.
 
 If the series turns out to be complete against every criterion, add nothing and say so. That is
 a real answer, and your caller verifies the series either way.
