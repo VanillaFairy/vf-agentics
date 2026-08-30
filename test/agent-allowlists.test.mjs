@@ -39,6 +39,10 @@ const ALLOWLISTS = {
   coder: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
   'doc-researcher': ['Glob', 'Grep', 'Read', 'WebFetch', 'WebSearch'],
   historian: ['Bash', 'Grep', 'Read'],
+  // Narrower than `run-state`'s, on purpose. Both are couriers for one directory, but this one
+  // opens no file of its own: it runs `lib/kb.mjs` and reports what it printed, and a knowledge
+  // base is exactly the kind of tree a helpful agent would be tempted to tidy by hand.
+  kb: ['Bash'],
   planner: ['Bash', 'Glob', 'Grep', 'Read', 'Write'],
   reviewer: ['Bash', 'Glob', 'Grep', 'Read'],
   'run-state': ['Bash', 'Read', 'Write'],
