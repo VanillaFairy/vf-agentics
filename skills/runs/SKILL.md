@@ -102,6 +102,30 @@ a run decided and did, it costs nothing to keep, and nothing about it expires on
 an old plan is stale, which is a fact the drift gate reports at resume time, not a reason to
 destroy the record.
 
+**A run being archived usually still owns branches and worktrees.** Collect them in the same
+pass, per run:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/gc.mjs" <repo-root> <runstamp>
+```
+
+**From the checkout that accepted the run** — the one whose HEAD contains that run's
+integration merge. `git branch -d` refuses a branch that is not in HEAD, and that refusal is
+the only thing standing between a sweep and a lost series; asked from a checkout that never
+took the merge, the same command answers about a tree nobody meant to ask about. The CLI
+establishes the reference point before it touches anything and refuses the whole sweep when it
+does not hold — read that refusal as "not from here", never as "there was nothing to collect".
+
+It removes the worktrees of merged branches, deletes those branches, and reports what it kept:
+unmerged branches, dirty worktrees, and the escalated and held orders those belong to. Say the
+kept list out loud. An escalated order's branch is the resumable state, a held red whose green
+never landed is work waiting for its pair, and both survive for the same reason — neither ever
+reached HEAD, so neither is the collector's to take.
+
+This is the only destructive thing this skill does, so it happens on an explicit go, like the
+archive move above and behind the same human acceptance `develop` already requires. A run that
+is still `planned` or `in-flight` is not a candidate: its branches are what a resume salvages.
+
 ## Progress tracking
 
 If the host exposes `TaskCreate`/`TaskUpdate`, use them for a multi-run session. If it does

@@ -499,10 +499,26 @@ hold, say nothing and start the run.
   a run returns, never while one is in flight, and put nothing in it that `runs` or
   `programme` already derives.
 - Write every `discovered` entry to the project KB (knowledge-base skill handles dedupe).
-- Clean up ONLY after the human accepts the merged result: `git worktree remove` each
-  `implemented` worktree and the integration worktree, then `git branch -d` the integration
-  branch and each order branch. The harness also leaves the auto-named branch each worktree
-  was created on; those are safe to delete once their worktree is gone.
+- Clean up ONLY after the human accepts the merged result — the gate has not moved — and do it
+  with the collector rather than by hand:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/lib/gc.mjs" <repo-root> <runstamp>
+  ```
+
+  **Run it from the checkout you merged into**, the one whose HEAD now contains the integration
+  merge. That reference point is the whole safety: `git branch -d` refuses a branch that is not
+  in HEAD, and asked from any other tree the same command answers confidently about the wrong
+  one. The CLI checks the reference point first and refuses everything if it does not hold.
+
+  It prunes the worktrees of merged branches, deletes those branches with `git branch -d`, and
+  **reports what it kept and why** — unmerged branches, dirty worktrees, and with them the
+  escalated and held orders that are the resumable state. Read that list out loud; a kept item
+  is a fact about the run, not leftover litter. It touches nothing outside `vfa/<runstamp>-*`:
+  the harness's own auto-named worktree branches are shared territory across plugins, and tags
+  are left alone, since a tag pointing into a deleted branch is what keeps its commits
+  reachable.
 - Escalated and blocked orders keep their worktrees and branches — they are the resumable
-  state. So does the run directory at `result.plan_path`: it is the only record of what this
-  run decided and what it did, and it costs nothing to keep.
+  state, and the collector keeps them for you because neither ever reached HEAD. So does the
+  run directory at `result.plan_path`: it is the only record of what this run decided and what
+  it did, and it costs nothing to keep.
