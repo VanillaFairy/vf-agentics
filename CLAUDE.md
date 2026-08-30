@@ -123,6 +123,15 @@ registry in increment 5 §1, any change to a `state.jsonl` line cites increment 
 to a `journal.jsonl` line cites increment 7 §4, and any change to `seq` cites increment 8 §3** —
 nothing finds any of those copies for you.
 
+**Docs land with the code, in the same commit series.** A behaviour-changing increment ships
+three doc artifacts or it is not done: its `docs/superpowers/specs/<date>-increment-N-contracts.md`,
+its section in `docs/design.md`, and its rows in `docs/2026-08-27-scenario-catalogue.md`. Agent
+constitutions and skill texts count as code here, not as docs. `docs/design.md` is the living
+description of the system **as it is** — everything else in `docs/` is dated by construction, so
+a proposal argues, a contracts doc pins one change, and neither ever describes the running whole.
+It carries empty sections naming the increment that fills each, and `test/design-doc.test.mjs`
+pins that they stay named and non-empty.
+
 Run the checks with:
 
     node tools/lint.mjs && node --test
