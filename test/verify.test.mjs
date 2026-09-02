@@ -325,6 +325,67 @@ test('suite_output_tail is the suite\'s own last lines, byte for byte', (t) => {
   assert.ok(payload.suite_output_tail.split('\n').length <= 40)
 })
 
+// Every byte in the payload is retyped by a model on the way back, and the tail is the only
+// unbounded field in it. It rides when a fix round will read it and not otherwise.
+test('a passing suite carries no tail: nothing downstream ever opens one', (t) => {
+  const { worktree, base, head } = order(t, { implemented: true })
+
+  const payload = verify(options({ worktree, base, head }))
+
+  assert.equal(payload.suite, 'passed')
+  assert.equal(payload.suite_output_tail, '',
+    'a passing suite\'s output has no reader and is the largest field a courier carries')
+})
+
+test('a failing suite still carries its tail, because that IS the fix round\'s evidence', (t) => {
+  const { worktree, base, head } = order(t, { implemented: false })
+
+  const payload = verify(options({ worktree, base, head }))
+
+  assert.equal(payload.suite, 'failed')
+  assert.ok(payload.suite_output_tail.length > 0)
+})
+
+// The banner rules a runner draws around a failure are the one part of a tail a courier has to
+// COUNT rather than read, and counting is where the single corrupted payload of run
+// 20260902-124933 was damaged. Collapsing them costs no word of the evidence.
+test('a runner\'s banner rules collapse, and everything that is not a rule survives', (t) => {
+  const { worktree } = order(t, { implemented: true })
+
+  writeFileSync(join(worktree, 'noisy.mjs'),
+    "process.stdout.write('\\u23af'.repeat(24) + ' Failed Suites 1 ' + '\\u23af'.repeat(7) + '\\n')\n" +
+    "process.stdout.write('\\u276f zażółć gęślą jaźń \\u2014 an assertion diff\\n')\n" +
+    'process.exit(1)\n')
+
+  const payload = verify(parseArgs([
+    '--worktree', worktree, '--mode', 'integration', '--build-absent',
+    '--suite', 'node noisy.mjs',
+  ]))
+
+  assert.equal(payload.suite, 'failed')
+  assert.ok(!/\u23af{2}/.test(payload.suite_output_tail),
+    'a run of identical rule glyphs is decoration a courier must count; one of them says the same')
+  assert.match(payload.suite_output_tail, /Failed Suites 1/)
+  assert.match(payload.suite_output_tail, /\u276f zażółć gęślą jaźń \u2014 an assertion diff/,
+    'non-ASCII that is not a repeated rule is evidence and is never touched')
+})
+
+test('blank lines are shape, not decoration, and survive the collapse', (t) => {
+  const { worktree } = order(t, { implemented: true })
+
+  writeFileSync(join(worktree, 'noisy.mjs'),
+    "process.stdout.write('first\\n\\n\\n\\nlast\\n')\nprocess.exit(1)\n")
+
+  const payload = verify(parseArgs([
+    '--worktree', worktree, '--mode', 'integration', '--build-absent',
+    '--suite', 'node noisy.mjs',
+  ]))
+
+  assert.match(payload.suite_output_tail, /first\n\n\n\nlast/,
+    'a line terminator is outside printable ASCII too, and collapsing it would change the ' +
+    'tail\'s shape rather than its decoration')
+})
+
 // ---------------------------------------------------------------- the integration head
 
 test('integration mode measures the merged head and reports honest emptiness', (t) => {

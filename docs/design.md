@@ -324,6 +324,16 @@ record. The line's shape did not change; only its writer moved, one step closer 
 describes. `seq` is still minted by the workflow and copied by the writer, because a counter is
 trustworthy exactly to the extent that the writer does not choose it.
 
+**The payload is sized for the model that has to retype it.** A digest makes corruption
+detectable and cannot make it rarer, so the other lever is the number of bytes crossing. Two
+things follow, both decided in the program before the digest is taken. `suite_output_tail` rides
+only when the suite failed, because that is the only case anything downstream opens it — it is a
+fix round's evidence and nothing else. And a run of three or more identical non-ASCII glyphs
+collapses to one, because a runner's banner rules are the single part of a tail a courier has to
+*count* rather than read. Non-ASCII that is not a repeated rule is evidence and is never touched.
+Field case: in run `20260902-124933` exactly one of five couriers damaged its payload, it was the
+only one carrying a failing suite's Unicode banner, and the damage was two dropped rule glyphs.
+
 Contract: `docs/superpowers/specs/2026-08-30-increment-11-contracts.md`.
 
 ## Capability layer
