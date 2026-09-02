@@ -197,6 +197,13 @@ session, arriving by proxy through an agent the session dispatched. A trivial or
 being reviewed; it stops being reviewed by the most expensive reader in the run, which is where a
 mixed plan's judging cost actually goes.
 
+Both per-order dials travel the resume transport with the order, for the same reason: they are
+read by arithmetic on the far side, not by a human. `weight` did not, until run
+`20260902-124933`, and the omission failed in the quietest way available — `weightOf` normalizes
+a missing value to `standard`, so every resumed order simply priced at the ceiling and no field
+anywhere read wrong. The same order was coded at Sonnet on that run's fresh dispatch and at the
+ceiling on its resume. A dial nobody can see moving is a dial that does nothing.
+
 **Measurement moves an order up.** A fix round that did not clear its blockers is evidence, not a
 prediction: the tier was too low, and the next round implements at the Opus floor. This is the one
 sanctioned rise above the ceiling, and it is licensed by an observed failure rather than by anyone's

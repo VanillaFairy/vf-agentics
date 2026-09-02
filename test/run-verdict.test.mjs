@@ -108,6 +108,27 @@ test('a clean run still carries its envelope, waves and digests', () => {
   assert.deepEqual(v.orders[1].deps, ['W1'])
 })
 
+// Both of the planner's per-order dials, and they fail the same silent way when one is missing:
+// `weightOf` normalizes an absent value to `standard`, so a resumed run simply stops discounting
+// and nothing anywhere reads wrong. Run 20260902-124933 coded `assetpaths` at sonnet on its
+// fresh dispatch and at the run's ceiling on the resume, from this omission alone.
+test('the per-order dials travel: a light order resumes light, not standard', () => {
+  const orders = [order('W1', { weight: 'light' }), order('W2', { weight: 'heavy' }),
+    order('W3', { role: 'red' })]
+  const v = deriveVerdict('20260826-184728', plan(orders), '', '', NO_GIT, [])
+
+  assert.deepEqual(v.orders.map((o) => o.weight), ['light', 'heavy', 'standard'])
+  assert.deepEqual(v.orders.map((o) => o.role), ['none', 'none', 'red'])
+})
+
+test('a plan written before weight existed resumes standard rather than crashing', () => {
+  const naked = order('W1')
+  delete naked.weight
+  const v = deriveVerdict('20260826-184728', plan([naked]), '', '', NO_GIT, [])
+
+  assert.equal(v.orders[0].weight, 'standard')
+})
+
 test('the settled evidence is described, never carried', () => {
   // It is the largest string in the envelope and every consumer of it is an agent with a shell.
   // Carrying it through a courier bought nothing but a chance to paraphrase it.

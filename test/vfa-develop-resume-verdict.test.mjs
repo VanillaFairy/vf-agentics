@@ -349,6 +349,26 @@ test('a continuation that finds nothing left to add is a real answer, not an esc
   assert.deepEqual(result.integration.merged, ['W2'])
 })
 
+// The per-order dial has to survive the transport too, and its failure is the quiet kind: no
+// error, no wrong field, just every resumed order priced at the run's ceiling because
+// `weightOf` reads a missing `weight` as `standard`. In run 20260902-124933 the same order was
+// coded at sonnet on the fresh dispatch and at the ceiling on the resume, and nothing said so.
+test('a light order resumes light: the dial is not left behind by the transport', async () => {
+  const light = [order('W1'), order('W2', { deps: ['W1'], weight: 'light' })]
+  const { prompts } = await resumed({}, {
+    plan: {
+      work_orders: light, shared_files: [],
+      partition_raw: JSON.stringify({ waves: [['W1'], ['W2']], coupled: [] }),
+      blocking_gaps: [], plan_path: RUN_DIR, notes: '',
+    },
+  })
+
+  const review = prompts.find((p) => (p.opts.label || '').startsWith('review:W2'))
+  assert.ok(review, 'W2 was reviewed')
+  assert.equal(review.opts.model, 'sonnet',
+    'a light order is judged one tier under the run\'s ceiling, on a resume exactly as when fresh')
+})
+
 test('a legacy run — commits, and no coder-done anywhere — is measured, never continued', async () => {
   // Every run planned before this version has exactly this shape. Reading the absence as "the
   // coder died mid-series" would buy a continuation round at every adopted series in every one

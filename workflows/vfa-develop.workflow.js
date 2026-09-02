@@ -4017,6 +4017,11 @@ try {
         id: row.id,
         title: row.title,
         role: row.role,
+        // The second half of the per-order dial. `role` and `contract` reached `coderFor` here
+        // from the first day and `weight` did not, so on a resume `judgeFor` and `coderFor` saw
+        // a plan of uniformly standard orders and every `light` discount silently went unbought.
+        // `weightOf` normalizes a missing value, which is why nothing ever failed loudly.
+        weight: row.weight,
         locus: row.locus || [],
         reads: row.reads || [],
         deps: row.deps || [],
