@@ -223,6 +223,23 @@ Anything that stops you — the path exists as a file, the base is unknown, git 
 is `stop_reason: 'environment_broken'` with the real git output in `notes`. Never report a
 worktree you did not create and could not enter: everything downstream merges into that path.
 
+**Then free this run's order branches, in the same dispatch.** `git worktree list` shows every
+checkout in the repository, and on a resume some of this run's own `vfa/<runstamp>-*` branches
+may still be held by a worktree an invocation that died left behind. This is not cosmetic: git
+refuses one branch in two worktrees, so each leftover costs the next dispatch its branch, the
+worktree it gets comes up **detached**, and a coder standing on a detached HEAD can commit
+nowhere that survives the worktree's removal. It surfaces four stages later as an escalation
+whose stated reason describes a defect that was never there.
+
+For each held branch of this run, the integration branch excepted: if `git status --porcelain`
+for that worktree is empty, `git worktree remove <path>` and name the branch in `released`. The
+branch and its commits are untouched by that — commits live on the ref, and removing a checkout
+removes a directory, not history. If it is dirty, or the removal refuses, **leave it** and name
+it in `held` with what git said and what is uncommitted there. Never `--force`: uncommitted work
+in somebody else's tree is not yours to weigh, and your caller reports a held branch to the human
+rather than deciding for them. Both arrays are records of what you did, so both are empty on a
+fresh run, and a branch you did not actually free is never `released`.
+
 ## Worktree mode
 
 When dispatched with a list of branches, you make each one enterable and do nothing else. No

@@ -188,6 +188,51 @@ test('the plan is persisted and its path travels in the result', async () => {
   assert.equal(result.plan_path, RUN_DIR)
 })
 
+// ── a dead invocation's worktree still holding this run's branches ───────────────────────────
+//
+// Git refuses one branch in two worktrees, so a leftover checkout never announces itself: the
+// next dispatch's worktree simply comes up DETACHED, and the coder standing in it can commit
+// nowhere that survives. In run 20260902-124933 three coders each improvised a different answer
+// to that in parallel — one force-removed the leftover, one invented a new branch name, one was
+// denied every remedy and escalated with a reason describing a defect that was never there. The
+// question is asked once now, before anything is dispatched.
+
+test('the setup pass is told to free this run\'s branches, and never to force one', async () => {
+  const { prompts } = await run({ agent: happyAgents() })
+  const setup = prompts.find((p) => p.opts.label === 'integration-setup').prompt
+
+  assert.match(setup, /git worktree list/)
+  assert.match(setup, /DETACHED/)
+  assert.match(setup, /Never --force/)
+})
+
+test('a branch freed by the setup pass is reported and costs the run nothing', async () => {
+  const { result } = await run({
+    agent: happyAgents({ 'integration-setup': setUp({ released: ['vfa/20260816-143005-W1'] }) }),
+  })
+
+  assert.deepEqual(result.integration.merged, ['W1'])
+  assert.ok(!result.coverage.failed_channels.includes('worktrees'),
+    'a leftover that was cleaned up is not a degraded channel — it is a leftover that was cleaned up')
+})
+
+test('a branch still held is named in coverage, and nothing is forced to get it', async () => {
+  const { result } = await run({
+    agent: happyAgents({
+      'integration-setup': setUp({
+        held: ['vfa/20260816-143005-W1: dirty at C:/repo/.claude/worktrees/wf_dead-3 — ' +
+               'one staged deletion of test/w1.test.js'],
+      }),
+    }),
+  })
+
+  assert.ok(result.coverage.failed_channels.includes('worktrees'))
+  assert.ok(result.coverage.unreached.some((u) => /still holds this run's branch/.test(u)),
+    'the human is told which branch, and why it was left alone')
+  assert.ok(result.coverage.unreached.some((u) => /uncommitted work is not/.test(u)),
+    'uncommitted work in somebody else\'s tree is not the pipeline\'s to discard')
+})
+
 test('a planner that persisted nothing degrades the run-state channel, loudly', async () => {
   const { result } = await run({
     agent: happyAgents({ plan: plan([order('W1')], { plan_path: '' }) }),

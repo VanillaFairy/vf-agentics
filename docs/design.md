@@ -254,6 +254,18 @@ nobody automatically. A checkpoint tip is the one piece of positive evidence the
 coder's own signature on an unfinished series, so it forces a continuation regardless of what
 else is recorded.
 
+**A dead invocation's worktrees are freed before anything is dispatched.** Git refuses one branch
+in two worktrees, so a leftover checkout of this run's own `vfa/<runstamp>-*` branch does not
+announce itself — the next dispatch's worktree comes up **detached**, and a coder standing on a
+detached HEAD can commit nowhere that survives. The integration setup pass, which already runs
+once before the first order and already stands in the repository, now also lists the worktrees,
+removes the ones whose working tree is clean, and reports the rest. Removing a checkout removes a
+directory and not history: the branch and every commit on it are untouched. A dirty one is
+**never** forced — it is named in `coverage.unreached` and the human decides, because uncommitted
+work in somebody else's tree is not the pipeline's to discard. Field case: in run
+`20260902-124933` the question reached four coders in parallel instead and got four different
+answers, one of which was an order escalated with a reason that described a defect nobody had.
+
 **Completeness.** Every exit carries a coverage block whose `complete` is the AND of four loss
 arrays being empty. Degradation lands in exactly one named array plus prose. This is IRON LAW §4
 made mechanical: a partial result must never be indistinguishable from a whole one.

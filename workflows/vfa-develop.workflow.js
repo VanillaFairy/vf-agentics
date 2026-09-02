@@ -220,12 +220,22 @@ const EXISTING_RUNS = {
 
 const INTEGRATION_SETUP = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'worktree', 'branch', 'head_sha', 'notes'],
+  required: ['stop_reason', 'worktree', 'branch', 'head_sha', 'released', 'held', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
     worktree: { type: 'string' },   // absolute path, observed
     branch: { type: 'string' },
     head_sha: { type: 'string' },   // what HEAD actually is in that worktree — read, not assumed
+    // The order branches this run owns that a DEAD invocation's worktree was still holding, and
+    // what became of each. Git refuses one branch in two worktrees, so a leftover checkout does
+    // not announce itself — it makes the next dispatch's worktree come up DETACHED, and a coder
+    // on a detached HEAD either commits into nothing or, correctly, refuses to commit at all.
+    // Run 20260902-124933 lost an order that way: three of its four coders each improvised a
+    // different answer (one force-removed the leftover, one invented a new branch name, one was
+    // denied every remedy and escalated), which is what an unanswered question looks like when
+    // four agents meet it in parallel. Asked once, here, before anything is dispatched.
+    released: { type: 'array', items: { type: 'string' } },  // branches freed, one per removed worktree
+    held: { type: 'array', items: { type: 'string' } },      // still held, and why — never forced
     notes: { type: 'string' },
   },
 }
@@ -2033,8 +2043,28 @@ function setupPrompt(runstamp) {
     `path already exists this is a resumed run: do not delete anything, do not force, attach ` +
     `or enter what is there and report the HEAD you find, which may already be ahead of the ` +
     `base because earlier waves merged into it.\n\n` +
+    `THEN, in the same dispatch, free this run's order branches.\n\n` +
+    `Run git worktree list. Some of this run's own branches — anything matching ` +
+    `vfa/${stamp}-* that is NOT the integration branch above — may still be checked out in a ` +
+    `worktree left by an invocation that died. Git refuses one branch in two worktrees, so ` +
+    `every such leftover silently costs the next dispatch its branch: the worktree comes up ` +
+    `DETACHED and the coder standing in it can commit nowhere that survives. For each one:\n\n` +
+    `1. Is its working tree clean? Check with git status --porcelain, reading the worktree ` +
+    `through git worktree list rather than by entering it.\n` +
+    `2. Clean: git worktree remove <path>. The branch and every commit on it are untouched — ` +
+    `commits live on the ref, and removing a checkout removes a directory, not history. Add ` +
+    `the branch name to released.\n` +
+    `3. Not clean, or the removal refuses: LEAVE IT. Add the branch name to held with what ` +
+    `git said and what is uncommitted there. Never --force. Uncommitted work is somebody's ` +
+    `and it is not yours to weigh; your caller reports it and a human decides.\n\n` +
+    `Both arrays are facts about what you did, so both may be empty — on a fresh run they ` +
+    `always are, and an empty released next to a non-empty held is the honest answer when ` +
+    `every leftover was dirty. Never report a branch as released whose worktree you did not ` +
+    `actually remove.\n\n` +
     `This worktree is the workflow's own. Everything merges here and the tree the user is ` +
-    `sitting in is never touched — not by you, not by anything downstream.`
+    `sitting in is never touched — not by you, not by anything downstream. The tree the user ` +
+    `is sitting in is also never a leftover: it holds no vfa/ branch, so it can never appear ` +
+    `in the list above.`
 }
 
 /**
@@ -4865,6 +4895,28 @@ try {
           ]),
         }),
       })
+    }
+
+    // What the setup pass found still holding this run's order branches. Both arrays are
+    // reported rather than acted on: a released branch needs nothing further, and a held one is
+    // a fact a human has to see, because the order that wants it will come up detached and its
+    // coder will — correctly — refuse to commit into nothing. Naming it here, before the first
+    // dispatch, is the difference between one line in the log and an order escalated four
+    // stages later with a reason that describes a phantom defect.
+    if ((setup.released || []).length > 0) {
+      log(`Freed ${setup.released.length} order branch(es) held by a dead invocation's ` +
+        `worktree: ${setup.released.join(', ')}.`)
+    }
+    for (const stuck of setup.held || []) {
+      log(`WARNING: ${stuck} — this run's branch is still checked out elsewhere with ` +
+        `uncommitted work, so its order will come up on a detached HEAD and cannot commit. ` +
+        `Nothing was forced.`)
+      extraUnreached.push('a leftover worktree still holds this run\'s branch: ' + stuck +
+        '. It was left alone because its working tree is dirty, and uncommitted work is not ' +
+        'the pipeline\'s to discard. Free it by hand and resume.')
+    }
+    if (!failedChannels.includes('worktrees') && (setup.held || []).length > 0) {
+      failedChannels.push('worktrees')
     }
 
     const recordedHead = integration.head_sha
