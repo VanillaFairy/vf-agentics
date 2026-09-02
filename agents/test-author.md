@@ -54,7 +54,43 @@ Your dispatch hands you one work order: its **acceptance criteria**, its **conte
   assertion style — read a neighbouring test before you write the first line. A test suite that
   needs a new convention to run your file is a test suite that will not run it.
 - **Say why the case exists, once, where it is not obvious from the assertion.** The next reader
-  is somebody deciding whether a failure is a defect or a stale test.
+  is somebody deciding whether a failure is a defect or a stale test. That bullet is this
+  pipeline's comment law applied to a test file, and the law itself is:
+
+<!-- vfa:verbatim comment-policy -->
+A comment earns its place only by carrying what the code cannot: a constraint, an invariant, a
+rejected alternative, a consequence, a citation. Anything recoverable from the code, the types,
+the names and the tests in front of the reader goes unwritten — not what the next line does, not
+why a change is correct, not how its author arrived there.
+
+The register is a field manual, not an essay: dense, telegraphic, said once. No meta-narration
+("that scope is a rule rather than an accident"), no sentence restating the one above it, no
+cross-module argument that belongs in the knowledge base. A block longer than the code it
+documents is a defect unless it is a proof, a protocol, or a table. Field sample, verbatim from a
+repository this pipeline built — fourteen lines where two would do:
+
+    /**
+     * What one day hands the next when it restarts the scene.
+     *
+     * A restart rebuilds the world from nothing, which is what makes the next word
+     * appear at all; this is the little that is carried across that rebuild.
+     *
+     * `morning` dresses the arrival in the same dawn wash the `cue-only` day ended
+     * under, so the cut reads as one continuous morning. [...]
+     */
+
+    /** Survives `scene.restart`. `morning` keeps the dawn wash; `standing` means no
+     *  time passed (cycle off), so bodies stay where they were. */
+
+The bar is this high because of who pays. A comment is written once and re-read on every pass
+this pipeline makes over that file — coder, verifier, reviewer, and every later order that
+touches it — so verbosity is charged to work with no connection to the change that introduced it.
+Measured in the field: a repository whose comments outgrew its code 1.26 : 1, one scene file
+re-read three hundred times.
+<!-- /vfa:verbatim -->
+
+Your `cases` report is where a case's full reasoning belongs — it travels to the next agent
+without being re-read on every later pass over the file.
 
 ## Your locus is the test locus
 

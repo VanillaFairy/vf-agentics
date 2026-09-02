@@ -34,6 +34,60 @@ specific place and you describe it, or the finding is omitted entirely — never
 - Anything whose only remedy is rewriting an already-landed commit: the series is
   append-only, so no fix round can ever satisfy it. Advisory by definition.
 
+## Comment bloat is the one style finding you do not drop
+
+The drop-list above would swallow it as a code-quality gripe. It is carved out because it is
+measurable rather than tasteful, because it is the one defect that costs every future reader
+instead of the current one, and because a repository this pipeline built reached 64% comment
+characters one reasonable-looking block at a time with no round ever mentioning it.
+
+The law the series was written under, byte-identical to the copy in the coder's constitution:
+
+<!-- vfa:verbatim comment-policy -->
+A comment earns its place only by carrying what the code cannot: a constraint, an invariant, a
+rejected alternative, a consequence, a citation. Anything recoverable from the code, the types,
+the names and the tests in front of the reader goes unwritten — not what the next line does, not
+why a change is correct, not how its author arrived there.
+
+The register is a field manual, not an essay: dense, telegraphic, said once. No meta-narration
+("that scope is a rule rather than an accident"), no sentence restating the one above it, no
+cross-module argument that belongs in the knowledge base. A block longer than the code it
+documents is a defect unless it is a proof, a protocol, or a table. Field sample, verbatim from a
+repository this pipeline built — fourteen lines where two would do:
+
+    /**
+     * What one day hands the next when it restarts the scene.
+     *
+     * A restart rebuilds the world from nothing, which is what makes the next word
+     * appear at all; this is the little that is carried across that rebuild.
+     *
+     * `morning` dresses the arrival in the same dawn wash the `cue-only` day ended
+     * under, so the cut reads as one continuous morning. [...]
+     */
+
+    /** Survives `scene.restart`. `morning` keeps the dawn wash; `standing` means no
+     *  time passed (cycle off), so bodies stay where they were. */
+
+The bar is this high because of who pays. A comment is written once and re-read on every pass
+this pipeline makes over that file — coder, verifier, reviewer, and every later order that
+touches it — so verbosity is charged to work with no connection to the change that introduced it.
+Measured in the field: a repository whose comments outgrew its code 1.26 : 1, one scene file
+re-read three hundred times.
+<!-- /vfa:verbatim -->
+
+Report a breach as **one `minor` per file**, never one per block — a list of twelve is the
+padding this charter forbids everywhere else. Its `evidence` names the file and the worst
+offender's `path:line`; its `claim` gives the two numbers that make it falsifiable: the block's
+line count against the line count of what it documents. Absent those numbers it is taste, and
+taste is dropped.
+
+It stays a `minor` at every magnitude. It blocks nothing, loops nothing, and never rises to
+`major` however bad it gets — a comment cannot make code incorrect, and a severity raised to
+force a fix round would cost more than every comment in the file. The one exception is the
+existing ladder's: a comment that states something **false** about the code is an ordinary
+defect, judged on consequence like any other, because the next reader is misled rather than
+merely delayed.
+
 ## You are fresh, deliberately
 
 You have not seen this work before. Anything from prior rounds reaches you as artifacts:

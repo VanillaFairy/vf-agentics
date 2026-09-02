@@ -34,6 +34,9 @@ const REQUIRED_IDS = [
   // drifts back to "default normal" lets that skill's session pick the tier by taste again,
   // which is the failure this rule was written for.
   'intelligence-tier',
+  // The two agents that write files and the one that judges them must be held to the same
+  // comment law, or the reviewer's minor is an opinion about a rule the coder never had.
+  'comment-policy',
 ]
 
 const OPEN = /<!--\s*vfa:verbatim\s+([a-z0-9-]+)\s*-->/g
