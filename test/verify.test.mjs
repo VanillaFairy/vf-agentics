@@ -1,9 +1,15 @@
 // test/verify.test.mjs — lib/verify.mjs, against real repositories.
 //
-// These are slow tests: each one builds a git repository, cuts a linked worktree and runs a real
-// node test suite inside it, several times. That cost is the point — the whole value of this file
-// is that the discriminator moves HEAD, restores files, runs a suite there and puts the tree back,
-// and none of that is observable against a mock.
+// These are slow tests: each one stands in a real git worktree and runs a real node test suite
+// inside it, several times. That cost is the point — the whole value of this file is that the
+// discriminator moves HEAD, restores files, runs a suite there and puts the tree back, and none
+// of that is observable against a mock.
+//
+// The repositories themselves come from test/harness/verify-fixture.mjs, which builds each
+// distinct shape once and copies it per test. Construction is not the thing under test and used
+// to cost more than everything that is; the copy is licensed by the equivalence test at the
+// bottom of this file, which pins that a clone and a freshly built fixture produce the same
+// verify() payload byte for byte.
 //
 // The properties worth pinning, in the order they matter:
 //
@@ -27,79 +33,12 @@ import { fileURLToPath } from 'node:url'
 
 import { verify, parseArgs, isTestPath, worktreeProblem, extractFailures } from '../lib/verify.mjs'
 import { canonical, fnv1a } from '../lib/plan-digest.mjs'
+import {
+  BRANCH, BUILD, SUITE, TEST_ONE, WIDGET_TEST,
+  git, rev, order, orderBuiltFresh, repository,
+} from './harness/verify-fixture.mjs'
 
 const CLI = fileURLToPath(new URL('../lib/verify.mjs', import.meta.url))
-const BRANCH = 'vfa/20260830-090000-W1'
-
-// This file runs under `node --test`, and the fixtures' own suites are `node --test` too.
-// Node marks its test children with NODE_TEST_CONTEXT and a grandchild that sees it refuses to
-// run any file at all — silently, with exit 0, which would make every fixture suite "pass". The
-// variable is this runner's private business and has no place in a repository's own commands.
-delete process.env.NODE_TEST_CONTEXT
-
-const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' })
-const rev = (cwd, ref) => git(cwd, 'rev-parse', ref).stdout.trim()
-
-const BUILD = 'node tools/build.mjs'
-const SUITE = 'node --test'
-const TEST_ONE = 'node --test {file}'
-
-const WIDGET_TEST = [
-  "import { test } from 'node:test'",
-  "import assert from 'node:assert/strict'",
-  "import { label } from '../src/widget.mjs'",
-  '',
-  "test('the widget is labelled hi', () => {",
-  "  assert.equal(label(), 'hi')",
-  '})',
-  '',
-].join('\n')
-
-/** A repository with a passing suite, a build command, and one source file to change. */
-function repository(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'vfa-verify-')).split('\\').join('/')
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-
-  git(dir, 'init', '-q', '-b', 'main', '.')
-  git(dir, 'config', 'user.email', 't@t')
-  git(dir, 'config', 'user.name', 't')
-  git(dir, 'config', 'commit.gpgsign', 'false')
-
-  mkdirSync(join(dir, 'src'))
-  mkdirSync(join(dir, 'test'))
-  mkdirSync(join(dir, 'tools'))
-
-  writeFileSync(join(dir, 'src', 'widget.mjs'), "export const label = () => 'plain'\n")
-  writeFileSync(join(dir, 'tools', 'build.mjs'), '// a build that succeeds\n')
-  writeFileSync(join(dir, 'test', 'base.test.mjs'), [
-    "import { test } from 'node:test'",
-    "test('the base suite passes', () => {})",
-    '',
-  ].join('\n'))
-
-  git(dir, 'add', '-A')
-  git(dir, 'commit', '-qm', 'init')
-  return dir
-}
-
-/**
- * One order's worktree, cut from main and carrying its series.
- * `implemented: false` is a RED order — the new test lands and nothing makes it pass.
- */
-function order(t, { implemented = true, trailer = '' } = {}) {
-  const dir = repository(t)
-  const base = rev(dir, 'HEAD')
-  const worktree = dir + '/wt'
-
-  git(dir, 'worktree', 'add', '-q', '-b', BRANCH, worktree, 'main')
-  writeFileSync(join(worktree, 'test', 'widget.test.mjs'), WIDGET_TEST)
-  if (implemented) writeFileSync(join(worktree, 'src', 'widget.mjs'), "export const label = () => 'hi'\n")
-
-  git(worktree, 'add', '-A')
-  git(worktree, 'commit', '-qm', 'feat: label the widget hi' + (trailer ? '\n\n' + trailer : ''))
-
-  return { dir, worktree, base, head: rev(worktree, 'HEAD') }
-}
 
 const options = (over = {}) => parseArgs([
   '--worktree', over.worktree,
@@ -524,4 +463,65 @@ test('a runner\'s own counters are still discarded, which is what the guard is f
     assert.deepEqual(found.failures, [], line + ' names no test and must place nothing')
     assert.equal(found.unplaced, 0, line + ' is a counter, not a failure nobody could place')
   }
+})
+
+// ---------------------------------------------------------------- the fixture's own licence
+//
+// Every test above stands in a COPY of a template rather than in a repository built for it, and
+// the saving is worth roughly half this file's wall clock. What makes that legitimate is not the
+// argument in the fixture module's header — it is this comparison. A clone and a freshly built
+// fixture are handed to the same real verify(), and every field of the payload must agree.
+//
+// Both roles are covered because they exercise different halves of the machinery: a green order
+// takes the discriminator's "passes now" path and leaves the suite green, a red one fails the
+// suite, populates failing_tests and takes the other branch. A clone that diverged on either —
+// a worktree whose repair left it pointing at the template, a stale index, a HEAD that did not
+// come back — shows up here as a diff instead of as a mystery months later.
+
+/** The fields a caller's verdict is computed from. Timings and shas are neither. */
+const verdictShape = (p) => ({
+  stop_reason: p.stop_reason,
+  build: p.build,
+  suite: p.suite,
+  failing_tests: p.failing_tests,
+  discriminator: p.discriminator,
+  series_findings: p.series_findings,
+  error: p.error,
+})
+
+for (const implemented of [true, false]) {
+  const role = implemented ? 'green' : 'red'
+
+  test(`a cloned fixture and a built one measure identically — ${role} order`, (t) => {
+    const cloned = verify(options(order(t, { implemented })))
+    const built = verify(options(orderBuiltFresh(t, { implemented })))
+
+    assert.deepEqual(verdictShape(cloned), verdictShape(built),
+      'the copy is only sound while it is indistinguishable from real construction')
+    assert.equal(cloned.suite, implemented ? 'passed' : 'failed',
+      'and the comparison is only worth anything while it covers both roles')
+  })
+}
+
+test('a clone comes back on its branch and clean, exactly as a built fixture does', (t) => {
+  const fixture = order(t)
+  const { worktree } = fixture
+
+  verify(options(fixture))
+
+  assert.equal(git(worktree, 'branch', '--show-current').stdout.trim(), BRANCH,
+    'a worktree left detached strands every commit a later fix round makes in it')
+  assert.equal(git(worktree, 'status', '--porcelain').stdout.trim(), '',
+    'the discriminator stashes and moves HEAD; what it borrowed it puts back')
+})
+
+test('two clones share a template and nothing else', (t) => {
+  const a = order(t)
+  const b = order(t)
+
+  writeFileSync(join(a.worktree, 'src', 'widget.mjs'), "export const label = () => 'mutated'\n")
+
+  assert.notEqual(a.dir, b.dir)
+  assert.equal(git(b.worktree, 'status', '--porcelain').stdout.trim(), '',
+    'a template poisoned by one test would reach every test taken after it')
 })
