@@ -580,6 +580,66 @@ test('a base64 token damaged in transit is refused with a named reason', () => {
   assert.deepEqual(treeNodes(dir), [])
 })
 
+// base64 is what makes a deposit SAFE on a command line, not what makes it FIT. Windows caps a
+// process's command line at 8191 characters, and in run 20260902-124933 a ten-entry deposit came
+// to 8.1 KB, was truncated mid-quote by the shell, and took three attempts — plain, heredoc,
+// script file — that each put the same token on the same one line. A path is short whatever the
+// deposit weighs, and reading a file is the safe direction: the bytes never cross a model.
+test('a deposit too long for a command line arrives by path instead', () => {
+  const { dir, head } = repo()
+  const payload = { entries: [entry({ observed_at: head })] }
+  const token = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+  const tokenFile = join(dir, 'deposit.b64')
+  writeFileSync(tokenFile, token, 'utf8')
+
+  const out = execFileSync(process.execPath,
+    [KB, 'append', dir, '--digest', digestEntry(payload), '--b64-file', tokenFile],
+    { encoding: 'utf8' })
+
+  assert.equal(JSON.parse(out).ok, true)
+  assert.equal(stateFor(dir, 'the-trap').state, 'fresh',
+    'the same entry, on disk, however its bytes reached the writer')
+})
+
+test('the digest still covers a deposit that arrived by path — the route is not the trust', () => {
+  const { dir, head } = repo()
+  const payload = { entries: [entry({ observed_at: head })] }
+  const tokenFile = join(dir, 'deposit.b64')
+  writeFileSync(tokenFile, Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'), 'utf8')
+
+  let status = 0
+  let out = ''
+  try {
+    out = execFileSync(process.execPath,
+      [KB, 'append', dir, '--digest', 'deadbeef', '--b64-file', tokenFile], { encoding: 'utf8' })
+  } catch (err) {
+    status = err.status
+    out = err.stdout
+  }
+
+  assert.equal(status, 1)
+  assert.match(JSON.parse(out).error, /digest mismatch/)
+  assert.deepEqual(treeNodes(dir), [])
+})
+
+test('a deposit file that is not there is a named refusal, never a silent empty append', () => {
+  const { dir } = repo()
+
+  let status = 0
+  let out = ''
+  try {
+    out = execFileSync(process.execPath,
+      [KB, 'append', dir, '--digest', 'deadbeef', '--b64-file', join(dir, 'absent.b64')],
+      { encoding: 'utf8' })
+  } catch (err) {
+    status = err.status
+    out = err.stdout
+  }
+
+  assert.equal(status, 1)
+  assert.match(JSON.parse(out).error, /could not be read/)
+})
+
 test('an unknown command names what it expected instead of doing something adjacent', () => {
   const { dir } = repo()
   let out = ''

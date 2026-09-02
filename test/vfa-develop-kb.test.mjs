@@ -349,6 +349,67 @@ test('a run that learned nothing deposits nothing', async () => {
     'an empty batch is a dispatch bought to write no entries')
 })
 
+// ── the deposit is split to fit a command line, in the script rather than by the courier ─────
+//
+// A command line is finite and a deposit is as large as the run was interesting. Run
+// 20260902-124933 minted ten entries as one 8.1 KB command, Windows truncated it mid-quote, and
+// the courier's three attempts — plain, heredoc, script file — each put the same token on the
+// same one line and failed identically. Splitting is arithmetic, so it happens here (SR6).
+
+/** Every batch the deposit dispatch carries, decoded, in the order the prompt names them. */
+const depositBatches = (prompts) =>
+  [...promptFor(prompts, 'kb-write').matchAll(/--digest (\S+) --b64 (\S+)/g)].map((m) => ({
+    digest: m[1],
+    entries: JSON.parse(Buffer.from(m[2], 'base64').toString('utf8')).entries,
+  }))
+
+test('a deposit too large for one command line is split into several, each under its own digest', async () => {
+  const long = (n) => 'a fact worth keeping, number ' + n + ', ' + 'x'.repeat(600)
+  const { prompts } = await run({
+    'code:': () => coded('W1', { discovered: [long(1), long(2), long(3), long(4), long(5)] }),
+  })
+
+  const batches = depositBatches(prompts)
+  assert.ok(batches.length > 1, 'five long entries do not fit one command line')
+
+  for (const batch of batches) {
+    const command = '--digest ' + batch.digest + ' --b64 ' +
+      Buffer.from(JSON.stringify({ entries: batch.entries }), 'utf8').toString('base64')
+    assert.ok(command.length < 8000, 'every batch fits a command line with room for the rest of it')
+    assert.ok(batch.entries.length > 0, 'an empty batch is a command bought to write nothing')
+  }
+
+  const claims = batches.flatMap((b) => b.entries.map((e) => e.claim))
+  assert.deepEqual(claims, [long(1), long(2), long(3), long(4), long(5)],
+    'splitting is a transport decision — every entry still arrives, in the run\'s own order')
+
+  const digests = batches.map((b) => b.digest)
+  assert.equal(new Set(digests).size, digests.length,
+    'each batch is refused or accepted alone, so each carries a digest over its own entries')
+})
+
+test('a deposit that fits stays one command, and the prompt still says ONE line', async () => {
+  const { prompts } = await run({
+    'code:': () => coded('W1', { discovered: ['a fact worth keeping'] }),
+  })
+
+  assert.equal(depositBatches(prompts).length, 1)
+  assert.match(promptFor(prompts, 'kb-write'), /Run exactly this, as ONE line/)
+})
+
+test('the deposit names the by-path route, because retyping a truncated line never works', async () => {
+  const { prompts } = await run({
+    'code:': () => coded('W1', { discovered: ['a fact worth keeping'] }),
+  })
+
+  const prompt = promptFor(prompts, 'kb-write')
+  assert.match(prompt, /--b64-file/,
+    'the bottom rung: a path is short whatever the deposit weighs')
+  assert.match(prompt, /Do not try a heredoc or a script file/,
+    'the two workarounds a courier reaches for first, both of which put the same token on the ' +
+    'same one command line')
+})
+
 test('the same claim from two orders is deposited once', async () => {
   const orders = [order('W1'), order('W2')]
   const { prompts } = await run({

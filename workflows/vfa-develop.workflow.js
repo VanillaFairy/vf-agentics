@@ -1857,14 +1857,64 @@ function kbChainPrompt(paths) {
 
 // What this run learned, deposited where the next run will find it. One batch, one digest, one
 // refusal — the ledger's transport, pointed at a tree that outlives the run.
-function kbDepositPrompt(entries, digest) {
+// A command line is finite, and a deposit is as large as the run was interesting.
+//
+// Windows caps a process's command line at 8191 characters and the harness spends some of that
+// before this string starts. Run 20260902-124933 minted a ten-entry deposit as one 8.1 KB
+// command, the shell truncated it mid-quote, and the courier spent three attempts — plain,
+// heredoc, script file — each of which embedded the same 8 KB in the same one command and so
+// failed in exactly the same way. Nothing about the encoding could have helped: base64 is what
+// makes the bytes SAFE to put on a command line, not what makes them FIT.
+//
+// So the batching happens here, in the script, where it is arithmetic (SR6). Appends are
+// append-only and resolved newest-id-wins, so N commands deposit exactly what one would have,
+// and each carries its own digest over its own entries — a batch that arrives damaged is
+// refused alone and says which one it was.
+const COMMAND_BUDGET = 5000
+
+/**
+ * The deposit, split into batches whose encoded token fits one command.
+ *
+ * Greedy by construction, because the ordering is the run's own and a batch is not a unit of
+ * meaning. An entry that does not fit even alone still gets its own batch: it will be refused
+ * loudly by the shell rather than silently dropped here, and the prompt's last rung — writing
+ * the token to a file and passing the path — is the way through for exactly that case.
+ */
+function kbBatches(entries) {
+  const batches = []
+  let current = []
+
+  for (const entry of entries) {
+    const grown = current.concat([entry])
+    if (current.length > 0 && base64(JSON.stringify({ entries: grown })).length > COMMAND_BUDGET) {
+      batches.push(current)
+      current = [entry]
+    } else {
+      current = grown
+    }
+  }
+
+  if (current.length > 0) batches.push(current)
+  return batches
+}
+
+function kbDepositPrompt(entries) {
+  const batches = kbBatches(entries)
+  const commands = batches.map((batch) =>
+    `node "${pluginRoot}/lib/kb.mjs" append "${kbRepo()}" ` +
+    `--digest ${fnv1a(canonical({ entries: batch }))} ` +
+    `--b64 ${base64(JSON.stringify({ entries: batch }))}`).join('\n\n')
+
   return `DEPOSIT MODE. Append what this run learned to the project knowledge base.\n\n` +
     `REPOSITORY: ${kbRepo()}\n\n` +
-    `Run exactly this, as ONE line:\n\n` +
-    `node "${pluginRoot}/lib/kb.mjs" append "${kbRepo()}" --digest ${digest} ` +
-    `--b64 ${base64(JSON.stringify({ entries }))}\n\n` +
+    (batches.length === 1
+      ? `Run exactly this, as ONE line:\n\n`
+      : `Run these ${batches.length} commands, each as ONE line, in this order. They are ` +
+        `separate batches of the same deposit and each is written on its own — a later one ` +
+        `failing does not undo an earlier one:\n\n`) +
+    commands + `\n\n` +
     rootWarning +
-    `The long token is the batch of entries, base64-encoded. Copy it as one unbroken string — ` +
+    `The long token is a batch of entries, base64-encoded. Copy it as one unbroken string — ` +
     `do not wrap it, do not insert a newline or a backslash continuation, and do not quote it. ` +
     `It contains only letters, digits, +, / and = , so there is nothing in it for a shell to ` +
     `interpret. The writer decodes it and recomputes the digest above over what came out; a ` +
@@ -1873,11 +1923,22 @@ function kbDepositPrompt(entries, digest) {
     `You do not choose where an entry lands. Each one's node is computed from what it is about, ` +
     `and the file digests that anchor it are measured by the program, in the repository, at the ` +
     `moment it writes — there is nothing here for you to fill in.\n\n` +
-    `Read the writer's output. {"ok":true,...} means the entries are on disk — return ` +
-    `stop_reason recorded. {"ok":false,"error":...} means it refused; the error names what was ` +
-    `wrong. Run the command again, the whole token. If it refuses a second time, return ` +
-    `stop_reason unwritable with the error verbatim in notes — your caller treats that as a ` +
-    `degraded side channel and reports that what this run learned was not made durable.`
+    `Read each writer's output. {"ok":true,...} means that batch is on disk. ` +
+    `{"ok":false,"error":...} means it refused; the error names what was wrong. Run that ` +
+    `command again, the whole token.\n\n` +
+    `If a command comes back from the SHELL rather than from the writer — "unexpected EOF", a ` +
+    `truncated line, an unmatched quote — the command line was too long for this platform and ` +
+    `retyping it will fail the same way every time. Do not try a heredoc or a script file: ` +
+    `those put the same token on the same one command line. Write the token to a file in ` +
+    `pieces instead, with several appends, and then pass the PATH:\n\n` +
+    `   printf %s '<first piece>' > kb-deposit.b64\n` +
+    `   printf %s '<next piece>' >> kb-deposit.b64\n` +
+    `   node "${pluginRoot}/lib/kb.mjs" append "${kbRepo()}" --digest <that batch's digest> ` +
+    `--b64-file kb-deposit.b64\n\n` +
+    `Only when a batch has failed both ways: return stop_reason unwritable with the error ` +
+    `verbatim in notes — your caller treats that as a degraded side channel and reports that ` +
+    `what this run learned was not made durable. Return stop_reason recorded only when every ` +
+    `batch above reported ok:true.`
 }
 
 // Worktrees, and nothing else. Every question about WHAT EXISTS was answered on disk before
@@ -5622,7 +5683,7 @@ try {
   if (deposits.length > 0) {
     phase('Integrate')
 
-    const deposited = await agent(kbDepositPrompt(deposits, fnv1a(canonical({ entries: deposits }))), {
+    const deposited = await agent(kbDepositPrompt(deposits), {
       agentType: 'vf-agentics:kb', effort: 'low', model: 'haiku', schema: RECORDED,
       phase: 'Integrate', label: 'kb-write',
     }).catch((e) => {

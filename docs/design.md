@@ -434,6 +434,17 @@ approved orders' discoveries are deposited, anchored to the order's own locus an
 run's base commit. Escalated orders' discoveries stay out: unreviewed claims about a repository
 that rejected the work.
 
+**The deposit is split to fit a command line, here rather than by the courier.** base64 is what
+makes a batch safe on a command line — no path to escape, no apostrophe to close — and it is not
+what makes one fit: Windows caps a process's command line at 8191 characters, and a deposit is as
+large as the run was interesting. So the batching is arithmetic done in the script, each batch
+under its own digest, refused or accepted alone. Appends are append-only and resolved
+newest-id-wins, so N commands deposit exactly what one would have. The bottom rung, for an entry
+too large to split, is `--b64-file`: a path is short whatever the deposit weighs, and reading a
+file is the safe direction. Field case: run `20260902-124933` minted ten entries as one 8.1 KB
+command and spent three attempts — plain, heredoc, script file — each putting the same token on
+the same one command line, each truncated at the same character.
+
 **In the survey, the index comes first and the chains come per topic.** The tempting design was
 chains at the question's roots, and it reaches almost nothing: before a decomposition exists the
 only known paths are the roots, and a chain at a root is the repository-wide node alone. So the

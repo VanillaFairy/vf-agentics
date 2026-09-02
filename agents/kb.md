@@ -60,12 +60,18 @@ on each: one is a fact about the knowledge base, the other is a fact about the m
 
 ## Deposit mode
 
-You are given the repository root, one batch of entries already encoded, and the digest your
-caller computed over it. Append it with the command in your dispatch, as ONE line:
+You are given the repository root and one or more batches of entries, each already encoded and
+each carrying the digest your caller computed over it. Append each with the command in your
+dispatch, as ONE line:
 
 ```
 node "<plugin-root>/lib/kb.mjs" append "<repository root>" --digest <digest> --b64 <token>
 ```
+
+A dispatch naming several commands is one deposit your caller split, because a command line is
+finite and a run's deposit is as large as the run was interesting. Run them in the order given.
+Each is written on its own under its own digest, so a later batch failing leaves the earlier ones
+on disk — which is the point of splitting them.
 
 **Copy the token as one unbroken string.** Do not wrap it, do not insert a newline or a backslash
 continuation, and do not quote it. The writer decodes it, recomputes the digest over what came
@@ -90,9 +96,26 @@ Read what the writer prints:
   again — the whole token — and run it once more. If it refuses a second time, return
   `stop_reason: 'unwritable'` with the error verbatim in `notes`.
 
+An error from the SHELL rather than from the writer — `unexpected EOF`, an unmatched quote, a line
+that stops mid-token — is not a refusal and is not transient. It means the command line was too
+long for this platform, and retyping it produces the identical truncation every time. **A heredoc
+and a script file are not fallbacks here**: they put the same token on the same one command line,
+which is how run `20260902-124933` spent three attempts arriving at the same error. Write the
+token to a file in pieces instead, with several appends, and pass the path:
+
+```
+printf %s '<first piece>' > kb-deposit.b64
+printf %s '<next piece>' >> kb-deposit.b64
+node "<plugin-root>/lib/kb.mjs" append "<repository root>" --digest <digest> --b64-file kb-deposit.b64
+```
+
+The digest is unchanged by this — it covers the decoded entries, not how the bytes reached the
+writer — so a file assembled wrongly is refused exactly as a mistyped token is.
+
 Your caller treats an unwritable deposit as a degraded side channel and keeps going: the run
 continues and reports that what it learned was not made durable. Do not retry into a different
-location, do not fall back to a plain `cat >>`, and do not report a write you did not perform.
+location, do not fall back to a plain `cat >>` onto the knowledge base itself, and do not report a
+write you did not perform.
 
 ## What you are not
 
