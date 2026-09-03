@@ -2721,7 +2721,15 @@ function appendState(entry, label) {
   // The digest is minted over the line as it will be written, which is why the separators are
   // normalized in the builders below rather than here: a value normalized after digesting
   // would arrive at a writer computing a different number over the same record.
-  const digest = fnv1a(canonical(entry))
+  //
+  // "As it will be written" means AFTER the JSON round trip the line makes on its way to the
+  // writer, and that is not a formality. `JSON.stringify` drops a key whose value is
+  // `undefined`; `canonical` writes it as null. Digesting the object as BUILT therefore mints
+  // a number the writer cannot reproduce over the very bytes this script sent it, and the
+  // write is refused with nobody at fault — a builder that left one field unset is enough.
+  // The writer's refusal is right and the caller's arithmetic was wrong.
+  const wire = JSON.stringify(entry)
+  const digest = fnv1a(canonical(JSON.parse(wire)))
 
   const next = stateWrites.then(() =>
     agent(recorderPrompt(planPath, entry, digest), {

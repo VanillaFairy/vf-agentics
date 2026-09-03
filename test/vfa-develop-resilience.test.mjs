@@ -26,6 +26,7 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { carriedChain, carriedPayload, recordedLine, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 import { resumeVerdict, gitFacts } from './harness/resume-fixture.mjs'
+import { digestEntry } from '../lib/ledger.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-develop.workflow.js', import.meta.url))
 
@@ -746,6 +747,21 @@ test('ancestry alone never lands an order — the approval record is the second 
     'and nothing is written down about a merge nobody can evidence')
   assert.deepEqual(result.integration.merged, ['W2'], 'it is implemented and merged, not assumed')
 })
+
+test('the state line the recorder is handed digests to what lib/ledger.mjs computes over it',
+  async () => {
+    // The digest has to cover the line as the WRITER will see it, which is after a JSON round
+    // trip: `JSON.stringify` drops an undefined-valued key and `canonical` writes it as null,
+    // so digesting the object as BUILT mints a number the writer cannot reproduce over the
+    // very bytes it was sent — and refuses a line nobody mistyped.
+    const { prompts } = await fresh({})
+
+    for (const p of prompts.filter((x) => (x.opts.label || '').startsWith('record:'))) {
+      const { entry, digest } = recordedLine(p.prompt)
+      assert.equal(digest, digestEntry(entry),
+        `${p.opts.label} was minted under a digest its own writer would refuse`)
+    }
+  })
 
 test('a reconciliation whose record cannot be written is a named gap, not a silent one', async () => {
   // This can be the only line an invocation writes. Losing it silently leaves a run reporting
