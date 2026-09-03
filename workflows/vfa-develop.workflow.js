@@ -509,6 +509,20 @@ const verifyOk = (v, wo) => {
   return plainVerifyOk(v, wo)
 }
 
+// Would this order have passed if the discriminator had asked nothing? When it would, the
+// discriminator's base question is the only thing standing between the order and approval —
+// and for a test that pins existing correct data no commit inside the order's locus can
+// change that answer, because the only way to fail at base is to break the data first. A fix
+// round there is unwinnable by construction, so it is not bought. Run 20260902-124933 bought
+// two of them and then needed a human to override the gate anyway.
+//
+// Narrowed to `role: none` deliberately. A red order's discriminator failure IS its work and
+// a fix round can move it; a refactor's empty discriminator is a requirement rather than a
+// waiver, and reading that through this predicate would short-circuit an order that merely
+// added a test it should not have.
+const discriminatorUndecidable = (v, wo) =>
+  roleOf(wo) === 'none' && !verifyOk(v, wo) && verifyOk({ ...v, discriminator: [] }, wo)
+
 const mergeOk = m => m.stop_reason === 'completed'
   && m.merged_sha !== '' && m.conflicts.length === 0
 
@@ -3400,6 +3414,20 @@ async function measureWave(waveNumber, label) {
   return measured
 }
 
+// The order's own criteria, quoted, so an escalation puts the mechanical verdict and the
+// standard the order was written against side by side. A person ruling on a discriminator
+// failure needs both: the criteria are usually where the check that DOES fit is written —
+// "delete this field and that case must fail" — and the run never ran it.
+const criteriaEvidence = (wo) => (wo.acceptance || []).length === 0
+  ? 'this order declared no acceptance criteria, so there is nothing to weigh the ' +
+    'discriminator against'
+  : 'ACCEPTANCE CRITERIA AS PLANNED:\n' +
+    (wo.acceptance || []).map((a, i) => (i + 1) + '. ' + a).join('\n') +
+    '\n\nIf one of these describes how these tests were meant to be shown to bite, run it — ' +
+    'the discriminator could not, and the order may be entirely correct. If this order is a ' +
+    "regression net over data that is already correct, the plan should have set pins: 'data' " +
+    'and the base question would not have been asked at all.'
+
 // Verify, and fix until the facts come back clean. The exit is `verifyOk`, computed here
 // from the verifier's facts. The escalation is computed too: a fix round that lands no new
 // commit has made no progress, and an identical next round would make none either. No
@@ -3427,6 +3455,23 @@ async function verifyUntilGreen(wo, state, trail) {
     }
 
     const failures = verifyFailureFindings(wo, v)
+
+    // Routed, not refused, and on round ONE. Everything else failing here is something a
+    // coder can move; a discriminator standing alone is not, so buying a fix round to find
+    // that out again only makes the wrong verdict sound more confident — which is exactly
+    // what `verify_failed_repeatedly` did to run 20260902-124933's `real-bundle-tests`. The
+    // order still does not merge: a person rules on it, with the criteria in hand.
+    if (discriminatorUndecidable(v, wo)) {
+      log(`ESCALATION ${wo.id}: the discriminator is the only failing fact and nothing inside this locus can move it.`)
+      return esc(wo, 'discriminator_undecidable',
+        failures.concat([runtimeFinding(wo.id + '-disc-undecidable',
+          'the discriminator asks whether these tests failed before the change under them, ' +
+          'and no commit inside this order\'s locus can change that answer — a test over data ' +
+          'that is already correct fails at base only if the data is broken first',
+          criteriaEvidence(wo))]),
+        trail, state)
+    }
+
     log(`${wo.id}: verification failed on ${failures.length} fact(s); dispatching a fix round.`)
 
     // The verify-side analogue of the review loop's same-id-twice exit.

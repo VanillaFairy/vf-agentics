@@ -1,4 +1,4 @@
-// test/vfa-develop-pins-data.test.mjs — regression-net orders.
+// test/vfa-develop-pins-data.test.mjs — regression-net orders, and the round nobody can win.
 //
 // The discriminator asks one question of every test an order lands: did it fail before the
 // change under it? That is the right question for a test written to pin a behaviour change,
@@ -10,9 +10,15 @@
 // correct test-only order for two fix rounds and needed a human to override the gate:
 // docs/2026-09-03-discriminator-false-positive-regression-nets.md.
 //
-// `pins: 'data'` is how a plan says what kind of test it commissioned, so the base question is
-// not asked at all. Shown to bite by disabling `pinsData`, which fails the first and fifth
-// tests below; the rest are the negative controls that hold either way.
+// Two mechanisms are pinned here, and they are deliberately independent. `pins: 'data'` lets
+// the plan say what kind of test it commissioned, so the base question is not asked at all.
+// `discriminator_undecidable` catches the order the plan FAILED to mark: a discriminator
+// standing alone as the only failing fact cannot be moved by any commit inside the order's
+// locus, so it goes to a person on round one instead of buying a round to learn that again.
+//
+// Both mechanisms were shown to bite the way this file's own subject demands: disabling
+// `pinsData` fails the first and fifth tests here, disabling `discriminatorUndecidable` fails
+// the sixth and seventh, and the rest are the negative controls that hold either way.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -97,6 +103,8 @@ const run = (over = {}, orders = [NET]) =>
     agent: cast({ plan: plan(orders), ...over }),
   })
 
+const unmarked = { ...NET, pins: 'behaviour' }
+
 // --- the marker ------------------------------------------------------------------------
 
 test("a pins:'data' order whose tests pass now is verified, though they passed at base too",
@@ -163,3 +171,58 @@ test("a pins:'data' coder is told to run the mutation by hand rather than break 
     assert.match(codePrompt, /NOT required to fail against the base commit/)
     assert.match(codePrompt, /still required to PASS now/)
   })
+
+// --- the unwinnable round --------------------------------------------------------------
+
+test('an unmarked order failing ONLY the discriminator escalates on round one, buying no fix round',
+  async () => {
+    const { result, prompts } = await run({ 'verify:': netVerified() }, [unmarked])
+
+    assert.ok(!prompts.some((p) => p.opts.label === 'fix:W1'),
+      'no commit inside this locus can move the base answer, so the round is not bought')
+
+    const esc = result.escalations.find((e) => e.id === 'W1')
+    assert.ok(esc, 'it still does not merge — a person rules on it')
+    assert.equal(esc.reason, 'discriminator_undecidable')
+  })
+
+test('the undecidable escalation quotes the order\'s own acceptance criteria', async () => {
+  const { result } = await run({ 'verify:': netVerified() }, [unmarked])
+
+  const esc = result.escalations.find((e) => e.id === 'W1')
+  const quoted = esc.unresolved.map((f) => f.evidence || '').join('\n')
+
+  assert.match(quoted, /ACCEPTANCE CRITERIA AS PLANNED/)
+  assert.match(quoted, /deleting slices from prop\.woodboard/,
+    'the check that DOES fit this order is in its criteria, and a person needs to see it')
+  assert.match(quoted, /pins: 'data'/, 'and the marker that would have prevented this')
+})
+
+test('a discriminator failure alongside a real one still buys a fix round', async () => {
+  // The short-circuit fires only when the discriminator is the ONLY thing failing. A broken
+  // suite beside it is something a coder can genuinely move, and withholding the round there
+  // would trade one false verdict for another.
+  const { result, prompts } = await run({
+    'verify:': netVerified({
+      suite: 'failed', suite_output_tail: '3 failing',
+      failing_tests: [{ file: 'src/other.ts', id: 'other > works' }],
+    }),
+    'fix:': coded({ commits: [], head_sha: A40 }),
+  }, [unmarked])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'fix:W1'),
+    'a failing suite is fixable, so the round is worth buying')
+  assert.ok(result.escalations.some((e) => e.reason !== 'discriminator_undecidable'))
+})
+
+test('a build failure is not read as an undecidable discriminator', async () => {
+  // `verifiable` is false here, so the order fails for a reason that has nothing to do with
+  // the discriminator — and dropping the discriminator would not rescue it either.
+  const { result, prompts } = await run({
+    'verify:': netVerified({ build: 'failed' }),
+    'fix:': coded({ commits: [], head_sha: A40 }),
+  }, [unmarked])
+
+  assert.ok(prompts.some((p) => p.opts.label === 'fix:W1'), 'a broken build is a coder\'s problem')
+  assert.ok(!result.escalations.some((e) => e.reason === 'discriminator_undecidable'))
+})
