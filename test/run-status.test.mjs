@@ -9,7 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { deriveRun, statusOf, partitionOf, labelOf, plannedAt } from '../lib/run-status.mjs'
+import { deriveRun, statusOf, partitionOf, labelOf, plannedAt, ordersOf, stagesOf } from '../lib/run-status.mjs'
 
 const RAW = (waves, coupled = []) => JSON.stringify({ waves, coupled })
 
@@ -435,4 +435,118 @@ test('an order that escalated and later merged is not reported as escalated', ()
   assert.deepEqual(run.escalated, [])
   assert.deepEqual(run.merged, ['W2'])
   assert.doesNotMatch(run.label, /escalated/)
+})
+
+// --- the per-order view ----------------------------------------------------------
+//
+// The run row answers "is this run finished". These answer "how far through is it, and what
+// is left" — the question somebody has while a run is still going, and the one a flat
+// merged-out-of-total cannot reach. What matters here is that a wrong answer costs more than
+// no answer: an order reported pending while a coder is inside it reads as work not started,
+// and an order whose escalation is reported after a later invocation approved it reads as
+// broken work that is in fact reviewed and waiting to merge.
+
+test('partitionOf carries the wave layout, not only how many waves there were', () => {
+  const { layout } = partitionOf(plan({ partition_raw: RAW([['W1'], ['W2', 'W3']], ['W4']) }))
+
+  assert.deepEqual(layout, [['W1'], ['W2', 'W3']])
+})
+
+test('an unreadable partition yields no layout rather than a guessed one', () => {
+  assert.deepEqual(partitionOf(plan({ partition_raw: 'not json' })).layout, [])
+})
+
+test('stagesOf names the stage each order last recorded, across both files', () => {
+  const state = [
+    { kind: 'order-approved', seq: 6, order: 'W1' },
+    { kind: 'order-escalated', seq: 7, order: 'W3' },
+  ]
+  const journal = [
+    { kind: 'coder-done', seq: 1, order: 'W1' },
+    { kind: 'verify-observed', seq: 2, order: 'W1' },
+    { kind: 'review-observed', seq: 3, order: 'W1' },
+    { kind: 'coder-done', seq: 4, order: 'W2' },
+  ]
+
+  assert.deepEqual(Object.fromEntries(stagesOf(state, journal)), {
+    W1: 'approved', W2: 'implemented', W3: 'escalated',
+  })
+})
+
+test('stagesOf orders by seq, so a later approval beats an earlier escalation', () => {
+  // The resume shape: invocation 1 escalated W1, invocation 2 retried it and its review
+  // closed. Both lines are on disk forever, and only their order says which one is true now.
+  const escalatedThenApproved = [
+    { kind: 'order-escalated', seq: 4, order: 'W1' },
+    { kind: 'order-approved', seq: 11, order: 'W1' },
+  ]
+
+  assert.equal(stagesOf(escalatedThenApproved, []).get('W1'), 'approved')
+  // And the same two records the other way round mean the other thing.
+  assert.equal(stagesOf([...escalatedThenApproved].reverse().map(
+    (e, i) => ({ ...e, seq: i + 1 })), []).get('W1'), 'escalated')
+})
+
+test('stagesOf reads the retired order-verified line as a measurement', () => {
+  // Runs planned before 0.14.0 recorded verification as a state line. Dropping the reader
+  // would blank the progress of every one of them.
+  assert.equal(stagesOf([{ kind: 'order-verified', seq: 1, order: 'W1' }], []).get('W1'),
+    'measured')
+})
+
+test('stagesOf ignores wave lines, which are about a wave and not about an order', () => {
+  assert.deepEqual([...stagesOf([wave({ merged: ['W1'] })], []).keys()], [])
+})
+
+test('ordersOf places every order in its wave with the stage it last recorded', () => {
+  const state = [
+    { kind: 'order-approved', seq: 2, order: 'W2' },
+    wave({ merged: ['W1'] }),
+  ]
+  const journal = [{ kind: 'coder-done', seq: 3, order: 'W3' }]
+  const run = deriveRun('20260816-143005', plan(), state, null, [], journal)
+
+  assert.deepEqual(ordersOf(run), [
+    { id: 'W1', wave: 1, stage: 'merged' },
+    { id: 'W2', wave: 1, stage: 'approved' },
+    { id: 'W3', wave: 2, stage: 'implemented' },
+  ])
+})
+
+test('an order with no record at all is pending, never invented as something else', () => {
+  const run = deriveRun('20260816-143005', plan(), [], null)
+
+  assert.deepEqual(ordersOf(run).map((o) => o.stage), ['pending', 'pending', 'pending'])
+})
+
+test('a merge overrides the recorded stage, whichever stage that was', () => {
+  // The wave line is the workflow's record and the journal line is the merging agent's. An
+  // order both of them name as merged is merged, whatever the last per-order line said.
+  const state = [
+    { kind: 'order-approved', seq: 1, order: 'W1' },
+    wave({ merged: ['W1'] }),
+  ]
+
+  assert.equal(ordersOf(deriveRun('20260816-143005', plan(), state, null))[0].stage, 'merged')
+})
+
+test('coupled orders are listed with no wave, not folded in among the pending', () => {
+  // They were routed to the session, which records nothing. Calling them pending would file
+  // work nobody is doing beside work the pipeline is about to pick up.
+  const run = deriveRun('20260816-143005',
+    plan({ partition_raw: RAW([['W1']], ['W2', 'W3']) }), [], null)
+
+  assert.deepEqual(ordersOf(run).filter((o) => o.stage === 'coupled'),
+    [{ id: 'W2', wave: null, stage: 'coupled' }, { id: 'W3', wave: null, stage: 'coupled' }])
+})
+
+test('an unreadable plan yields no order rows, and still reports what the agents recorded', () => {
+  // "I cannot tell which orders exist" and "there are no orders" are different answers. The
+  // stages survive either way: they were recorded by the agents that did the work, and a plan
+  // that will not parse does not unsay them.
+  const run = deriveRun('20260816-143005', null, [{ kind: 'order-approved', seq: 1, order: 'W1' }])
+
+  assert.equal(run.status, 'unreadable')
+  assert.deepEqual(ordersOf(run), [])
+  assert.deepEqual(run.order_stage, { W1: 'approved' })
 })

@@ -1888,3 +1888,70 @@ test('the planner is told to declare what each order reads', async () => {
   assert.match(p, /\breads\b/)
   assert.match(p, /does not modify|never modif|without modifying/i)
 })
+
+// --- the progress ledger --------------------------------------------------------------
+//
+// The only channel this script has to the session while it runs, because `phase()` cannot
+// carry a wave number: meta.phases is a pure literal, so every title in it is fixed, and all
+// of a run's waves land in the same `Implement` box. A session watching a twelve-order run
+// could see agents start and finish and still not tell wave 1 from wave 4.
+//
+// What is pinned is that the lines are DERIVED from the sets the result reports, not narrated
+// separately. A ledger that can disagree with the result it accompanies is worse than none:
+// the reader believes the running commentary and finds out at the end that it was wrong.
+
+const ledgerLines = (logs, caption) => {
+  const start = logs.findIndex((l) => l.startsWith(caption))
+  if (start === -1) return []
+  const rest = logs.slice(start + 1)
+  const end = rest.findIndex((l) => !l.startsWith('  '))
+  return rest.slice(0, end === -1 ? rest.length : end).map((l) => l.trim())
+}
+
+test('the whole order list is reported before the first wave is dispatched', async () => {
+  const orders = [order('W1'), order('W2', { deps: ['W1'] }), order('W3')]
+  const { logs } = await run({
+    agent: happyAgents({ plan: wavedPlan(orders, [['W1'], ['W2', 'W3']]) }),
+  })
+
+  const opening = logs.findIndex((l) => l.startsWith('Plan — '))
+  const firstDispatch = logs.findIndex((l) => l.startsWith('Wave 1 of 2:'))
+
+  assert.ok(opening !== -1, 'no opening ledger: the run never says what it is about to do')
+  assert.ok(opening < firstDispatch, 'the list arrives after the work it lists has started')
+  assert.match(logs[opening], /0 of 3 waved order\(s\) merged/)
+  assert.deepEqual(ledgerLines(logs, 'Plan — '), ['not started: W1 W2 W3'])
+})
+
+test('each order moves buckets as it settles, and the tally moves with it', async () => {
+  const orders = [order('W1'), order('W2'), order('W3')]
+  const { logs, result } = await run({
+    agent: happyAgents({
+      plan: wavedPlan(orders, [['W1', 'W2'], ['W3']]),
+      'verify:': (prompt) => prompt.includes('WORK ORDER W2')
+        ? verified({ build: 'failed' })
+        : verified(),
+      'fix:': coded({ status: 'blocked', commits: [], summary: 'cannot fix' }),
+    }),
+  })
+
+  assert.deepEqual(ledgerLines(logs, 'After wave 1 of 2'), ['merged: W1', 'escalated: W2', 'not started: W3'])
+  // The point of the whole thing: what the running commentary said and what the result says
+  // are the same sets, so a reader who acted on the log was not misled by it.
+  assert.deepEqual(result.integration.merged, ['W1', 'W3'])
+  assert.deepEqual(result.escalations.map((e) => e.id), ['W2'])
+})
+
+test('coupled orders are named apart, never inside the waved denominator', async () => {
+  // They go to the session; this loop never touches them. Counting them here would report
+  // every run with a coupled order as permanently short of a total it cannot reach.
+  const orders = [order('W1'), order('W2')]
+  const { logs } = await run({
+    agent: happyAgents({
+      plan: plan(orders, { partition_raw: JSON.stringify({ waves: [['W1']], coupled: ['W2'] }) }),
+    }),
+  })
+
+  assert.match(logs.find((l) => l.startsWith('Plan — ')), /of 1 waved order\(s\)/)
+  assert.ok(ledgerLines(logs, 'Plan — ').includes('routed to the session, not run here: W2'))
+})

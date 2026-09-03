@@ -5237,6 +5237,62 @@ try {
   log(`Weights: ${weightCounts.light || 0} light / ${weightCounts.standard || 0} standard / ` +
     `${weightCounts.heavy || 0} heavy.`)
 
+  // ------------------------------------------- 3d-bis. the progress ledger
+  //
+  // The only channel a workflow script has to the session while it is still running. `phase()`
+  // cannot carry a wave number — meta.phases is a pure literal, so every title in it is fixed,
+  // and all of a run's waves land in the same `Implement` box — which is why a session watching
+  // a twelve-order run could see agents starting and finishing and still not tell wave 1 from
+  // wave 4. So "what is done and what is left" travels in the narrator lines or not at all.
+  //
+  // Every set it reads is a set the RESULT reads: `landed`, `held`, `escalations`, `blocked`,
+  // `integration.approved_unmerged`. A line here and the run's own coverage therefore cannot
+  // disagree about what landed, because there is nothing here to disagree with.
+  //
+  // It reports the WAVED set only, and says so. Coupled orders were routed to the session and
+  // this loop never touches them; folding them into the denominator would report a run as
+  // permanently short of a total it was never going to reach.
+
+  // The rungs in the order they win. `merged` first because it is the only terminal one;
+  // `held` above `approved` because a held order is in `approved_unmerged` too, and the
+  // reason it has not merged is the thing worth saying.
+  const LEDGER = [
+    ['merged', (id) => landed.has(id)],
+    ['approved, held for its cycle', (id) => held.has(id)],
+    ['approved, awaiting merge', (id) => integration.approved_unmerged.includes(id)],
+    ['escalated', (id) => escalations.some((e) => e.id === id)],
+    ['blocked', (id) => blocked.some((b) => b.id === id)],
+    ['withheld', (id) => staleWithheldIds.includes(id) || treeWithheldIds.includes(id)],
+  ]
+
+  /**
+   * The whole waved set, one line per rung that has members, under a caption saying where the
+   * run stands. Rungs with nobody on them are left out — an empty bucket printed every wave is
+   * noise a reader learns to skip, and the reader who skips it misses the one that filled up.
+   */
+  function ledger(caption) {
+    const waved = waves.flat()
+    // The numerator is the same predicate the `merged` rung uses, over the same set, so the
+    // headline and the line under it cannot disagree. `landed.size` looked equivalent and is
+    // not: it is the run's whole merged set, and a resume seeds it before this loop runs.
+    const merged = waved.filter((id) => landed.has(id))
+    const seen = new Set()
+    const lines = []
+
+    for (const [label, holds] of LEDGER) {
+      const ids = waved.filter((id) => !seen.has(id) && holds(id))
+      for (const id of ids) seen.add(id)
+      if (ids.length > 0) lines.push(`  ${label}: ${ids.join(' ')}`)
+    }
+
+    const left = waved.filter((id) => !seen.has(id))
+    if (left.length > 0) lines.push(`  not started: ${left.join(' ')}`)
+
+    log(`${caption} — ${merged.length} of ${waved.length} waved order(s) merged:`)
+    for (const line of lines) log(line)
+    if (coupled.length > 0) log(`  routed to the session, not run here: ${coupled.join(' ')}`)
+  }
+
   if (hasTarget) {
     log(`Token target set: ${Math.round(remainingNow() / 1000)}k remaining. Waves will stop at ` +
       `a boundary rather than start work the target cannot cover.`)
@@ -5300,6 +5356,11 @@ try {
   // one worth acting on, and it needs no constant anybody has to keep true.
   let lastWaveSpend = 0
   let lastWaveDispatches = 0
+
+  // The list as it stands before anything is dispatched. On a fresh run every order reads as
+  // not started; on a resume this is the first thing that says what the predecessor got done,
+  // and it says it before the session has spent a token finding out.
+  if (waves.length > 0) ledger('Plan')
 
   for (let w = 0; w < waves.length; w++) {
     const waveNumber = w + 1
@@ -5379,7 +5440,10 @@ try {
       log(`Wave ${waveNumber}: ${salvagedHere.map((wo) => wo.id).join(', ')} salvaged at their ` +
         `approved stage; they go straight to the merge.`)
     }
-    if (runnable.length > 0) log(`Wave ${waveNumber}: dispatching ${runnable.length} order(s).`)
+    if (runnable.length > 0) {
+      log(`Wave ${waveNumber} of ${waves.length}: dispatching ${runnable.length} order(s) — ` +
+        `${runnable.map((wo) => wo.id).join(' ')}.`)
+    }
 
     const chains = runnable.length > 0
       ? await pipeline(runnable, implement, (carried, wo) => verifyAndReview(carried, wo, waveNumber))
@@ -5425,6 +5489,8 @@ try {
       approved.push(entry)
     }
 
+    const escalatedBefore = escalations.length
+
     for (const wo of runnable) {
       const chain = byOrder.get(wo.id) || lostChain(wo)
 
@@ -5464,6 +5530,9 @@ try {
         if (item && item.trim()) knowledge.add(item.trim())
       }
     }
+
+    log(`Wave ${waveNumber} of ${waves.length} settled: ${approved.length} through review, ` +
+      `${escalations.length - escalatedBefore} escalated. Merging.`)
 
     // ------------------------------------------------------- 4a. merge the wave
 
@@ -5637,6 +5706,8 @@ try {
           'merged')
       }
     }
+
+    ledger(`After wave ${waveNumber} of ${waves.length}`)
 
     if (lineStopped) continue
 

@@ -26,6 +26,12 @@ Prints `{"runs": [...]}`, newest first. Every field is derived from `plan.json` 
 `state.jsonl` on each call — nothing about a run's progress is stored as a claim, because a
 stored status outlives what it described and the file that is wrong is the one a human reads.
 
+For one run, order by order — "how far through is this one" rather than "which runs exist" —
+add `--run <runstamp>`. It prints `{run, orders, counts}`, where `orders` is `{id, wave,
+stage}` per work order, derived from the same two files on the same call. `develop` step 2-bis
+mirrors that into a todo list while a run is in flight; the same reading is what you show a
+user who asks how a run is getting on.
+
 Show a compact table: **change**, **status**, **merged/total**, **age**. Then, per run that
 has any, the open escalations. The change description is the column a human actually scans;
 lead with it, and never make the runstamp do that work.

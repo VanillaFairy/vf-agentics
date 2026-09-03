@@ -81,9 +81,10 @@ should prompt a documented procedure, not a third rediscovery.
 
 ## 3. `lib/run-status.mjs` — status is derived
 
-**Pure core:** `partitionOf`, `statusOf`, `deriveRun`, `labelOf`, `plannedAt`.
-**Reader:** `readRuns`, `isAncestor`. **CLI:** `node lib/run-status.mjs <repo-root>` prints
-`{"runs": [...]}`, newest first.
+**Pure core:** `partitionOf`, `statusOf`, `stagesOf`, `deriveRun`, `ordersOf`, `labelOf`,
+`plannedAt`. **Reader:** `readRuns`, `isAncestor`. **CLI:** `node lib/run-status.mjs
+<repo-root>` prints `{"runs": [...]}`, newest first; with `--run <runstamp>` it prints
+`{"run", "orders", "counts"}` for that one run.
 
 Statuses: `planned` (plan, no state) · `in-flight` (waved orders outstanding) · `integrated`
 (every waved order merged) · `landed` (integrated, and the integration head is an ancestor of
@@ -96,6 +97,23 @@ and has reached the user not at all. See `2026-08-17-increment-5-contracts.md` �
 
 Rows also carry `programme` and `slice` (registry copy 6), and `waves_recorded` counts **wave
 lines only** — `state.jsonl` carries two line types from increment 5 onward.
+
+**Per-order progress is derived the same way, from records the pipeline already writes.** The
+row answers "is this run finished"; `ordersOf` answers "where is each order right now", which
+is the question a caller has while the run is still going and the one a merged-out-of-total
+cannot reach. `stagesOf` reads the six kinds that name a stage — `coder-done`,
+`verify-observed` (and the retired `order-verified`), `review-observed`, `order-approved`,
+`order-escalated`, `merge-observed` — and takes the LAST one per order **by `seq`, across
+both files**. Not by a precedence over the collapsed sets: an order escalated in one invocation
+and approved in the next sits in both, and only the record order says which is true now.
+
+Two rules follow from what the records do and do not say. `measured` means a measurement is
+**on record**, never that it was green — deriving green is `develop`'s job on resume, against
+the order's role and locus, and a second implementation of it here is a second thing to drift.
+And `pending` covers three situations at once — never dispatched, dispatched and still
+running, blocked behind an order that did not land — because a block is a decision the wave
+loop makes at dispatch time and records nowhere. Splitting them here would be inventing the
+distinction (IRON LAW §2).
 
 Three rules the arithmetic exists to hold:
 

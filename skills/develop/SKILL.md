@@ -232,6 +232,52 @@ gathered today, and they are entitled to know which one they have.
    never touches the branch or the working tree the user is sitting in — advancing those is
    your act, at step 3d, after the human gate.
 
+2-bis. **Keep a todo list of the orders, and derive it — never maintain it.** A twelve-order
+   run is a long silence with agent labels scrolling past it. Two things answer "how much is
+   left", and they cover different moments:
+
+   - **While it runs**, the workflow narrates its own ledger: the whole order list before the
+     first dispatch, a line at each wave's start and settle, and the list again at every wave
+     close, with each order filed under merged / approved / escalated / blocked / not started.
+     That is live and costs this session nothing. Point the user at it instead of polling.
+   - **Whenever this session is awake** — on return, and any time the user asks where things
+     stand — derive the list and write it to your todo list:
+
+     ```bash
+     node "${CLAUDE_PLUGIN_ROOT}/lib/run-status.mjs" <repo-root> --run <runstamp>
+     ```
+
+     It prints `{run, orders, counts}`. `orders` is one row per work order — `{id, wave,
+     stage}` — recomputed from `state.jsonl` and `journal.jsonl` on every call. Write **one
+     todo per order**, its content naming the order and its wave, its status read off the
+     stage:
+
+     | stage | todo status | what the record actually says |
+     |---|---|---|
+     | `merged` | completed | it is in the integration branch |
+     | `approved` | completed | review closed; only the merge is left |
+     | `reviewed`, `measured`, `implemented` | in_progress | a stage recorded it; more to run |
+     | `escalated` | pending | it needs a person, and the escalation says why |
+     | `pending` | pending | not dispatched, running, or blocked — the record cannot tell |
+     | `coupled` | pending | routed to you; the pipeline never ran it |
+
+     **`measured` means a measurement is on record, not that it was green.** Say "a
+     measurement is on record for W2", never "W2 is verified" — the same care
+     `/vf-agentics:runs` takes with `measured_unapproved`, and for the same reason: whether it
+     was green is derived on resume against the order's role, and this listing does not repeat
+     that computation.
+
+   **The list is a view, not a ledger.** Refresh it from the CLI; never move an item because
+   you believe something has happened. Going stale between refreshes is fine and expected. The
+   list disagreeing with `state.jsonl` is not, and hand-editing is the only route to it —
+   `## Afterwards` forbids the hand-maintained kind for exactly this reason.
+
+   **A fresh run has nothing to seed from at launch**, because planning happens inside the
+   workflow; the first refresh that can say anything is after it returns, or one the user asks
+   for mid-run. **A resume does** — its plan is already on disk — so seed the list before you
+   launch. The runstamp comes back in `result.plan_path`; before that, the same CLI with no
+   `--run` lists every run and its runstamp.
+
 3. On return, first check `checkpoint`. When it is non-null, **nothing was dispatched** —
    and `checkpoint.reason` says why. Branch on it; the cases want different
    conversations, and treating them alike either asks the human to rule on an empty list or
