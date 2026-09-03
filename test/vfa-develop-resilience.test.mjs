@@ -763,18 +763,45 @@ test('the state line the recorder is handed digests to what lib/ledger.mjs compu
     }
   })
 
+const refusing = (labels) => (prompt, opts) =>
+  (labels.includes(opts.label || '')
+    ? { stop_reason: 'unwritable', path: '', notes: 'the share went read-only' }
+    : { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' })
+
 test('a reconciliation whose record cannot be written is a named gap, not a silent one', async () => {
   // This can be the only line an invocation writes. Losing it silently leaves a run reporting
   // itself finished while its own log still says those orders never landed.
   const { result } = await reconcilable({
-    'record:': (prompt, opts) => ((opts.label || '') === 'record:reconcile'
-      ? { stop_reason: 'unwritable', path: '', notes: 'the share went read-only' }
-      : { stop_reason: 'recorded', path: RUN_DIR + '/state.jsonl', notes: 'appended' }),
+    'record:': refusing(['record:reconcile', 'record:reconcile:retry']),
   })
 
   assert.equal(result.coverage.complete, false)
   assert.ok(result.coverage.failed_channels.includes('run-state'))
   assert.ok(result.coverage.unreached.some((u) => /W2.*not written to/s.test(u)))
+})
+
+test('a REFUSED ledger write buys one fresh recorder, and a run whose retry lands is not degraded',
+  async () => {
+    // A refusal is the writer saying it checked the digest and appended nothing, so a second
+    // dispatch cannot duplicate the line — which is what makes the retry safe to take. Run
+    // 20260902-124933 lost seven merge records to a single refusal with no second attempt.
+    const { result, prompts } = await reconcilable({
+      'record:': refusing(['record:reconcile']),
+    })
+
+    assert.ok(prompts.some((p) => p.opts.label === 'record:reconcile:retry'),
+      'a fresh agent gets the same line — the first one is out of moves, not unlucky')
+    assert.ok(!result.coverage.failed_channels.includes('run-state'),
+      'the line is on disk, so nothing about this run is degraded')
+  })
+
+test('an unwritable record is retried once and not again', async () => {
+  const { prompts } = await reconcilable({
+    'record:': refusing(['record:reconcile', 'record:reconcile:retry']),
+  })
+
+  const tries = prompts.filter((p) => (p.opts.label || '').startsWith('record:reconcile'))
+  assert.equal(tries.length, 2, 'one attempt and one retry; a loop here would never end')
 })
 
 test('a run that merged before it recorded anything keeps the base it was cut from', async () => {

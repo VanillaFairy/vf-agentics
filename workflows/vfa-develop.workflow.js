@@ -2731,14 +2731,32 @@ function appendState(entry, label) {
   const wire = JSON.stringify(entry)
   const digest = fnv1a(canonical(JSON.parse(wire)))
 
-  const next = stateWrites.then(() =>
-    agent(recorderPrompt(planPath, entry, digest), {
+  // One retry, and only on a REFUSAL. `unwritable` is the writer saying it checked the digest
+  // and appended nothing, so a second dispatch cannot duplicate the line — while a throw or a
+  // null leaves the outcome unobserved, and retrying there could append it twice. A fresh
+  // agent is the point: the recorder is already told to re-run the command once itself, so
+  // reaching here means that agent is out of moves rather than unlucky.
+  const write = async () => {
+    const first = await agent(recorderPrompt(planPath, entry, digest), {
       agentType: 'vf-agentics:run-state', effort: 'low', schema: RECORDED,
       phase: 'Integrate', label,
-    }).catch((e) => {
-      log(`WARNING: the run-state write for ${label} failed: ${e && e.message}`)
-      return null
-    }))
+    })
+
+    if (!first || first.stop_reason !== 'unwritable') return first
+
+    log(`The run-state write for ${label} was refused (${first.notes || 'no reason given'}); ` +
+      `re-dispatching it once.`)
+
+    return agent(recorderPrompt(planPath, entry, digest), {
+      agentType: 'vf-agentics:run-state', effort: 'low', schema: RECORDED,
+      phase: 'Integrate', label: label + ':retry',
+    })
+  }
+
+  const next = stateWrites.then(write).catch((e) => {
+    log(`WARNING: the run-state write for ${label} failed: ${e && e.message}`)
+    return null
+  })
 
   // The chain has to survive a failed link. A rejection left uncaught here would poison every
   // later append — one unwritable line would silently end the run's whole durable record.
