@@ -2999,7 +2999,20 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers, round) {
       }))
 }
 
-function integrationReviewPrompt(merged) {
+function integrationReviewPrompt(merged, outstanding) {
+  const partial = (outstanding || []).length === 0 ? '' :
+    `THIS IS A PARTIAL MERGE. These planned orders are NOT in the tree you are reading:\n` +
+    (outstanding || []).map((id) => {
+      const wo = orderById.get(id)
+      return '   ' + id + (wo ? '   ' + wo.title : '')
+    }).join('\n') + `\n\n` +
+    `Read every finding you are about to make against that fact. A gap you can see may be ` +
+    `the hole one of those orders fills, and a fix that is right for this tree can be exactly ` +
+    `wrong once they land — one run's integration finding proposed a change that ran opposite ` +
+    `to the correct one for precisely this reason. Where a finding depends on what is missing, ` +
+    `SAY WHICH ORDER in its evidence rather than dropping the finding: an incomplete tree is ` +
+    `something to reason about out loud, not to review as though it were whole.\n\n`
+
   return `Adversarially review the WHOLE change, as it now stands merged. This is the ` +
     `integration review: every order below passed its own review in its own worktree, so ` +
     `what you are hunting is the class of defect that only exists once they are together.\n\n` +
@@ -3012,6 +3025,7 @@ function integrationReviewPrompt(merged) {
     `only: log, show, diff. Never check out, stage, or otherwise touch this tree.\n\n` +
     `THE CHANGE: ${change}\n\n` +
     `ORDERS MERGED, IN MERGE ORDER:\n${orderLines(merged)}\n\n` +
+    partial +
     callerNotes() +
     `Look for what per-order review structurally cannot see: a contract one order defined ` +
     `and another implemented differently; a function two orders each half-wired; duplicated ` +
@@ -5941,7 +5955,14 @@ try {
 
     const mergedOrders = integration.merged.map((id) => orderById.get(id)).filter(Boolean)
 
-    const review = await agent(integrationReviewPrompt(mergedOrders), {
+    // Every planned order that is NOT in this head. A review over a partial merge can be
+    // accurate about the state it saw and still point the wrong way once the missing orders
+    // land — run 20260902-124933 produced an integration finding whose correct fix ran
+    // OPPOSITE to the one proposed, because two coupled orders were still outstanding. The
+    // reviewer is told, and so is everyone who reads a finding it reports.
+    const outstanding = [...orderById.keys()].filter((id) => !integration.merged.includes(id))
+
+    const review = await agent(integrationReviewPrompt(mergedOrders, outstanding), {
       agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
       phase: 'Integrate', label: 'review:integration', ...judge,
     }).catch((e) => {
@@ -5961,9 +5982,13 @@ try {
 
       log(`Integration review: ${criticals.length} critical, ${findings.length - criticals.length} other.`)
 
+      const partial = outstanding.length === 0 ? '' :
+        ' — REVIEWED OVER A PARTIAL MERGE: ' + outstanding.join(', ') + ' did not land, so ' +
+        'this finding may read differently, or point the other way, once they do'
+
       for (const finding of criticals) {
         extraUnreached.push('integration review [' + finding.id + '] ' + finding.file + ':' +
-          finding.line + ' — ' + finding.claim)
+          finding.line + ' — ' + finding.claim + partial)
       }
       if (criticals.length > 0) extraRemaining.push('integration')
     }
