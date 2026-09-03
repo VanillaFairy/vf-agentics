@@ -60,6 +60,19 @@ const DESIGN_CLAUSES = [
       `other grade is bookkeeping, and without this sentence an unanswered blocking question ` +
       `reaches the planner as a blocking gap instead — one survey and one planning pass later.`,
   },
+  {
+    // Tolerant of case: the phrase heads a section, and a rule that fires on a capital letter
+    // teaches people to phrase around it rather than to mean it.
+    pattern: /\bwhere\s+the\s+build\s+runs\b/i,
+    message:
+      `The design skill hands off without asking where the build runs. Chaining straight ` +
+      `into develop is the reading an edit falls into, and it is the expensive one: the ` +
+      `build then inherits the whole design conversation — interview, survey returns, every ` +
+      `probe round — and re-reads it on every turn of a run that lasts hours, for context ` +
+      `that stopped being load bearing the moment the document was written. The document is ` +
+      `the product of this pass, so a fresh session loses nothing; only the user knows which ` +
+      `they want, which is why this is a question and not a default.`,
+  },
 ]
 
 const PROGRAMME_CLAUSES = [

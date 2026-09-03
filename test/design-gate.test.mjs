@@ -17,6 +17,7 @@ const WHOLE = [
   'Hand off with Skill vf-agentics:develop once ratified.',
   'HARD GATE. Nothing is implemented until the user ratifies.',
   'A design with an open blocking question does not hand off.',
+  "Where the build runs is the user's call: ask before chaining into develop.",
 ].join('\n')
 
 const without = (line) => WHOLE.split('\n').filter((l) => l !== WHOLE.split('\n')[line]).join('\n')
@@ -53,8 +54,25 @@ test('a missing blocking-question refusal is one violation naming it', () => {
   assert.match(found[0].message, /blocking/)
 })
 
-test('an empty source reports all three, so a rewrite cannot lose them quietly', () => {
-  assert.equal(check('', PATH).length, 3)
+test('a missing where-the-build-runs question is one violation naming it', () => {
+  const found = check(without(3), PATH)
+
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /where the build runs/)
+})
+
+test('the question survives however the section is capitalised', () => {
+  // The phrase heads a section, so it is naturally capitalised; a rule that fires on a
+  // capital letter teaches people to phrase around it rather than to mean it.
+  const heading = WHOLE.replace(
+    "Where the build runs is the user's call: ask before chaining into develop.",
+    '### where the build runs - ask, do not assume')
+
+  assert.deepEqual(check(heading, PATH), [])
+})
+
+test('an empty source reports all four, so a rewrite cannot lose them quietly', () => {
+  assert.equal(check('', PATH).length, 4)
 })
 
 test('the handoff must be namespaced — a bare develop does not resolve', () => {
@@ -121,7 +139,7 @@ test("design's clauses are not applied to the programme skill, or the reverse", 
   // for each other's contracts, which is how the widening goes wrong.
   assert.deepEqual(check(WHOLE, PATH), [])
   assert.equal(check(WHOLE, PROG).length, 2)
-  assert.equal(check(PROGRAMME_WHOLE, PATH).length, 3)
+  assert.equal(check(PROGRAMME_WHOLE, PATH).length, 4)
 })
 
 test('a file the map does not name is not judged at all', () => {

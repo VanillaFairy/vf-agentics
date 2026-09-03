@@ -333,18 +333,66 @@ out of the document rather than retyping it:
 node "${CLAUDE_PLUGIN_ROOT}/lib/programme.mjs" --section change --file <the design document>
 ```
 
-```
-Skill({ skill: 'vf-agentics:develop', args: '<that output, verbatim>' })
-```
-
-and pass the settled-evidence block through as `notes` — `--section settled-evidence` prints
-that one the same way. `develop` surveys, plans, partitions and implements from there.
+`--section settled-evidence` prints the planner's payload the same way. Those two strings are
+the whole handoff — `develop` surveys, plans, partitions and implements from them.
 
 **Why the extra command instead of copying the paragraph.** The change string is a key, not a
 description: `develop`'s existing-run guard and its resume guard both compare it exactly. A
 rewrapped line or a normalized dash between one session and the next is a different change as
 far as those guards can tell, so the duplicate they exist to catch goes through and the same
 work is planned and implemented twice. Bytes never ride a model.
+
+### Where the build runs — ask, do not assume
+
+With both strings in hand, ask the user where `develop` should run. Use `AskUserQuestion`,
+with these two options and no others; do not print them as prose and do not pick for them:
+
+- **New session (Recommended)** — start `develop` in a fresh context, from the document.
+- **This session** — chain straight into `develop` here.
+
+**Why this is a question at all, and why the default leans away from the obvious.** Chaining
+looks free — the design is right there, and one invocation carrying the whole change is what
+this pipeline is for. It is not free. Everything this pass accumulated is still in the
+context: the interview, the survey's returns, every probe round's findings. `develop` inherits
+all of it and re-reads it on every turn of a run that can last hours, and none of it is load
+bearing once the document exists. A measured run of this plugin started its build phase
+carrying nearly 400k tokens of settled design conversation and paid for that inheritance on
+every one of the build's turns; the same run's build driver, dispatching 185 agents over seven
+hours, added only 70k of its own. The expensive context was inherited, not generated.
+
+Nothing is lost by starting fresh, because nothing that matters lives in the conversation. The
+document on disk is the entire product of this pass — that is what the section markers are for,
+and what makes a session that died mid-design recoverable. A fresh session reads what a
+continuing one would only be remembering.
+
+**When continuing here is the better call — say so if it is.** The recommendation follows the
+size of what this pass actually accumulated, not a rule. A short interview, a small survey and
+a probe that cleared in one round leave little behind, and the handoff is then cheaper than the
+re-entry. Long interviews, a wide survey, or a second and third probe round are the expensive
+cases, and they are the common ones. Read the pass you just ran and recommend accordingly —
+but let the user answer either way.
+
+**If they choose this session:**
+
+```
+Skill({ skill: 'vf-agentics:develop', args: '<the change string, verbatim>' })
+```
+
+with the settled-evidence block as `notes`. `develop` is already aware it may be starting deep
+— that is what its `--pause-between-waves` and `--plan-only` flags are for, and this is the
+case they were written for. Say the plan size out loud when it prints.
+
+**If they choose a new session:** give them one block to copy, carrying the extracted bytes
+inline, and name the document so nothing has to be reconstructed:
+
+```
+/vf-agentics:develop <the change string, verbatim>
+```
+
+Copy-paste preserves the bytes; a retype does not, and the guards above cannot tell the
+difference between a retyped change and a new one. Then stop. Do not invoke `develop` yourself
+after handing over the block — starting the run here is precisely what the user declined, and
+the design is already durable without it.
 
 A **programme** hands off to the graph rather than to the build:
 
