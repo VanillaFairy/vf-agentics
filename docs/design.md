@@ -138,6 +138,16 @@ refuses a line it cannot prove intact. A line the workflow mints whole travels b
 slot — no path to escape, no apostrophe to close — because a digest makes corruption detectable
 without making the retry likelier to succeed.
 
+**One argv slot has a ceiling, and it is not the encoding's.** A command line is finite; Windows
+caps a process's at 8191 characters, and a wave line is as large as the wave was interesting. So
+the token may instead be written to a file and the path passed — short whatever the line weighs,
+and read without crossing a model at all. A heredoc and a script file are not alternatives:
+they put the same token on the same one command line. The digest is minted over the line as the
+*writer* will see it, after its JSON round trip, so a builder that left a field unset cannot
+refuse a line nobody mistyped. And a refusal — the writer's own statement that it appended
+nothing — buys exactly one fresh recorder, while a dispatch that threw or returned nothing buys
+none: the outcome there is unobserved, and a retry could append the line twice.
+
 ## The roles, and their asymmetries
 
 The agent roster is small on purpose, and its interesting property is that the roles are
@@ -237,6 +247,24 @@ failed on base and passes now; a `red` order needs the mirror image, and a green
 a `refactor` order needs a suite that actually ran. The discriminator is the highest-value check
 in the system — nothing else closes the passes-for-the-wrong-reason hole.
 
+**And it has one class of order it cannot be right about.** "Did this test fail before the change
+under it?" is the wrong question for a test that exists to hold something *already correct* in
+place — the shipped bundle is still valid, the generated file still matches its source. Those
+assertions were true at base by design, and the only way to make one fail there would be to break
+the data first. So an order says which kind of test it commissioned: `pins: 'data'` drops the
+base-failure conjunct and keeps `passes_now`, a waiver one conjunct wide, inert on a `red` order
+whose tests must fail at base. What checks such a test instead is a mutation the planner writes
+into the acceptance criteria — delete this field, duplicate that id, and which case must fail —
+run by hand and reported, because nothing mechanical runs it.
+
+**Where the plan failed to say so, the round is not bought.** An ordinary order that fails
+verification with the discriminator as its only failing fact — asked as "would this have passed if
+the discriminator had asked nothing?" — cannot be moved by any commit inside its own locus. It
+escalates on round one as `discriminator_undecidable`, carrying the discriminator's findings and
+the order's own criteria side by side. The gate still holds and nothing merges; what stops is
+buying a second round to learn the same thing and restating a wrong-question verdict more
+confidently.
+
 **Review.** The blocking set is the round's criticals, plus its majors when the order is
 `contract: true` and the finding names a concrete failure scenario. The open set is that plus
 every prior blocker ruled unfixed that this round did not re-report — never narrowed to the
@@ -268,7 +296,21 @@ answers, one of which was an order escalated with a reason that described a defe
 
 **Completeness.** Every exit carries a coverage block whose `complete` is the AND of four loss
 arrays being empty. Degradation lands in exactly one named array plus prose. This is IRON LAW §4
-made mechanical: a partial result must never be indistinguishable from a whole one.
+made mechanical: a partial result must never be indistinguishable from a whole one. A failed
+side channel does not make a run incomplete — the run did the work; what failed is the record of
+it — but it is spelled out beside the escalations rather than left as a bare word in
+`failed_channels`, because the two channels that can fail this way cost the *next* invocation:
+a lost state line makes a resume re-derive outcomes from git, and a lost knowledge deposit makes
+the next run pay again to learn what this one learned.
+
+**An integration review over a partial merge says so, on every finding.** When some planned
+order did not land, the reviewer is told which orders are missing and asked to reason about the
+gap out loud rather than review the tree as though it were whole; every critical it reports
+carries the same caveat out to the human gate. A review of an incomplete tree can be entirely
+accurate about the state it saw and still point the wrong way once the missing orders arrive —
+one run's integration finding proposed a fix that ran opposite to the correct one for exactly
+this reason. A whole merge carries no caveat, because a warning that is always there is one
+nobody reads.
 
 **A red order never reaches the integration head alone.** A red's whole product is a failing
 test; merged by itself it makes the integration head red, and every later order is then measured
