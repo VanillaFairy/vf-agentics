@@ -37,6 +37,11 @@ const REQUIRED_IDS = [
   // The two agents that write files and the one that judges them must be held to the same
   // comment law, or the reviewer's minor is an opinion about a rule the coder never had.
   'comment-policy',
+  // Probe and design both dispose of the same findings, and a disposition described twice
+  // drifts toward whichever copy was edited last. The failure it guards is a field report:
+  // 46 blocking ambiguities delivered as prose, one question per turn, and a user who ruled
+  // past a computed gate because reading the findings cost more than the design did.
+  'probe-disposition',
 ]
 
 const OPEN = /<!--\s*vfa:verbatim\s+([a-z0-9-]+)\s*-->/g
