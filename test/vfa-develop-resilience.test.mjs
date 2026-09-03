@@ -780,6 +780,20 @@ test('a reconciliation whose record cannot be written is a named gap, not a sile
   assert.ok(result.coverage.unreached.some((u) => /W2.*not written to/s.test(u)))
 })
 
+test('a failed channel is spelled out beside the escalations, not left as a bare word', async () => {
+  // `failed_channels` is a list of words next to a list of sentences, and a reader skims past
+  // it. Both channels that can fail without failing the run — run-state and kb — cost the NEXT
+  // invocation rather than this one, which is exactly the kind of damage that has to be said
+  // out loud where a person is already looking.
+  const { result } = await reconcilable({
+    'record:': refusing(['record:reconcile', 'record:reconcile:retry']),
+  })
+
+  assert.ok(result.coverage.unreached.some((u) =>
+    /run-state channel failed .* must re-derive them from git/s.test(u)),
+  'the channel and what it costs, in the list a person actually reads')
+})
+
 test('a REFUSED ledger write buys one fresh recorder, and a run whose retry lands is not degraded',
   async () => {
     // A refusal is the writer saying it checked the digest and appended nothing, so a second

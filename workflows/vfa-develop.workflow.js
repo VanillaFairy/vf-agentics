@@ -1519,7 +1519,8 @@ function coverageOf(parts) {
     unreached: coupled.map(coupledNote)
       .concat(deferred.map(deferredNote))
       .concat(escalations.map(escalationNote))
-      .concat(extraUnreached),
+      .concat(extraUnreached)
+      .concat((parts.failedChannels || []).map(channelNote)),
     // Provenance, inherited rather than re-derived: whatever the evidence phase rested on the
     // knowledge base for is what this run rested on, and the one place that is decided is the
     // evidence phase. A null survey (increment 14 §4) writes its whole account here, because
@@ -1535,6 +1536,29 @@ function coverageOf(parts) {
     },
   }
 }
+
+// A failed channel used to travel in `failed_channels` and nowhere else, which reads past
+// easily — it is a list of bare words next to a list of sentences. The two that matter most
+// are the two that cost the NEXT invocation rather than this one: a run-state write that did
+// not land makes a resume re-derive what happened from git, and a kb deposit that did not land
+// makes the next run pay again to learn what this one already learned. Neither makes this run
+// incomplete, and neither should be discovered by reading a word list carefully.
+const CHANNEL_COST = {
+  'run-state': 'outcomes this invocation reached are missing from state.jsonl, so a resume ' +
+    'must re-derive them from git and may redo work that already landed',
+  kb: 'what this run learned was not deposited in the knowledge base, so the next run pays ' +
+    'to learn it again',
+  survey: 'the evidence phase did not complete, so everything below it rests on less than it ' +
+    'was meant to',
+  worktrees: 'a worktree could not be created or released, so some order had nowhere to stand',
+  scavenge: 'work left by an earlier invocation could not be read, so some of it may have ' +
+    'been rebuilt from scratch',
+  'integration-review': 'nothing looked at the merged change as a whole',
+}
+
+const channelNote = (channel) =>
+  'the ' + channel + ' channel failed in this invocation' +
+  (CHANNEL_COST[channel] ? ': ' + CHANNEL_COST[channel] : '')
 
 const coupledNote = (id) => id + ': coupled — session must implement'
 const deferredNote = (id) => id + ': deferred — re-invoke with resume_path'
