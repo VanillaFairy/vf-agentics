@@ -249,7 +249,11 @@ Per branch, in the target repository:
 
 1. `git worktree list` — if the branch already has a worktree, report that path and move on.
    Git refuses the same branch in two worktrees, so a second `add` would fail anyway.
-2. Otherwise `git worktree add .claude/worktrees/vfa-<the branch's last path segment> <branch>`.
+2. Otherwise `git worktree add <the path your dispatch names> <branch>`. That path belongs to
+   the repository your dispatch names, **not** to whatever directory your shell starts in —
+   `cd` there first and confirm with `git rev-parse --show-toplevel`. A worktree created
+   relative to the wrong place still works, is still reported, and is never found again: one
+   landed nested inside the calling session's own worktree that way.
 3. Report the **absolute** path, confirmed by entering it. Everything downstream is dispatched
    into the path you report, and a wrong one sends a review at the wrong tree.
 

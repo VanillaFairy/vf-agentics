@@ -1214,11 +1214,22 @@ const newKnowledge = () => {
 // topics as it always has.
 const kbChains = new Map()
 
-// A knowledge base is PER REPOSITORY — no sharing and no merging across roots — so a run spanning
-// several writes into the first, which is the repository its plan, its run directory and its
-// integration branch already live in. A function rather than a constant because a resumed run
-// adopts `roots` from the envelope its plan was written under.
-const kbRepo = () => String(roots).split(/[,;\n]/)[0].trim() || '.'
+// The repository this run OWNS: its plan, its run directory, its integration branch and its
+// worktrees all live here. A run may span several roots and everything it writes still goes
+// into the first of them. A function rather than a constant because a resumed run adopts
+// `roots` from the envelope its plan was written under.
+const primaryRoot = () => String(roots).split(/[,;\n]/)[0].trim() || '.'
+
+// A knowledge base is PER REPOSITORY — no sharing and no merging across roots — which is the
+// same rule, arrived at from the knowledge base's own side.
+const kbRepo = primaryRoot
+
+// Where every worktree this run creates goes, named from `roots` and never from a shell's
+// working directory. Run 20260902-124933 asked for `.claude/worktrees/vfa-<order>` as a bare
+// relative path and got it under the ORCHESTRATING session's own worktree, because that is
+// where the agent's Bash happened to start — the tree landed somewhere nobody would look for
+// it. The run's recorded roots were correct the whole time; nothing was reading them here.
+const worktreeDir = () => primaryRoot().replace(/\/+$/, '') + '/.claude/worktrees'
 
 // The same normalization `lib/kb.mjs` performs on every path it is handed, written here so the
 // key a chain comes back under is the key this side looks it up by.
@@ -2024,8 +2035,13 @@ function worktreePrompt(needed) {
     `For each one, in the target repository:\n\n` +
     `1. git worktree list — if that branch already has a worktree, report that path and move ` +
     `on. Git refuses the same branch in two worktrees, so a second add would fail anyway.\n` +
-    `2. Otherwise: git worktree add .claude/worktrees/vfa-<the branch's last path segment> ` +
+    `2. Otherwise: git worktree add ${worktreeDir()}/vfa-<the branch's last path segment> ` +
     `<branch>\n` +
+    `   That path is written out in full for a reason: it belongs to the REPOSITORY above, ` +
+    `not to whatever directory your shell happens to start in. cd into the repository first ` +
+    `and confirm with git rev-parse --show-toplevel before you create anything. A worktree ` +
+    `created relative to the wrong place still works and is still reported, and nobody finds ` +
+    `it again.\n` +
     `3. Report the ABSOLUTE path, confirmed by entering it. Everything downstream is ` +
     `dispatched into the path you report, and a wrong one sends a review at the wrong tree.\n\n` +
     `An entry you could not create or could not enter is LEFT OUT of made, with the reason in ` +
@@ -2088,7 +2104,9 @@ function setupPrompt(runstamp) {
       `   node -e "console.log(new Date().toISOString().replace(/[-:]/g,'').replace(/\\..+/,'').replace('T','-'))"\n` +
       `and use it below, then report the branch and path you actually used.\n`) +
     `\nBRANCH: vfa/<runstamp>-integration\n` +
-    `WORKTREE: .claude/worktrees/vfa-<runstamp>-integration (report it as an ABSOLUTE path)\n` +
+    `WORKTREE: ${worktreeDir()}/vfa-<runstamp>-integration — that path belongs to the ` +
+    `REPOSITORY above, not to the directory your shell starts in. cd there first and confirm ` +
+    `with git rev-parse --show-toplevel. Report the path you actually used, ABSOLUTE.\n` +
     (baseRef
       ? `BASE: the named ref ${baseRef}. Resolve it with git rev-parse ${baseRef} and branch ` +
         `from what that gives you — NOT from the repository's current HEAD. If ${baseRef} ` +
