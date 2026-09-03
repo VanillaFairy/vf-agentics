@@ -2657,7 +2657,17 @@ function recorderPrompt(runDir, entry, digest) {
     `Read the writer's output. {"ok":true,...} means the line is on disk — return ` +
     `stop_reason recorded with the path it printed. {"ok":false,"error":...} means it refused; ` +
     `the error names what was wrong. Copy the command again — the whole token — and run it once ` +
-    `more. If it refuses a second time, return stop_reason unwritable with the error verbatim ` +
+    `more.\n\n` +
+    `If the SHELL is what failed — a truncated line, an unmatched quote — the token was too ` +
+    `long for this platform's command line and retyping it will fail the same way every time. ` +
+    `A wave line carries every id the wave touched and everything its coders discovered, so ` +
+    `this happens. Do not try a heredoc or a script file: those put the same token on the same ` +
+    `one command line. Write it to a file in pieces instead, and pass the PATH:\n\n` +
+    `   printf %s '<first piece>' > state-line.b64\n` +
+    `   printf %s '<next piece>' >> state-line.b64\n` +
+    `   node "${pluginRoot}/lib/ledger.mjs" append "${runDir}" --file state --digest ${digest} ` +
+    `--b64-file state-line.b64\n\n` +
+    `Only when it has failed both ways: return stop_reason unwritable with the error verbatim ` +
     `in notes — your caller treats that as a degraded side channel and keeps going.\n\n` +
     `Record what you were handed and nothing else — you do not know which orders "should" ` +
     `have merged, and a wave that merged nothing is recorded as a wave that merged nothing.`

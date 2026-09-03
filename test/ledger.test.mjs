@@ -115,6 +115,48 @@ test('a line handed to the CLI as base64 lands byte-identically', async () => {
     'a backslash path and an apostrophe survive a transport with no metacharacters')
 })
 
+test('a line too long for a command line is passed as a FILE and lands the same way', async () => {
+  // base64 on one argv slot has a ceiling nothing about the encoding can lift: Windows caps a
+  // command line at 8191 characters, and a wave line is as large as the wave was interesting.
+  // lib/kb.mjs grew this escape hatch after run 20260902-124933 truncated an 8.1 KB deposit;
+  // the state ledger had none, and in the same run seven merge records were lost.
+  const { execFileSync } = await import('node:child_process')
+  const CLI = new URL('../lib/ledger.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+
+  const dir = runDir()
+  const entry = line({ discovered: Array.from({ length: 200 }, (_, i) => 'discovery number ' + i) })
+  const tokenPath = join(dir, 'state-line.b64')
+  writeFileSync(tokenPath, Buffer.from(JSON.stringify(entry), 'utf8').toString('base64'), 'utf8')
+
+  const out = JSON.parse(execFileSync(process.execPath,
+    [CLI, 'append', dir, '--file', 'state', '--digest', digestEntry(entry), '--b64-file', tokenPath],
+    { encoding: 'utf8' }))
+
+  assert.equal(out.ok, true, out.error)
+  assert.deepEqual(JSON.parse(lines(dir)[0]), entry)
+})
+
+test('a file the writer cannot read is refused by name, not read as an empty line', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const CLI = new URL('../lib/ledger.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+
+  const dir = runDir()
+  let threw = null
+  try {
+    execFileSync(process.execPath,
+      [CLI, 'append', dir, '--file', 'state', '--digest', 'deadbeef',
+       '--b64-file', join(dir, 'nothing-here.b64')],
+      { encoding: 'utf8' })
+  } catch (err) {
+    threw = err
+  }
+
+  assert.ok(threw, 'an unreadable token file must exit non-zero')
+  assert.match(JSON.parse(threw.stdout).error, /nothing-here\.b64/,
+    'and say which file, rather than reading an absent one as an empty line')
+  assert.throws(() => lines(dir), 'nothing reaches the ledger')
+})
+
 test('a base64 token damaged in transit is still refused by the digest', async () => {
   const { execFileSync } = await import('node:child_process')
   const CLI = new URL('../lib/ledger.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')

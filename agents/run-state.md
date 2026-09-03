@@ -84,6 +84,17 @@ Read what the writer prints:
   again and run it once more. If it refuses a second time, return `stop_reason: 'unwritable'`
   with the error verbatim in `notes`.
 
+When the **shell** is what failed — a truncated command, an unmatched quote — the token was too
+long for this platform's command line, and retyping it fails identically every time. A heredoc
+or a script file does not help: they put the same token on the same one command line. Write it
+to a file in pieces and pass the path instead:
+
+```
+printf %s '<first piece>' > state-line.b64
+printf %s '<next piece>' >> state-line.b64
+node "<plugin-root>/lib/ledger.mjs" append "<run directory>" --file state --digest <digest> --b64-file state-line.b64
+```
+
 Your caller treats an unwritable record as a degraded side channel and keeps going: the run
 continues, and the fact that it can no longer be resumed from that line travels in its coverage
 block. Do not retry into a different location, do not fall back to a plain `cat >>`, and do not
