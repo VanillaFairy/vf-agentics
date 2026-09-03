@@ -32,8 +32,8 @@ export const meta = {
 // against a different contract than a fresh one.
 const WORK_ORDER_ITEM = {
       type: 'object', additionalProperties: false,
-      required: ['id', 'title', 'role', 'weight', 'locus', 'reads', 'acceptance', 'context',
-                 'deps', 'contract'],
+      required: ['id', 'title', 'role', 'pins', 'weight', 'locus', 'reads', 'acceptance',
+                 'context', 'deps', 'contract'],
       properties: {
         id: { type: 'string' },        // 'W1', 'W2', ... unique within the run
         title: { type: 'string' },     // imperative, passes the AND test
@@ -43,6 +43,22 @@ const WORK_ORDER_ITEM = {
         // field whose absence nobody notices, and here that silently restores the ordinary
         // verdict to an order whose whole point is that the ordinary verdict is wrong.
         role: { type: 'string', enum: ['none', 'red', 'green', 'refactor'] },
+        // What this order's tests PIN, which is a different axis from `role`. `role` says
+        // where an order sits in the red-green-refactor cycle; this says what question the
+        // discriminator may fairly ask of the tests it lands.
+        //
+        // 'behaviour' is the default and the common case: a test exists because the change
+        // under it changed something, so it must fail without that change. 'data' is a
+        // REGRESSION NET over something already correct — the shipped bundle is still valid,
+        // the config still parses, the generated file still matches its source. Those
+        // assertions are true at base BY DESIGN, and the only way to make them fail there
+        // would be to break the data first, so `failed_on_base` is not a question they can
+        // answer. `passes_now` still is, and is still required.
+        //
+        // Run 20260902-124933 spent two fix rounds and a human override on an order that was
+        // correct: the planner had written the right check in prose ("delete this field and
+        // that case must fail") and had no field in which to say it.
+        pins: { type: 'string', enum: ['behaviour', 'data'] },
         // How much reading this order takes, as the planner judges it. It buys a model tier
         // UNDER the run's dial and never above it — see `judgeFor` / `coderFor`.
         //
@@ -373,6 +389,12 @@ const FINDINGS = {
 
 const roleOf = (wo) => (wo && wo.role) || 'none'
 
+// A plan written before `pins` existed still resumes, and reads as 'behaviour' — the verdict
+// it was planned under. The `role` conjunct is where the two axes are reconciled: a red order
+// lands tests that MUST fail at base, so `pins: 'data'` on one is a contradiction rather than
+// a licence, and it is made inert here rather than trusted downstream.
+const pinsData = (wo) => Boolean(wo) && wo.pins === 'data' && roleOf(wo) === 'none'
+
 const posix = (p) => String(p || '').split('\\').join('/')
 
 /** A run directory's last path segment IS its runstamp — the planner minted the name. */
@@ -447,9 +469,15 @@ const failuresConfinedTo = (v, allowed) =>
 const inheritedRed = (v) =>
   v.suite === 'failed' && failuresConfinedTo(v, excusedRedFiles())
 
-const plainVerifyOk = v => verifiable(v)
+// The base question is dropped for a regression net and NOTHING else is: `passes_now` still
+// has to hold, so a data-pinning test that does not actually pass still fails this order. The
+// waiver is one conjunct wide, which is the difference between "this check cannot apply here"
+// and "this order is not checked".
+const discriminates = (d, wo) => Boolean(d) && d.passes_now && (pinsData(wo) || d.failed_on_base)
+
+const plainVerifyOk = (v, wo) => verifiable(v)
   && (v.suite !== 'failed' || inheritedRed(v))
-  && (v.discriminator || []).every(d => d && d.failed_on_base && d.passes_now)
+  && (v.discriminator || []).every(d => discriminates(d, wo))
 
 // A RED order lands tests that MUST fail — that is the entire order. Four inversions, each
 // answering a way a red order can be hollow rather than red:
@@ -478,7 +506,7 @@ const verifyOk = (v, wo) => {
   const role = roleOf(wo)
   if (role === 'red') return redVerifyOk(v, wo)
   if (role === 'refactor') return refactorVerifyOk(v)
-  return plainVerifyOk(v)
+  return plainVerifyOk(v, wo)
 }
 
 const mergeOk = m => m.stop_reason === 'completed'
@@ -1726,6 +1754,22 @@ function plannerPrompt(surveyEvidence) {
     `assert produces a test that cannot fail, which fails verification and wastes two orders ` +
     `to say so. When in doubt leave role 'none' — the ordinary path already runs the ` +
     `discriminator, which catches a test that pins nothing.\n\n` +
+    `Set pins on every order — 'behaviour' is the default and the common case:\n\n` +
+    `   pins 'behaviour' — this order's tests exist because something under them changed, so ` +
+    `they must fail without that change. The discriminator checks exactly that.\n` +
+    `   pins 'data'      — this order's tests are a REGRESSION NET over something already ` +
+    `correct: the shipped asset bundle is still valid, the generated file still matches its ` +
+    `source, the config still parses. They pass at base BY DESIGN, and the only way to make ` +
+    `them fail there would be to break the data first.\n\n` +
+    `The base question is not asked of a 'data' order; the tests must still pass now. Get ` +
+    `this wrong in the safe direction and the order is over-checked; get it wrong the other ` +
+    `way and a correct regression net is held back as if the coder had written a test that ` +
+    `pins nothing. Only role 'none' honours it — a red order's tests must fail at base, which ` +
+    `is the opposite claim.\n\n` +
+    `When you mark an order pins 'data', WRITE THE MUTATION INTO ITS ACCEPTANCE CRITERIA: ` +
+    `name the field to delete or the value to duplicate, and which case must fail when you ` +
+    `do. That sentence is the only check that fits this class of test, and it is what a ` +
+    `person reads if the order is ever escalated.\n\n` +
     `Set contract true on an order whose output other orders build against — a vocabulary ` +
     `note, shared type definitions, an interface. An ambiguity in a contract propagates ` +
     `into every consumer, so majors block a contract order downstream the way criticals ` +
@@ -2167,6 +2211,18 @@ function roleSection(wo) {
       `If you find a real defect while restructuring, do not fix it silently: that is a ` +
       `behaviour change hiding in a refactor, which is the one thing this role exists to ` +
       `rule out. Put it in concerns.\n\n`
+  }
+
+  if (pinsData(wo)) {
+    return `THIS ORDER'S TESTS PIN DATA, NOT A BEHAVIOUR CHANGE. They are a regression net ` +
+      `over something that is already correct, so they are NOT required to fail against the ` +
+      `base commit and you must not contort them into failing there — breaking the data to ` +
+      `make a test bite is the one thing this marker exists to stop you doing.\n\n` +
+      `They are still required to PASS now, and they are still required to bite. Where an ` +
+      `acceptance criterion names the mutation that should make a case fail — delete this ` +
+      `field, duplicate that id — perform it by hand, confirm exactly the expected cases ` +
+      `fail, put the tree back, and report what you saw in notes. That is the check that ` +
+      `fits these tests, and nothing mechanical downstream runs it for you.\n\n`
   }
 
   return ''
@@ -2908,11 +2964,14 @@ const plainFailures = (wo, v) => {
       v.suite_output_tail || ''))
   }
   for (const d of v.discriminator || []) {
-    if (d.failed_on_base && d.passes_now) continue
+    if (discriminates(d, wo)) continue
     out.push(runtimeFinding(wo.id + '-disc-' + d.test_id,
       d.test_id + ' does not discriminate: failed_on_base=' + d.failed_on_base +
       ', passes_now=' + d.passes_now,
-      'a test that passes without the change under test pins nothing'))
+      pinsData(wo)
+        ? 'this order pins data, so failing at base is not asked of it — but a test that ' +
+          'does not pass NOW pins nothing either'
+        : 'a test that passes without the change under test pins nothing'))
   }
 
   return out

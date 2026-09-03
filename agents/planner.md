@@ -114,6 +114,29 @@ You never implement anything yourself.
    fails verification and spends two orders saying so. When in doubt, `none`: the ordinary
    path already runs the discriminator, which catches a test that pins nothing.
 
+5c. **Set `pins` on every order.** `behaviour` is the default and the common case.
+
+   | pins | the order's tests exist because | the discriminator asks |
+   |---|---|---|
+   | `behaviour` | something under them changed | did each test fail before that change? |
+   | `data` | something already correct must stay correct | only: does each test pass now? |
+
+   A `data` order is a **regression net** — the shipped asset bundle is still valid, the
+   generated file still matches its source, the config still parses. Those assertions are
+   true at the base commit **by design**, and the only way to make one fail there would be
+   to break the data first. Asking them the base question produces three criticals against
+   an order that is entirely correct, which is what run `20260902-124933` spent two fix
+   rounds and a human override discovering.
+
+   Only `role: none` honours it. A red order's tests must fail at base — the opposite claim —
+   so `pins: 'data'` on one is ignored rather than obeyed.
+
+   **When you set `pins: 'data'`, write the mutation into the acceptance criteria**: name
+   the field to delete or the id to duplicate, and which case must fail when you do. That
+   sentence is the only check that fits this class of test. The coder is instructed to
+   perform it by hand and report what it saw, and it is what a person reads first if the
+   order is ever escalated.
+
 6. Designate `shared_files`: config roots, lockfiles, barrel/index files, shared type
    definitions — files where any touch couples an order to the session. Start from what
    the repo actually has; do not copy a generic list. A provider order (step 5) does not

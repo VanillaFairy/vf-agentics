@@ -491,6 +491,40 @@ test('a red order whose failures escape its locus is not green', () => {
   assert.equal(verifyOk(collateral, red), false)
 })
 
+test("a resume derives the same pass for a pins:'data' order as the run that measured it did", () => {
+  // A regression net asserts something already true, so it passes at base BY DESIGN. If the
+  // resume asked it the base question the live run had waived, an order green in one
+  // invocation would be red in the next for no reason anybody could see — which is the one
+  // thing this behavioural copy exists to prevent.
+  const net = order('W1', { pins: 'data' })
+  const passedAtBase = verifyObserved({
+    discriminator: [{ test_id: 'test/bundle.test.ts', failed_on_base: false, passes_now: true }],
+  })
+
+  assert.equal(verifyOk(passedAtBase, net), true)
+  assert.equal(verifyOk(passedAtBase, order('W1')), false, 'an unmarked order is still asked')
+})
+
+test("pins:'data' waives the base question only — passes_now still has to hold", () => {
+  const net = order('W1', { pins: 'data' })
+  const neverPassed = verifyObserved({
+    discriminator: [{ test_id: 'test/bundle.test.ts', failed_on_base: false, passes_now: false }],
+  })
+
+  assert.equal(verifyOk(neverPassed, net), false)
+})
+
+test("pins:'data' on a red order is ignored — its tests must still fail at base", () => {
+  const red = order('W1', { role: 'red', pins: 'data' })
+  const passedAtBase = verifyObserved({
+    suite: 'failed',
+    failing_tests: [{ file: 'src/W1.js', id: 't' }],
+    discriminator: [{ test_id: 't', failed_on_base: false, passes_now: false }],
+  })
+
+  assert.equal(verifyOk(passedAtBase, red), false)
+})
+
 test('a journal line naming an order the plan does not carry is counted, not vanished', () => {
   const v = deriveVerdict('20260826-184728', plan([order('W1')]), '',
     jsonl([verifyObserved({ order: 'GHOST' })]), NO_GIT, [])
