@@ -63,11 +63,17 @@ rejected alternative, a consequence, a citation. Anything recoverable from the c
 the names and the tests in front of the reader goes unwritten — not what the next line does, not
 why a change is correct, not how its author arrived there.
 
+**One fact, one home.** A comment describes the local and mechanical: this file's own logic, and
+what a reader of this file alone could not infer. The wider story — what the system does and why,
+product behaviour, how modules fit together — belongs to the project's documentation, and a
+comment retelling it is a second copy that drifts from the first. Where that story matters here,
+name the document; do not summarise it. A fact with two homes has no home.
+
 The register is a field manual, not an essay: dense, telegraphic, said once. No meta-narration
 ("that scope is a rule rather than an accident"), no sentence restating the one above it, no
-cross-module argument that belongs in the knowledge base. A block longer than the code it
-documents is a defect unless it is a proof, a protocol, or a table. Field sample, verbatim from a
-repository this pipeline built — fourteen lines where two would do:
+history the version control already holds. A block longer than the code it documents is a defect
+unless it is a proof, a protocol, or a table. Field sample, verbatim from a repository this
+pipeline built — fourteen lines where two would do:
 
     /**
      * What one day hands the next when it restarts the scene.
