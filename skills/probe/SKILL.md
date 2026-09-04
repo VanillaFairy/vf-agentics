@@ -39,18 +39,104 @@ premise defects, because the premises are the part not being questioned.
 ## Step 1 — Invoke
 
 ```
-Workflow({ name: 'vf-agentics:vfa-probe', args: { artifact, roots, context } })
+Workflow({ name: 'vf-agentics:vfa-probe', args: { artifact, roots, context, plugin_root } })
 ```
 
 `artifact` is the path to the document. `roots` is the repository it would be implemented
 in — probers read it, because a claim about what a document would do to a codebase is worth
 nothing if nobody looked. `context` is one line on what the document is for, and it is
-optional; it must never become a channel for the author's defence of it.
+optional; it must never become a channel for the author's defence of it. `plugin_root` is
+`${CLAUDE_PLUGIN_ROOT}`, and it is what lets the shared-ground read below find its script.
 
 The workflow reads the target repository's own review guidance first and derives its axes
 from that, so a project that mandates a particular review style is satisfied by this probe
 rather than double-probed. Four axes always run: contract ambiguity, unnamed invariants,
 YAGNI, and reinvention.
+
+**Shared ground.** Before the analysts run, one script resolves the evidence the document
+cites — every `path:line` in it, read once, handed to every axis. It replaces the twenty-six
+searches each analyst was separately paying to arrive at the same lines. Two things travel
+with it and both matter on the way out: citations that resolve to **nothing** reach every
+analyst as evidence about the document, and a shared-ground read that fails costs turns
+rather than coverage, because each analyst then locates what it needs exactly as it did
+before.
+
+**`max_derived_axes`** caps the axes derived from the repository's guidance, at 8 by default.
+The standing four are never capped. Raising it buys more axes; it does not buy proportionally
+more coverage, because per-axis yield is flat and what bounds a probe is the document's claim
+count rather than the axis. What the cap declines to buy comes back in `axes_dropped` and in
+the coverage block, so a narrower probe never reads like a clean one.
+
+### What a probe costs, and what the workflow report does not tell you
+
+Measured on one 17-agent probe of a 120-line document: **36.5M tokens billed** to return about
+538k of evidence. The bill is turn count — every turn re-sends the accumulated context — and
+it is superlinear in turns, not in what anybody read.
+
+The harness's own `subagent_tokens` field reported 1.31M for that run, low by a factor of 28.
+**Never quote it as what a probe cost**, and never let it stand as the basis for deciding
+whether a probe is worth buying. If the user asks what a run cost, say that the field
+under-reports it by more than an order of magnitude and that the real figure is in the agent
+transcripts.
+
+## Where the findings go
+
+<!-- vfa:verbatim effort-store -->
+**Efforts — one directory for everything this piece of work produces.** A change moves through
+design, survey, probe and one or more runs, and each phase used to write its output somewhere
+different or nowhere at all. A survey's findings and a probe's findings went nowhere: the only
+record of a probe was a harness temp file, session-scoped and swept. Since design and develop
+are separate sessions by recommendation, everything the first learned that did not reach the
+document was gone before the second opened.
+
+Open one at the start. The user may name it; if they do not, derive the name and use it:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" slug "<the change or question, in the user's words>"
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" open <repo> <slug> --about "<the change or question>" --roots <roots>
+```
+
+Opening is idempotent, and a later phase of the same effort adopts the identity the first one
+recorded rather than restating it in its own words.
+
+Record a survey's or a probe's return by writing the workflow's result object to a file and
+passing the path — **verbatim, never summarised.** The point of the store is what the phase
+actually returned, and a command line is finite while a survey's return is as large as the
+survey was interesting:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" record <repo> <slug> survey|probe --file <path.json>
+```
+
+Link a run and the design document as each comes into being. These are **pointers**: run state
+stays at `.claude/vfa/runs/<runstamp>/` where every other part of this pipeline reads and writes
+it, and a design stays in the source tree, because it is source:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" link <repo> <slug> run --value <runstamp>
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" link <repo> <slug> design --value <path>
+```
+
+Read it back when a later phase opens on the same effort, and pass what it holds as `prior`:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" read <repo> <slug> --latest survey
+```
+
+**The one rule: a stored survey never collapses a phase.** It is prior context and nothing
+more. Passed as `prior` it reaches a survey's planner alone, where it can only change how the
+ground is decomposed — it is never evidence, it never fills `ground`, and it never answers the
+triage's settled-shape question. The reason is mechanical rather than stylistic: the null
+survey's gate reads one field, an entry's computed freshness, and reads no kind and no
+provenance, so anything that reached it would be admitted on freshness alone with no grading
+whatsoever. The knowledge base at `.claude/vfa/kb/` is the only store whose entries are checked
+against the tree and admitted to that arithmetic. This one is durable scratch, and nothing in
+it is checked against anything.
+<!-- /vfa:verbatim -->
+
+Record the probe's whole return before the disposition below, not after. A disposition
+is a conversation, and a conversation that runs out of room takes the findings with it if
+they live nowhere else.
 
 ## Step 2 — Report
 

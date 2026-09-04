@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import {
   parseProgramme, parseEvents, appendCheck, isSatisfied, openGaps, labelOf,
   deriveProgramme, driftCheck, sectionsOf, missingSections, assembleNotes, renderTree,
-  spliceView, parseArgs, resolveGaps, LEAF_SECTIONS, ROOT_SECTIONS,
+  spliceView, parseArgs, resolveGaps, LEAF_SECTIONS, ROOT_SECTIONS, GROUND_SECTION,
 } from '../lib/programme.mjs'
 
 // A two-slice programme under one group: walk provides what hug consumes.
@@ -671,6 +671,39 @@ test('a slice with no predecessors says so rather than emitting an empty list', 
   const assembled = assembleNotes({ slice: 'walk', rootText: ROOT, leafText: LEAF, deps: [] })
 
   assert.match(assembled.notes, /no predecessors/)
+})
+
+// ------------------------------------------------------------ the optional ground section
+//
+// Increment 25 §3. The trap this pins is retroactive: `LEAF_SECTIONS` is the completeness
+// predicate, so a fourth name added there re-derives every design already on disk as unfinished
+// on the next read of the programme.
+
+test('the ground marker is emitted when present', () => {
+  const withGround = LEAF + '\n<!-- vfa:section ground -->\nsrc/game/ui, src/game/input\n<!-- /vfa:section -->\n'
+
+  const assembled = assembleNotes({ slice: 'walk', rootText: ROOT, leafText: withGround, deps: [] })
+
+  assert.match(assembled.notes, /GROUND THIS SLICE WAS DESIGNED IN:/)
+  assert.ok(assembled.notes.includes('src/game/ui, src/game/input'))
+})
+
+test('a design with no ground section is finished, and always was', () => {
+  assert.equal(LEAF_SECTIONS.includes(GROUND_SECTION), false,
+    'adding it to the completeness predicate unfinishes every design already on disk')
+  assert.deepEqual(missingSections(LEAF, LEAF_SECTIONS), [])
+
+  const assembled = assembleNotes({ slice: 'walk', rootText: ROOT, leafText: LEAF, deps: [] })
+  assert.equal(assembled.error, undefined)
+  assert.doesNotMatch(assembled.notes, /GROUND THIS SLICE/)
+})
+
+test('an empty ground section emits nothing rather than an empty heading', () => {
+  const hollow = LEAF + '\n<!-- vfa:section ground -->\n   \n<!-- /vfa:section -->\n'
+
+  assert.doesNotMatch(
+    assembleNotes({ slice: 'walk', rootText: ROOT, leafText: hollow, deps: [] }).notes,
+    /GROUND THIS SLICE/)
 })
 
 // ============================================================ rendering

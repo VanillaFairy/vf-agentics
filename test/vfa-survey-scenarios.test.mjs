@@ -762,3 +762,113 @@ test("a channel's evidence of absence travels with its findings", async () => {
   assert.doesNotMatch(result.history, /COVERAGE LIMIT/)
   assert.equal(result.coverage.complete, true)
 })
+
+// ------------------------------------------- prior context (increment 25 §3)
+//
+// An effort's stored survey is durable scratch. The whole rule is where it may go: one prompt,
+// and no gate. What is pinned here is the "no gate" half, which is invisible by reading.
+
+test('prior context reaches the planner and no searching agent', async () => {
+  const { prompts } = await run(
+    { plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a') },
+    { prior: 'an earlier pass concluded the loader lives in src/boot' },
+  )
+
+  assert.match(promptFor(prompts, 'plan'), /an earlier pass concluded/)
+  assert.match(promptFor(prompts, 'plan'), /somebody's notes, not\s+evidence/)
+  assert.match(promptFor(prompts, 'plan'), /NEVER to decide a topic does not need searching/)
+
+  for (const label of ['scout:a', 'analyze:a']) {
+    assert.doesNotMatch(promptFor(prompts, label), /an earlier pass concluded/,
+      `${label} was handed unverified prior context`)
+  }
+})
+
+test('prior context changes no count: every topic is still searched', async () => {
+  const { result } = await run(
+    { plan: PLAN({ topics: [
+      { key: 'a', find: 'find a', kb_path: 'src/a' },
+      { key: 'b', find: 'find b', kb_path: 'src/b' },
+    ] }), 'scout:': HITS(), 'analyze:': (p) => VERDICT(/THIS TOPIC: find b/.test(p) ? 'b' : 'a') },
+    { prior: 'both of these were answered last week' },
+  )
+
+  assert.deepEqual(result.topics, ['a', 'b'])
+  assert.equal(result.coverage.complete, true)
+})
+
+// ------------------------------------------- absence deposits (increment 25 §2)
+
+const recorded = { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'written' }
+const EMPTY = (over = {}) => HITS({ hits: [], no_match: 'no retry helper anywhere under src/a', ...over })
+
+test('an exhausted search that found nothing is deposited as an absence', async () => {
+  const { prompts, result } = await run({
+    plan: PLAN(), 'scout:': EMPTY(), 'analyze:': VERDICT('a'), 'kb-deposit': recorded,
+  })
+
+  const deposit = promptFor(prompts, 'kb-deposit')
+  assert.match(deposit, /DEPOSIT MODE/)
+  assert.match(deposit, /lib\/kb\.mjs" append "\."/)
+  assert.match(result.coverage.from_kb.join(' '), /deposited to\s+the project knowledge base/)
+  assert.match(result.coverage.from_kb.join(' '), /Nothing in THIS result came from them/)
+})
+
+test('a search that found something deposits nothing — absence is not "we are done here"', async () => {
+  const { prompts } = await run({
+    plan: PLAN(), 'scout:': HITS(), 'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(labelsOf(prompts).includes('kb-deposit'), false)
+})
+
+test('a search that stopped short deposits nothing, whatever it did not find', async () => {
+  const { prompts } = await run({
+    plan: PLAN(),
+    'scout:': EMPTY({ stop_reason: 'unfinished', not_reached: 'the whole of src/a/deep' }),
+    'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(labelsOf(prompts).includes('kb-deposit'), false,
+    'an absence from a search that never finished is a false negative filed as evidence')
+})
+
+test('a repository-wide topic deposits nothing — an absence about everything says nothing', async () => {
+  const { prompts } = await run({
+    plan: PLAN({ topics: [{ key: 'a', find: 'find a', kb_path: '' }] }),
+    'scout:': EMPTY(), 'analyze:': VERDICT('a'),
+  })
+
+  assert.equal(labelsOf(prompts).includes('kb-deposit'), false)
+})
+
+test('the id is minted from the subtree and the key, so a reworded claim shadows rather than piles up', async () => {
+  const idOf = async (noMatch) => {
+    const { prompts } = await run({
+      plan: PLAN(), 'scout:': EMPTY({ no_match: noMatch }), 'analyze:': VERDICT('a'),
+      'kb-deposit': recorded,
+    })
+    const token = promptFor(prompts, 'kb-deposit').match(/--b64 ([A-Za-z0-9+/=]+)/)[1]
+    return JSON.parse(Buffer.from(token, 'base64').toString('utf8')).entries[0]
+  }
+
+  const first = await idOf('no retry helper anywhere under src/a')
+  const second = await idOf('searched src/a for a retry helper; there is none')
+
+  assert.equal(first.id, second.id, 'the same ground searched twice mints the same id')
+  assert.notEqual(first.claim, second.claim, 'the prose still carries what was actually looked for')
+  assert.equal(first.kind, 'absence')
+  assert.deepEqual(first.about, ['src/a'])
+  assert.equal(first.observed_at, 'HEAD', 'the commit is measured by the writer, not guessed here')
+  assert.equal(first.source.via, 'survey-absence')
+})
+
+test('a deposit that does not land costs the result nothing and is said out loud', async () => {
+  const { result } = await run({
+    plan: PLAN(), 'scout:': EMPTY(), 'analyze:': VERDICT('a'),
+    'kb-deposit': { stop_reason: 'unwritable', path: '', notes: 'the writer refused' },
+  })
+
+  assert.equal(result.coverage.complete, true, 'a deposit is written for the NEXT run')
+  assert.match(result.coverage.from_kb.join(' '), /pays\s+for the same empty searches again/)
+})

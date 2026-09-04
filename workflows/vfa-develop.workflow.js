@@ -957,6 +957,12 @@ const change = typeof input.change === 'string' ? input.change : ''
 let roots = input.roots || '.'
 let notes = input.notes || ''
 
+// An earlier phase of the same effort's stored return, read off disk by the session that
+// invoked this run. It is forwarded to the nested survey and reaches its PLANNER and nothing
+// else — it is durable scratch, not evidence, so it cannot reach the null survey's collapse
+// arithmetic, `ground`, or any verdict here. Nothing in this file reads it but the forward.
+const prior = typeof input.prior === 'string' ? input.prior.trim() : ''
+
 // Resume by reference, not by echo. The predecessor of this field was `preplanned`: the
 // planner's whole output, ~55KB, which a caller had to transcribe back byte-exact to say
 // "go". A one-bit confirmation cost a 15k-token retype or a from-scratch re-plan. Now the
@@ -4970,6 +4976,7 @@ try {
       question: `What must change, and where, to implement: ${change}`,
       roots,
       notes,
+      prior,
       intelligence,
       // The nested survey reads the knowledge base itself, and a script's cwd is not an
       // agent's, so the root travels rather than being guessed at on the far side.

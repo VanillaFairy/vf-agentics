@@ -218,6 +218,22 @@ const CARRIED = {
   },
 }
 
+// What the knowledge-base courier hands back after a DEPOSIT. Copied from `vfa-develop`'s
+// RECORDED, for the same reason every other copy here is one: a workflow script cannot import.
+//
+// `unwritable` is the writer refusing, or the shell truncating the command — either way what the
+// survey learned is not durable, which is a fact its caller is told rather than a failure of the
+// survey.
+const DEPOSIT = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'path', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['recorded', 'unwritable'] },
+    path: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
 const VERDICT = {
   type: 'object',
   additionalProperties: false,
@@ -247,6 +263,18 @@ const question = (input.question || '').trim()
 const roots = input.roots || '.'
 const notes = input.notes || ''
 const maxTopics = input.max_topics || 8
+
+// What an earlier phase of the same effort found, read out of `.claude/vfa/efforts/<effort>/` by
+// the session that invoked this survey. It is DURABLE SCRATCH and it reaches exactly one place:
+// the planner's prompt, where it can only change how the ground is decomposed.
+//
+// It reaches no scout, no analyst and no gate, and that is the whole of the rule. The null
+// survey's collapse arithmetic reads one field — an entry's computed `state` — and reads no kind
+// and no provenance, so anything admitted near it is admitted on freshness alone with no grading
+// whatsoever. Prior context has no freshness to be checked and nothing anchoring it; if it could
+// reach a gate it would be an unverified note laundered into a skipped phase. It cannot, because
+// it is interpolated into one prompt and nowhere else.
+const prior = typeof input.prior === 'string' ? input.prior.trim() : ''
 
 // The intelligence dial. Three positions, each naming the judging tier rather than inheriting
 // it: `low` is sonnet, `normal` is opus, `max` is fable. The judging tier in this workflow is
@@ -329,6 +357,45 @@ function fnv1a(text) {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
+// The other direction of the same transport. A line this script mints whole travels base64 on one
+// argv slot — no path to escape, no apostrophe to close, no heredoc delimiter to indent — and the
+// writer recomputes the digest after decoding. Copies of `vfa-develop`'s, for the same reason
+// every other copy in this file is one: a workflow script cannot import.
+function utf8Bytes(text) {
+  const out = []
+
+  for (const ch of String(text)) {
+    const c = ch.codePointAt(0)
+    if (c < 0x80) out.push(c)
+    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63))
+    else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+    else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+  }
+
+  return out
+}
+
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/** Standard base64, padded. */
+function base64(text) {
+  const bytes = utf8Bytes(text)
+  let out = ''
+
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : -1
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : -1
+
+    out += B64_ALPHABET[b0 >> 2]
+    out += B64_ALPHABET[((b0 & 3) << 4) | (b1 < 0 ? 0 : b1 >> 4)]
+    out += b1 < 0 ? '=' : B64_ALPHABET[((b1 & 15) << 2) | (b2 < 0 ? 0 : b2 >> 6)]
+    out += b2 < 0 ? '=' : B64_ALPHABET[b2 & 63]
+  }
+
+  return out
+}
+
 /** @returns {{payload: object|null, why: string|null}} */
 function carriedRead(held) {
   if (!held) return { payload: null, why: 'the dispatch returned nothing' }
@@ -377,7 +444,7 @@ const RUN_ID = 'unknown-to-script: pair `remaining` with the runId from the Work
 // a survey with no question: it returns a coverage-honest empty result in milliseconds and
 // the interrupted run's cached agents become unreachable. Field-observed 2026-08-27. They
 // travel with the block a caller actually reads when deciding how to resume.
-const LAUNCH_ARGS = { question, roots, notes, max_topics: maxTopics, intelligence,
+const LAUNCH_ARGS = { question, roots, notes, prior, max_topics: maxTopics, intelligence,
                       plugin_root: pluginRoot }
 
 const RESUME_NOTE = 'a resume must re-pass `args` alongside resumeFromRunId — the script is ' +
@@ -521,6 +588,14 @@ const plan = await agent(
   `QUESTION: ${question}\n` +
   `REPOSITORIES: ${roots}\n` +
   (notes ? `BACKGROUND SUPPLIED BY THE USER:\n${notes}\n` : '') +
+  (prior
+    ? `\nWHAT AN EARLIER PASS OF THIS SAME EFFORT FOUND. These are somebody's notes, not ` +
+      `evidence: nothing here was checked against the current tree, nothing anchors it, and the ` +
+      `code may have moved since. Use it to aim the decomposition — it tells you where the last ` +
+      `pass ended up looking — and NEVER to decide a topic does not need searching. A topic ` +
+      `these notes appear to answer is still a topic, and the search that covers it will either ` +
+      `confirm them or find they went stale:\n${prior}\n`
+    : '') +
   `\nEach topic must be answerable by searching the current code on its own, with no ` +
   `dependency on the other topics — the shared ground below is the one exception to that, ` +
   `because it reaches every topic's analyst. Give each a short kebab-case key and a precise ` +
@@ -855,6 +930,11 @@ const docsChannel = sideChannel(
 
 const partial = []
 
+// What each scout actually covered, kept for the deposit at the end. The verdict pipeline
+// consumes a scout's result and returns an analyst's, so without this the one fact the deposit
+// turns on — an exhausted search that found nothing — would be gone by the time it is needed.
+const scouted = new Map()
+
 // Search to exhaustion. IRON LAW §3: an incomplete scout is RESUMED, never reported as a
 // result. The engine owns the stop conditions; this wrapper owns what a scout accumulates —
 // deduplicated hits and searched surface, which double as the engine's progress measure.
@@ -934,7 +1014,12 @@ async function scoutUntilComplete(topic) {
 
   const end = await resumeToExhaustion({ key: topic.key, prompt, launch, absorb })
   if (!end.exhausted) partial.push(topic.key)
-  return { hits, searched, complete: end.exhausted, noMatch: noMatch.join('\n'), notReached: end.notReached }
+
+  const found = {
+    hits, searched, complete: end.exhausted, noMatch: noMatch.join('\n'), notReached: end.notReached,
+  }
+  scouted.set(topic.key, found)
+  return found
 }
 
 // Launched before the pipeline rather than inside it: it is one search whose result every
@@ -1075,6 +1160,143 @@ const unreached = []
 // counted twice.
 const droppedKeys = new Set(dropped)
 const incomplete = partial.filter((k) => !droppedKeys.has(k)).concat(truncatedChannels)
+
+// ---------------------------------------------------------- 5b. what this survey can deposit
+//
+// One kind, and it is the only one a survey can honestly mint: `absence`. A search that was
+// EXHAUSTED and came back with nothing is the one thing a scout establishes that no later run can
+// cheaply re-establish — it costs a full search to learn that a full search finds nothing.
+//
+// Two rules make it safe, and both were forced rather than chosen.
+//
+// ONLY FROM AN EXHAUSTED SEARCH. An absence from a scout that stopped early is a false negative
+// written into the base as evidence, and the collapse arithmetic would then skip a survey on the
+// strength of a search that never finished. `complete` here is `stop_reason === 'exhausted'`,
+// derived by the resume engine and never claimed by an agent.
+//
+// THE ID IS MINTED FROM STABLE INPUTS. Shadowing works because re-observing a fact mints the same
+// id from the same bytes, which is what makes newest-id-wins do any work at all. So the id hashes
+// the topic's SUBTREE and its KEY — a path and a kebab slug, short and stable across passes that
+// search the same ground — and never the claim's prose. The prose then carries what the scout
+// looked for and did not find, and a later pass that phrases it differently SHADOWS its
+// predecessor with better wording instead of appending a near-duplicate beside it. That is
+// precisely the failure that keeps `structural` unwritten: a model-authored sentence rehashes
+// every time, so the base grows without ever consolidating.
+//
+// This is an addition, not the relocation an earlier draft proposed: `vfa-develop`'s run-end
+// deposit is untouched, and its two producers — `gotcha` from an approved order's discovered set,
+// `command` from a verification — keep working exactly as they do, because both are built from
+// run-time material that does not exist when a survey runs.
+const COMMAND_BUDGET = 5000
+
+function absenceDeposits() {
+  const entries = []
+
+  for (const topic of plan.topics) {
+    const path = topicPath(topic)
+    const found = scouted.get(topic.key)
+
+    // A repository-wide absence is too broad to mean anything, and `about` cannot be empty.
+    if (!path || !found || !found.complete || found.hits.length > 0) continue
+
+    const surface = String(found.noMatch || '').replace(/\s+/g, ' ').trim()
+    entries.push({
+      id: 'absence:' + fnv1a(path + ' ' + topic.key),
+      claim: 'an exhausted search of ' + path + ' for ' + topic.key + ' found nothing' +
+        (surface ? ': ' + surface : ''),
+      kind: 'absence',
+      about: [path],
+      // The script has no filesystem and no git, so the commit is measured by the writer in the
+      // repository rather than guessed at here or asked of a model.
+      observed_at: 'HEAD',
+      source: { via: 'survey-absence', topic: topic.key },
+    })
+  }
+
+  return entries
+}
+
+function absencePrompt(entries) {
+  const batches = []
+  let current = []
+  for (const entry of entries) {
+    const grown = current.concat([entry])
+    if (current.length > 0 && base64(JSON.stringify({ entries: grown })).length > COMMAND_BUDGET) {
+      batches.push(current)
+      current = [entry]
+    } else {
+      current = grown
+    }
+  }
+  if (current.length > 0) batches.push(current)
+
+  const commands = batches.map((batch) =>
+    `node "${pluginRoot}/lib/kb.mjs" append "${kbRepo}" ` +
+    `--digest ${fnv1a(canonical({ entries: batch }))} ` +
+    `--b64 ${base64(JSON.stringify({ entries: batch }))}`).join('\n\n')
+
+  return `DEPOSIT MODE. Append what these searches established to the project knowledge base.\n\n` +
+    `REPOSITORY: ${kbRepo}\n\n` +
+    (batches.length === 1
+      ? `Run exactly this, as ONE line:\n\n`
+      : `Run these ${batches.length} commands, each as ONE line, in this order. They are ` +
+        `separate batches of the same deposit and each is written on its own — a later one ` +
+        `failing does not undo an earlier one:\n\n`) +
+    commands + `\n\n` +
+    rootWarning +
+    `The long token is a batch of entries, base64-encoded. Copy it as one unbroken string — do ` +
+    `not wrap it, do not insert a newline or a backslash continuation, and do not quote it. It ` +
+    `contains only letters, digits, +, / and = , so there is nothing in it for a shell to ` +
+    `interpret. The writer decodes it and recomputes the digest above over what came out; a ` +
+    `token that changed by one character is REFUSED and NOTHING is written.\n\n` +
+    `Every entry here says the same kind of thing: a search of a named subtree was run to ` +
+    `exhaustion and found nothing. You do not choose where one lands, you do not reword a ` +
+    `claim, and you do not drop one that reads uninteresting — an absence is often the finding ` +
+    `that decides a question, and it is the one thing a later run cannot cheaply re-establish.\n\n` +
+    `Read each writer's output. {"ok":true,...} means that batch is on disk. ` +
+    `{"ok":false,"error":...} means it refused; the error names what was wrong. Run that ` +
+    `command again, the whole token.\n\n` +
+    `If a command comes back from the SHELL rather than from the writer — "unexpected EOF", a ` +
+    `truncated line, an unmatched quote — the command line was too long for this platform and ` +
+    `retyping it will fail the same way every time. Do not try a heredoc or a script file: ` +
+    `those put the same token on the same one command line. Write the token to a file in ` +
+    `pieces instead, with several appends, and then pass the PATH:\n\n` +
+    `   printf %s '<first piece>' > kb-deposit.b64\n` +
+    `   printf %s '<next piece>' >> kb-deposit.b64\n` +
+    `   node "${pluginRoot}/lib/kb.mjs" append "${kbRepo}" --digest <that batch's digest> ` +
+    `--b64-file kb-deposit.b64\n\n` +
+    `Only when a batch has failed both ways: return stop_reason unwritable with the error ` +
+    `verbatim in notes. Return stop_reason recorded only when every batch above reported ok:true.`
+}
+
+const absences = absenceDeposits()
+
+if (absences.length > 0) {
+  // A side channel with IRON LAW §5 treatment: it is written for the NEXT run, so a deposit that
+  // does not land costs this result nothing it was going to have. It is still said out loud —
+  // silently learning nothing durable is how a repository stays as ignorant on run 20 as on run 1.
+  const held = await agent(absencePrompt(absences), {
+    agentType: 'vf-agentics:kb', effort: 'low', model: 'haiku', schema: DEPOSIT,
+    phase: 'Analyze', label: 'kb-deposit',
+  }).catch((e) => {
+    log(`WARNING: the knowledge-base deposit failed to run: ${e && e.message}`)
+    return null
+  })
+
+  if (held && held.stop_reason === 'recorded') {
+    log(`Deposited ${absences.length} absence entr(ies): ` +
+      absences.map((e) => e.about[0]).join(', ') + '.')
+    kbNotes.push(`${absences.length} exhausted search(es) that found nothing were deposited to ` +
+      `the project knowledge base, so a later run reads them instead of buying the same empty ` +
+      `search again. Nothing in THIS result came from them — they were written by it.`)
+  } else {
+    log(`WARNING: what these searches established was not made durable ` +
+      `(${(held && held.notes) || 'the deposit dispatch returned nothing'}).`)
+    kbNotes.push('this survey exhausted ' + absences.length + ' search(es) that found nothing ' +
+      'and could not write them to the knowledge base, so the next run over this ground pays ' +
+      'for the same empty searches again. It costs this result nothing.')
+  }
+}
 
 // Provenance, computed from what this script actually handed to a dispatch — never from an
 // analyst's account of what it leaned on. One line per topic that received cached evidence,

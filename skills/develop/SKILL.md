@@ -242,6 +242,24 @@ whether the survey phase is earned at all (the **null survey**).
   new judgment: you already had to know the locus to answer the triage question. It is what
   makes the other half computable.
 
+**When the change came from a design document, do not re-derive either of them.** If the
+document carries a `ground` marker, read it out rather than retyping it:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/programme.mjs" --section ground --file <the design document>
+```
+
+One path per line, and they go straight into `ground`. A document with no such marker named no
+ground — that is a fact about the design, not a failure, and you answer the triage question
+yourself as you always did.
+
+A design document may also carry a paragraph recommending **direct session**, **fix lane** or
+**full lane**. Read it as advice from the pass that interviewed the user, weigh it, and say what
+you concluded. **It does not decide anything**: the triage below is still the decision point and
+the user is still asked once, here. A design that could pre-decide the lane would make the fix
+lane's own coverage block false — it states that nothing was searched by this run and nothing
+recalled from the knowledge base, and a design survey that supplied the locus makes that untrue.
+
 What the workflow then does with them is arithmetic you do not have to reproduce: it reads one
 knowledge-base chain over the named paths and **skips the survey only if every one of them is
 covered by a fresh entry** — one a program checked against the current tree and found untouched
@@ -254,6 +272,65 @@ When it does fire, the result says so where a survey's coverage would have been:
 chain covered and at which commits. **Present that to the user with the result** — a run whose
 evidence was recalled rather than searched is a different claim from one whose evidence was
 gathered today, and they are entitled to know which one they have.
+
+## Where this run is recorded
+
+<!-- vfa:verbatim effort-store -->
+**Efforts — one directory for everything this piece of work produces.** A change moves through
+design, survey, probe and one or more runs, and each phase used to write its output somewhere
+different or nowhere at all. A survey's findings and a probe's findings went nowhere: the only
+record of a probe was a harness temp file, session-scoped and swept. Since design and develop
+are separate sessions by recommendation, everything the first learned that did not reach the
+document was gone before the second opened.
+
+Open one at the start. The user may name it; if they do not, derive the name and use it:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" slug "<the change or question, in the user's words>"
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" open <repo> <slug> --about "<the change or question>" --roots <roots>
+```
+
+Opening is idempotent, and a later phase of the same effort adopts the identity the first one
+recorded rather than restating it in its own words.
+
+Record a survey's or a probe's return by writing the workflow's result object to a file and
+passing the path — **verbatim, never summarised.** The point of the store is what the phase
+actually returned, and a command line is finite while a survey's return is as large as the
+survey was interesting:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" record <repo> <slug> survey|probe --file <path.json>
+```
+
+Link a run and the design document as each comes into being. These are **pointers**: run state
+stays at `.claude/vfa/runs/<runstamp>/` where every other part of this pipeline reads and writes
+it, and a design stays in the source tree, because it is source:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" link <repo> <slug> run --value <runstamp>
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" link <repo> <slug> design --value <path>
+```
+
+Read it back when a later phase opens on the same effort, and pass what it holds as `prior`:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" read <repo> <slug> --latest survey
+```
+
+**The one rule: a stored survey never collapses a phase.** It is prior context and nothing
+more. Passed as `prior` it reaches a survey's planner alone, where it can only change how the
+ground is decomposed — it is never evidence, it never fills `ground`, and it never answers the
+triage's settled-shape question. The reason is mechanical rather than stylistic: the null
+survey's gate reads one field, an entry's computed freshness, and reads no kind and no
+provenance, so anything that reached it would be admitted on freshness alone with no grading
+whatsoever. The knowledge base at `.claude/vfa/kb/` is the only store whose entries are checked
+against the tree and admitted to that arithmetic. This one is durable scratch, and nothing in
+it is checked against anything.
+<!-- /vfa:verbatim -->
+
+Pass what `read` returns as the workflow's `prior` argument, and link the runstamp as
+soon as the launch result carries one — a run linked at the end is a run nobody can find
+if the session dies in the middle.
 
 ## Run the pipeline
 
@@ -270,7 +347,7 @@ gathered today, and they are entitled to know which one they have.
    resolve:
 
    ```
-   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, intelligence, plugin_root, base_ref, programme, slice, settled_shape, ground } })
+   Workflow({ name: 'vf-agentics:vfa-develop', args: { change, roots, notes, prior, intelligence, plugin_root, base_ref, programme, slice, settled_shape, ground } })
    ```
 
    `plugin_root` is this plugin's absolute root (`${CLAUDE_PLUGIN_ROOT}`); the workflow

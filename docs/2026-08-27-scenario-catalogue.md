@@ -58,6 +58,12 @@ Note before the catalogue: **survey is not a user-facing skill.** No skills/surv
 
 **A3. Planner death or zero topics.** Trigger: planner throws (`.catch→null`) or returns no topics. Behavior: empty result, `unreached: ['planning produced no topics, so nothing was searched']`. Source: :310-318.
 
+**A3b. Prior context (increment 25).** Trigger: caller passes `prior` — an effort's stored survey. Behavior: it reaches the PLANNER prompt and nothing else (no scout, no analyst, no gate), framed as unverified notes that may aim the decomposition and may never retire a topic; every topic is still searched; it appears in LAUNCH_ARGS so a resume re-passes it. Source: workflow.js prior block; test/vfa-survey-scenarios.test.mjs (prior context).
+
+**A3c. Absence deposit (increment 25).** Trigger: a topic with a non-empty `kb_path` whose scout EXHAUSTED its search and found zero hits. Behavior: one `kb-deposit` dispatch mints `absence:` + fnv1a(path + key) — id from stable inputs, the scout's `no_match` in the prose so a rewording SHADOWS rather than piles up — with `observed_at: 'HEAD'` resolved by the writer in the repository; a search that stopped short, or found anything, or named no subtree deposits NOTHING. Source: workflow.js absenceDeposits/absencePrompt; lib/kb.mjs OBSERVED_AT_HEAD; test (absence deposits).
+
+**A3d. Deposit does not land.** Trigger: the writer refuses, or the shell truncates. Behavior: logged, a `from_kb` line saying the next run pays for the same empty searches again, and `coverage.complete` UNAFFECTED — a deposit is written for the NEXT run and costs this result nothing. Source: workflow.js deposit block; test.
+
 **A4. Planner topic overflow.** Trigger: plan exceeds maxTopics(8). Behavior: logged only — ALL topics are still searched; cost is controlled by method, never by dropping work (IRON LAW §8). Source: :320-327.
 
 **A5. Pre-0.16 plan without common_ground.** Trigger: resumed older plan. Behavior: degrades to "no shared ground," never throws. Source: :329-332; commit bc58c9f.
@@ -268,6 +274,12 @@ Note before the catalogue: **survey is not a user-facing skill.** No skills/surv
 
 **F8. Scoped mode.** Trigger: programme with later undesigned slices. Behavior: slices stay undesigned until frontier; design re-invoked per slice, probe reruns per leaf. Source: :289.
 
+**F7. The handoff carries ground, never locus (increment 25).** Trigger: a design that established which paths the change lives in. Behavior: an OPTIONAL `<!-- vfa:section ground -->` marker, deliberately NOT in `LEAF_SECTIONS` (that list is the completeness predicate — a fourth name re-derives every design on disk as unfinished) and named explicitly in `assembleNotes` (a marker nothing reads is inert). It feeds `develop`'s CHECKED `ground`; the fix lane's DECLARED `locus` is never fed from a document. Source: lib/programme.mjs GROUND_SECTION; skills/design/SKILL.md; test/programme.test.mjs (optional ground section).
+
+**F8. Lane recommendation is advisory (increment 25).** Trigger: a ratified design handed to develop. Behavior: one paragraph in the triage's own closed vocabulary — direct session / fix lane / full lane — read as advice by the develop session and never passed as the workflow's `lane` enum. The triage stays the decision point and the user is asked once, by develop: a pre-decided lane would make the fix lane's own coverage block false. Source: skills/design/SKILL.md; skills/develop/SKILL.md.
+
+**F9. What the pass learned outlives it.** Trigger: any design pass. Behavior: an effort is opened implicitly (caller slug, else derived), the survey's return is recorded verbatim as soon as it arrives, and the document's path is linked when it lands. A stored survey is prior context and never collapses a phase. Source: skills/design/SKILL.md effort-store block; lib/effort.mjs.
+
 ## G. Probe (skills/probe/SKILL.md, workflows/vfa-probe.workflow.js)
 
 **G1. Happy path.** Trigger: a written artefact to attack. Behavior: axes = target repo's own review guidance + four standing axes (contract ambiguity, unnamed invariants, YAGNI, reinvention); probers never see the author's reasoning; findings get stable ids; `ratifiable = ambiguities===0 && unexamined===0`, computed — gap severity alone does NOT block. Disposition is the user's; deliberately no fix loop, no author rebuttal. Source: workflow.js:194-217, :263; SKILL.md:12, :50, :76; test/vfa-probe-scenarios.test.mjs:98.
@@ -279,6 +291,14 @@ Note before the catalogue: **survey is not a user-facing skill.** No skills/surv
 **G4. Repo guidance unreadable.** Trigger: repo-axes read fails. Behavior: degrade to the four standing axes; failed_channels 'repo-axes'; unreached states the project's own review asks went unchecked — warning, not fatal. A repo that honestly declares no guidance (stop_reason no_guidance_found) stays complete. Source: workflow.js:202-215, :279-283; test:139.
 
 **G5. No artefact path / empty-charge axis.** Trigger: missing input. Behavior: nothing dispatched, ratifiable false, unreached says so (:174-190; test:151); an axis with an empty charge is silently not dispatched (test:68).
+
+**G7. Shared ground (increment 25).** Trigger: any probe with an artefact. Behavior: one `ground` courier runs `lib/citations.mjs` before the analysts; excerpts of every `path:line` the document cites reach EVERY axis under one digest, framed as a starting point and explicitly not as "the repository"; citations resolving to nothing travel as evidence about the DOCUMENT. Source: workflow.js groundPrompt/groundSection; lib/citations.mjs; test/vfa-probe-scenarios.test.mjs (shared ground).
+
+**G8. Shared ground fails.** Trigger: the courier throws, or the payload's digest does not recompute. Behavior: degrade to "locating it is yours to do" in every prober prompt; `shared_ground.resolved: false` with the reason; `coverage.complete` UNAFFECTED — it cost turns, not coverage, and no finding rests on it. Not a failed channel. Source: workflow.js ground block; test (failed ground read).
+
+**G9. Derived-axis cap.** Trigger: a repository whose guidance yields more than `max_derived_axes` (default 8). Behavior: the standing four are never capped; the overflow is a DECLARED narrowing — named in `axes_dropped`, in `coverage.unreached` one line per axis, and in `resumable.remaining` so a higher cap buys exactly them — and `coverage.dropped`/`complete` keep meaning "commissioned and got no report". `max_derived_axes: 0` runs the standing four alone. Source: workflow.js axes block; test (the cap).
+
+**G10. Findings outlive the session.** Trigger: any probe. Behavior: the return is recorded verbatim into `.claude/vfa/efforts/<effort>/probes/<stamp>.json` BEFORE the disposition conversation, because a disposition that runs out of room takes the findings with it. Source: SKILL.md effort-store block.
 
 **G6. Workflow dispatch fails at skill level.** Trigger: probe workflow can't launch. Behavior: never silently substitute a self-probe — self-probe is offered, explicitly named weaker (misses premise defects), user decides. And the skill may not report a clean probe while coverage.complete is false. Source: SKILL.md:27, :70, :91.
 

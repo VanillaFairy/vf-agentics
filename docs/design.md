@@ -633,11 +633,104 @@ fire in that repository for any change, on any day — and a project that has ne
 reading its every refusal as routine staleness while paying for a full survey every run. This
 plugin's own repository was one of them. The message says which case it hit, and names the path.
 
+**`absence` is written from increment 25, and `structural` is not.** A survey deposits an
+absence when a search of a named subtree was run to **exhaustion** and found nothing — the one
+thing a scout establishes that no later run can cheaply re-establish, because it costs a full
+search to learn that a full search finds nothing. Its subject is a directory, so it carries no
+file anchor and reads fresh only by the git-event shortcut: nothing has touched that subtree, so
+the search would still come back empty. The day the ground moves it goes stale, which is exactly
+right.
+
+The id is what decides which kinds can be deposited at all. Shadowing works because re-observing
+a fact mints the same id from the same bytes, so only claims a **script** mints from stable
+inputs may be written. An absence hashes the subtree and the topic key — a path and a kebab slug
+— while the scout's own words ride in the claim, so a later pass that phrases it differently
+*shadows* its predecessor with better wording. A `structural` entry has no such stable half: a
+model-authored sentence rehashes on every pass and would append a near-duplicate instead,
+growing the base without ever consolidating it. That is why the kind exists in the vocabulary
+and is written by nobody.
+
 Contracts: `docs/superpowers/specs/2026-08-30-increment-13-contracts.md` for the core,
 `2026-08-30-increment-14-contracts.md` for survey consumption and the null survey,
-`2026-09-04-increment-22-contracts.md` for `kb_present`. Increment 18
-adds the guardian and surface-glob anchor classes, absence entries, `kb init` harvesting and the
+`2026-09-04-increment-22-contracts.md` for `kb_present`,
+`2026-09-04-increment-25-contracts.md` for absence deposits and the `observed_at` HEAD sentinel.
+Increment 18 adds the guardian and surface-glob anchor classes, `kb init` harvesting and the
 optional `INDEX.md` render for the human layer.
+
+## Efforts
+
+A change moves through design, survey, probe and one or more runs, and each phase wrote its
+output somewhere different or nowhere at all. Run state went to `.claude/vfa/runs/`, the
+knowledge base to `.claude/vfa/kb/`, designs to the source tree where they belong — and a
+survey's findings and a probe's findings went **nowhere**. The only record of a probe was a
+harness temp file, session-scoped and swept. Since the design pass and the develop pass that
+implements it are separate sessions by recommendation, everything the first one learned that did
+not reach the design document was gone before the second one opened.
+
+An **effort** is the unit of work that spans phases, and it owns a directory:
+
+```
+.claude/vfa/efforts/<effort>/
+  effort.json            { about, roots, opened_at }
+  surveys/<stamp>.json   each survey's return, verbatim
+  probes/<stamp>.json    each probe's findings, verbatim
+  links.jsonl            pointers: the runstamps it owns, the design it was built from
+```
+
+The identifier is the directory name, entire — no `slug` field, on the same reasoning the
+programme layer gives for its own directory. Everything read back is derived from what is on
+disk; nothing is a stored status. Runs and designs are **pointers**: run state stays exactly
+where the resume ladder, `lib/run-status.mjs` and the `runs` skill already read and write it,
+and a design stays in the source tree, because it is source.
+
+The writer is the **session** that ran the phase, using the shell it already has. No agent was
+added to the roster and no capability changed, and nothing is minted at write time: a return is
+stored as it was returned, so there is no `about` to derive and no `observed_at` to anchor.
+
+**An effort's stored survey never collapses a phase.** That is the whole discipline, and it is
+mechanical rather than stylistic. The null survey's gate reads one field — an entry's computed
+freshness — and reads no kind and no provenance, so anything reaching it is admitted on freshness
+alone with no grading whatsoever. Prior context has no freshness to check and nothing anchoring
+it, so it reaches exactly one place: a survey's planner, where it can only change how the ground
+is decomposed. The knowledge base is claims a program can check; the effort store is durable
+scratch, and it proves nothing.
+
+Contract: `docs/superpowers/specs/2026-09-04-increment-25-contracts.md` §1.
+
+## What a probe costs
+
+Measured, from the transcripts of one 17-agent probe of a 120-line document rather than from the
+workflow's own report: **36.5M tokens billed to return about 538k of evidence** — 68×
+amplification.
+
+The cost is **turn count**, not payload. Every turn re-sends the accumulated context, so an
+analyst running 40 turns against a context growing toward 80k pays roughly 3.2M in cache reads,
+and sixteen of those is the whole bill. It is superlinear: the most expensive axis ran 62 turns
+for 4.36M, the cheapest 34 for 1.30M — 1.8× the turns for 3.4× the cost. Nobody ingested a large
+file; `Read` returned about 26k tokens per agent across the entire run. What the turns bought was
+**locating**: 248 Reads, 148 Greps and 16 Globs, sixteen analysts independently finding the same
+lines. An earlier reading of this cost blamed large-file ingestion and pointed at trimming what
+analysts read, which the transcripts refuted — that lever is worth almost nothing.
+
+`vfa-survey` had already solved the shape: name the shared surface once, search it once, hand it
+to every analyst. The probe never inherited the pattern, and now does. A probed document cites
+its evidence by path and line, so `lib/citations.mjs` resolves that surface — extracting
+`path:line` tokens, merging overlapping windows, reading the excerpts — and one `Bash`-only
+courier carries the result to every axis. Deterministic, therefore a script (SR6). The one thing
+a script cannot do is follow a citation that is **wrong**, and that is not a loss: an
+unresolvable citation in a document about to be built from is itself a finding, and it travels
+to every analyst as one rather than being silently walked past.
+
+A **derived-axis cap** sits beside it and is a dial rather than a saving. 110 findings landed on
+21 sections of a four-claim document and fourteen axes independently attacked the same finding,
+but yield per axis is flat — so capping buys *less coverage*, not less waste. It says so: what
+the cap declines to buy is named in `axes_dropped`, in `coverage.unreached`, and in
+`resumable.remaining`, so a re-run with a higher cap buys exactly the axes that were skipped.
+What it does not do is flip `coverage.complete`, which keeps its meaning — axes this probe
+commissioned and got no report from — on the same distinction the fix lane draws between a
+declared narrowing and a failure to cover.
+
+Contract: `docs/superpowers/specs/2026-09-04-increment-25-contracts.md` §4.
 
 ## Planning horizon
 

@@ -145,6 +145,14 @@ the base is the build and suite commands an earlier investigation established, a
 the entry is fresh **and** its source says a verification wrote it. Both seams are advisory side
 channels and neither can make a run incomplete.
 
+**What a phase produces outlives the phase.** An **effort** at `.claude/vfa/efforts/<effort>/` is the
+unit of work that spans design, survey, probe and runs, and every phase records its return there,
+verbatim, written by the session that ran it. Runs and designs are pointers rather than nested
+children, so nothing about the resume ladder's paths moved. It is **durable scratch and never
+evidence**: an effort's stored survey never collapses a phase, because the null survey's gate reads
+one computed freshness field and no provenance at all, so anything reaching it would be admitted
+with no grading whatsoever. Prior context reaches a survey's planner and nowhere else.
+
 **The survey consumes it too, and the order matters.** Its Plan phase receives the tree *index* —
 node paths, entry counts, kinds, no state at all — because before a decomposition exists the only
 known paths are the roots, and a chain at a root is the repo-wide node alone. The planner
@@ -168,14 +176,14 @@ Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extende
 `2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md`,
 `2026-08-30-increment-11-contracts.md`, `2026-08-30-increment-12-contracts.md`,
 `2026-08-30-increment-13-contracts.md`, `2026-08-30-increment-14-contracts.md`,
-`2026-09-04-increment-22-contracts.md`, `2026-09-04-increment-23-contracts.md` and
-`2026-09-04-increment-24-contracts.md`. **Any change to
+`2026-09-04-increment-22-contracts.md`, `2026-09-04-increment-23-contracts.md`,
+`2026-09-04-increment-24-contracts.md` and `2026-09-04-increment-25-contracts.md`. **Any change to
 the plan envelope's field list cites the registry in increment 5 §1, any change to a `state.jsonl`
 line cites increment 6 §2, any change to a `journal.jsonl` line cites increment 7 §4 as extended by
 increments 22 §2 and 23 §2, any change
 to `seq` cites increment 8 §3, any change to the verify payload's field list cites increment
 11 §1b as extended by increments 22 §1 and 23 §2, any change to the knowledge-base entry's field
-list cites increment 13 §1, any change to
+list cites increment 13 §1 as extended by increment 25 §2a, any change to
 the coverage block's field list cites increment 14 §3, and any change
 to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the
 same commit** — nothing finds any of those copies for you.

@@ -3,6 +3,7 @@ export const meta = {
   description: 'Adversarially probe a written artefact — a design, a proposal, a spec — with independent analysts who receive the document and the target repository\'s own guidance and nothing from its author. Rules on the design severity ladder; the gate is computed.',
   phases: [
     { title: 'Axes', detail: 'read the target repo\'s own review guidance for what to attack' },
+    { title: 'Ground', detail: 'resolve the evidence the artefact cites, once, for every axis' },
     { title: 'Probe', detail: 'one analyst per axis, in parallel, artefact-only handoff' },
   ],
 }
@@ -27,6 +28,30 @@ export const meta = {
 //      computed here — the same discipline every other verdict in this plugin follows, for
 //      the same reason: the moment a schema offers a verdict, the exit condition migrates
 //      out of JS and into a model's self-assessment.
+//
+// ---------------------------------------------------------------- what a probe costs
+//
+// Measured on one probe of a 120-line document against this repository (`wf_bbd2fa8e-ae9`,
+// 17 agents, 8m24s), from the seventeen agent transcripts rather than from this workflow's own
+// report: 33.1M cache reads, 3.3M cache writes, 16k output — 36.5M billed to return ~538k of
+// evidence. 68× amplification.
+//
+// The cost is TURN COUNT, not payload. Every turn re-sends the accumulated context, so an
+// analyst running 40 turns against a context growing toward 80k pays roughly 3.2M in cache
+// reads, and sixteen of those is the whole bill. It is superlinear: the most expensive axis ran
+// 62 turns for 4.36M, the cheapest 34 for 1.30M — 1.8× the turns for 3.4× the cost. Nobody
+// ingested a large file; `Read` returned about 26k tokens per agent across the entire run. What
+// the turns bought was LOCATING: 248 Reads, 148 Greps and 16 Globs, sixteen analysts
+// independently finding the same lines.
+//
+// Two levers follow, and they are of different sizes. The Ground phase below removes the
+// duplicated locating and is the one worth having. The derived-axis cap is a dial: 110 findings
+// landed on 21 sections of a four-claim document, fourteen axes independently attacked the same
+// finding, and yield per axis is flat (3–10, mean 6.9) — so cutting axes buys less coverage
+// rather than less waste, and it says so in the result instead of in a log line.
+//
+// Trimming what analysts READ is worth almost nothing, and an earlier reading of this cost
+// that blamed large-file ingestion pointed straight at that lever. The transcripts refuted it.
 
 // ---------------------------------------------------------------- schemas
 //
@@ -83,12 +108,120 @@ const PROBE_FINDINGS = {
   },
 }
 
+// What the citation courier hands back: one command's stdout, byte-exact, in one string.
+// Copied from `vfa-survey`'s CARRIED rather than shared, because a workflow script cannot
+// import — the copies are diffed against each other and against the library's output.
+//
+// `failed` is the courier unable to run the command AT ALL. An artefact that cites nothing is
+// not that: it resolves to an empty payload, which is a real answer about the document.
+const CARRIED = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'payload_raw', 'notes'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['carried', 'failed'] },
+    payload_raw: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
 // ---------------------------------------------------------------- inputs
 
 const input = typeof args === 'string' ? { artifact: args } : (args || {})
 const artifact = typeof input.artifact === 'string' ? input.artifact.trim() : ''
 const roots = input.roots || '.'
 const context = typeof input.context === 'string' ? input.context : ''
+
+// The repository the artefact's citations are resolved against — the first root, on the same
+// rule the knowledge base follows: a citation is repo-relative and there is one repository it
+// is relative TO.
+const groundRepo = String(roots).split(/[,;\n]/)[0].trim() || '.'
+
+// How many DERIVED axes run. The standing four are never capped: each names a defect class that
+// reaches implementation unnoticed, and dropping one of those would change what a probe IS.
+//
+// This is a dial and not a saving. Per-axis yield is flat, so a cap buys less coverage rather
+// than less waste — which is why what it drops is named in the result. The number is the
+// standing four doubled: a starting default to be revised against measurement, never a finding.
+const DEFAULT_DERIVED_AXES = 8
+const maxDerivedAxes = Number.isInteger(input.max_derived_axes) && input.max_derived_axes >= 0
+  ? input.max_derived_axes
+  : DEFAULT_DERIVED_AXES
+
+// Where `lib/citations.mjs` lives, resolved the way every other workflow here resolves a plugin
+// path: the caller's value, then the environment, then the shell form expanded in the agent's
+// own shell. A script's cwd is not the agent's, so a relative path is never guessed at.
+const SHELL_ROOT = '$CLAUDE_PLUGIN_ROOT'
+
+function resolvePluginRoot() {
+  if (typeof input.plugin_root === 'string' && input.plugin_root.trim()) {
+    return input.plugin_root.trim().split('\\').join('/')
+  }
+
+  const fromEnv = typeof process !== 'undefined' && process && process.env
+    ? process.env.CLAUDE_PLUGIN_ROOT
+    : ''
+
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim().split('\\').join('/')
+  return SHELL_ROOT
+}
+
+const pluginRoot = resolvePluginRoot()
+
+// The digest transport, in the one direction this workflow uses it. A payload computed on disk
+// arrives through a model, so it is re-digested here before a field of it is believed. Both
+// functions are copies of `lib/plan-digest.mjs`'s: scripts cannot import, and the suite pins
+// them together.
+function canonical(value) {
+  if (value === undefined) return 'null'
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']'
+
+  return '{' + Object.keys(value).sort()
+    .map((key) => JSON.stringify(key) + ':' + canonical(value[key]))
+    .join(',') + '}'
+}
+
+function fnv1a(text) {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+/** @returns {{payload: object|null, why: string|null}} */
+function carriedRead(held) {
+  if (!held) return { payload: null, why: 'the dispatch returned nothing' }
+  if (held.stop_reason !== 'carried') {
+    return { payload: null, why: held.notes || 'the courier could not run the command' }
+  }
+
+  let parsed = null
+  try {
+    parsed = JSON.parse(held.payload_raw)
+  } catch (e) {
+    return { payload: null, why: 'it did not survive transcription: ' + (e && e.message) }
+  }
+
+  if (parsed && parsed.error) return { payload: null, why: 'the reader refused: ' + parsed.error }
+  if (!parsed || !parsed.payload || typeof parsed.payload_digest !== 'string') {
+    return { payload: null, why: 'what came back is not a digest-covered envelope' }
+  }
+
+  const actual = fnv1a(canonical(parsed.payload))
+  if (actual !== parsed.payload_digest) {
+    return {
+      payload: null,
+      why: 'digest mismatch: it was computed as ' + parsed.payload_digest +
+        ', what arrived digests to ' + actual,
+    }
+  }
+
+  return { payload: parsed.payload, why: null }
+}
 
 // The four axes that run whatever the repository asks for. They are not a house style: each
 // names a defect class that a document can carry all the way to implementation before anyone
@@ -152,7 +285,68 @@ function axesPrompt() {
     `no_guidance_found with what you looked for. Never invent axes to fill the list.`
 }
 
-function probePrompt(axis) {
+function groundPrompt() {
+  return `READ MODE. Resolve the evidence this document cites, and return what the command ` +
+    `printed — verbatim. You run one command and paste its output; you decide nothing, you ` +
+    `search for nothing, and you interpret nothing.\n\n` +
+    `Run exactly this:\n\n` +
+    `   node "${pluginRoot}/lib/citations.mjs" "${groundRepo}" "${artifact}"\n` +
+    (pluginRoot === SHELL_ROOT
+      ? `\n   If ${SHELL_ROOT} is empty in your shell that path cannot resolve. Stop and say ` +
+        `so in the way your result shape allows — never substitute a relative path or a guess.\n\n`
+      : '\n') +
+    `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, do ` +
+    `not reformat it, do not summarise it, and do not drop an excerpt that looks uninteresting ` +
+    `to you. It is one line of JSON carrying its own digest: your caller recomputes that digest ` +
+    `over what arrives, so a copy that drifted by a single character is detected rather than ` +
+    `believed.\n\n` +
+    `Citations that resolve to NOTHING come back in an "unresolved" list. Those are findings ` +
+    `about the document and they travel exactly as they are — do not go looking for what the ` +
+    `author probably meant, do not correct a path, and do not drop one because you can see the ` +
+    `file was renamed.\n\n` +
+    `A document that cites nothing resolvable prints an empty file list, and that IS the good ` +
+    `case. Return stop_reason failed ONLY when the command could not be run at all, with what ` +
+    `the shell reported in notes.`
+}
+
+/**
+ * The resolved excerpts, as every analyst reads them.
+ *
+ * This is the whole of 4a: the document's own citations, resolved once, so an analyst spends its
+ * turns ATTACKING rather than locating. The framing matters as much as the payload — an analyst
+ * that reads this as "the evidence" stops looking, and an axis whose ground the document never
+ * cites is exactly the axis that most needs to go and look.
+ */
+function groundSection(ground) {
+  if (!ground || !ground.payload) {
+    return `\n\nNOTE: the evidence this document cites was NOT resolved for you` +
+      (ground && ground.why ? ` (${ground.why})` : '') +
+      `, so locating it is yours to do, as it always was. Nothing about your axis changes.\n\n`
+  }
+
+  const p = ground.payload
+  const excerpts = (p.files || []).map((f) =>
+    `--- ${f.path} (${f.lines} line(s); the document cites ${(f.cited_at || []).join(', ')})\n` +
+    (f.excerpts || []).map((e) => e.text).join('\n     …\n')).join('\n\n')
+
+  const broken = (p.unresolved || []).length === 0 ? '' :
+    `\n\nCITATIONS THAT RESOLVE TO NOTHING — read these as evidence about the DOCUMENT, ` +
+    `because that is what they are. A document about to be built from that points at a file ` +
+    `nobody can open, or past the end of one that exists, is making a claim its reader cannot ` +
+    `check:\n` +
+    p.unresolved.map((u) => `- ${u.detail}`).join('\n')
+
+  return `\n\nWHAT THE DOCUMENT POINTS AT — resolved once, by a script, for every axis. These ` +
+    `are the exact lines the artefact cites, so you do not have to go and find them:\n\n` +
+    (excerpts || '(the document cites no location in this repository)') +
+    broken +
+    `\n\nThis is what the document POINTS AT and it is NOT the repository. Ground it never ` +
+    `cites is not here, and on your axis that silence may be the finding — go and read whatever ` +
+    `you need. What this removes is the twenty-six searches every other axis was also paying ` +
+    `for to arrive at the same lines.\n\n`
+}
+
+function probePrompt(axis, ground) {
   return `Attack this document on ONE axis. You are a probe, not a reviewer: your job is to ` +
     `find where it is wrong, not to appraise it. A document that survives you is not thereby ` +
     `endorsed — you have no way to endorse anything, and your caller computes what your ` +
@@ -161,7 +355,8 @@ function probePrompt(axis) {
     `REPOSITORY it will be implemented in: ${roots}\n` +
     `Read the code. A claim about what this document would do to this repository is worth ` +
     `something only if you looked; "this may conflict with the existing design" without a ` +
-    `path and a line is not a finding.\n\n` +
+    `path and a line is not a finding.\n` +
+    groundSection(ground) +
     (context ? `WHAT THIS DOCUMENT IS FOR:\n${context}\n\n` : '') +
     `YOUR AXIS — ${axis.key}${axis.source ? ' (from ' + axis.source + ')' : ''}:\n` +
     `${axis.charge}\n\n` +
@@ -195,6 +390,8 @@ if (!artifact) {
   return {
     artifact: '',
     axes: [],
+    axes_dropped: [],
+    shared_ground: null,
     findings: [],
     ambiguities: [],
     ratifiable: false,
@@ -210,6 +407,18 @@ if (!artifact) {
 }
 
 phase('Axes')
+
+// Launched BEFORE the axes are awaited, because the two are independent: what the repository
+// asks reviewers to check and what this document points at are different questions, and paying
+// for them one after the other would add the slower one's wall-clock to the faster one's for
+// nothing.
+const groundHeld = agent(groundPrompt(), {
+  agentType: 'vf-agentics:ground', effort: 'low', model: 'haiku', schema: CARRIED,
+  phase: 'Ground', label: 'ground',
+}).catch((e) => {
+  log(`WARNING: resolving the document's cited evidence failed: ${e && e.message}`)
+  return null
+})
 
 const discovered = await agent(axesPrompt(), {
   agentType: 'vf-agentics:analyst', effort: 'low', schema: AXES,
@@ -234,7 +443,40 @@ if (!discovered || discovered.stop_reason === 'unreadable') {
   log('This repository states no review guidance; probing on the standing axes.')
 }
 
-const axes = STANDING.concat(repoAxes)
+// The cap, applied to the DERIVED axes only. What it drops is a declared narrowing rather than
+// a coverage failure — the same distinction `vfa-develop`'s fix lane draws when a caller names a
+// locus instead of buying a survey — so it does not flip `coverage.complete`, which stays what it
+// has always been: axes this probe COMMISSIONED and did not get a report from. It is named in
+// `unreached` and in `resumable.remaining` all the same, because "an axis nobody ran" and "an
+// axis that found nothing" are the same empty list, and a caller who wants them can re-run with a
+// higher cap and get exactly them.
+const derived = repoAxes.slice(0, maxDerivedAxes)
+const axesDropped = repoAxes.slice(maxDerivedAxes).map((a) => a.key)
+
+if (axesDropped.length > 0) {
+  log(`Derived axes capped at ${maxDerivedAxes}: not probing ${axesDropped.join(', ')}. This ` +
+    `buys a NARROWER probe, not a cheaper equivalent one — raise max_derived_axes to get them.`)
+}
+
+const axes = STANDING.concat(derived)
+
+phase('Ground')
+const ground = carriedRead(await groundHeld)
+
+if (!ground.payload) {
+  // Degraded, and deliberately NOT a failed channel. A shared-ground read that does not happen
+  // costs this probe nothing it was going to have: every analyst locates the document's evidence
+  // itself, exactly as it did before this dispatch existed. More work, not less evidence — the
+  // same stance `vfa-survey` takes toward an unreadable knowledge base.
+  log(`The document's cited evidence was not resolved (${ground.why}); every analyst locates it ` +
+    `itself, as it did before. More work, not less evidence.`)
+} else {
+  const c = ground.payload.counts || {}
+  log(`Shared ground: ${c.excerpts || 0} excerpt(s) across ${c.files || 0} file(s) from ` +
+    `${c.cited || 0} citation(s)` +
+    (c.unresolved ? `, and ${c.unresolved} citation(s) that resolve to nothing — a finding ` +
+      `about the document, handed to every axis` : '') + '.')
+}
 
 phase('Probe')
 log(`Probing ${artifact} on ${axes.length} axes: ${axes.map((a) => a.key).join(', ')}.`)
@@ -242,7 +484,7 @@ log(`Probing ${artifact} on ${axes.length} axes: ${axes.map((a) => a.key).join('
 // parallel(), not pipeline(): every probe is a leaf. There is no second stage to feed, and
 // the barrier costs nothing because nothing waits on the slowest one but the report itself.
 const reports = await parallel(axes.map((axis) => () =>
-  agent(probePrompt(axis), {
+  agent(probePrompt(axis, ground), {
     agentType: 'vf-agentics:analyst', effort: 'high', schema: PROBE_FINDINGS,
     phase: 'Probe', label: `probe:${axis.key}`,
   })))
@@ -311,10 +553,23 @@ const coverage = {
       ? ['this repository\'s own review guidance was never read, so the probe covered the ' +
          'four standing axes only and anything this project specifically asks reviewers to ' +
          'check went unchecked']
-      : []),
+      : [])
+    .concat(axesDropped.map((key) =>
+      key + ': this axis was derived from the repository\'s own guidance and then not run, ' +
+      'because derived axes are capped at ' + maxDerivedAxes + '. Nothing was examined for it ' +
+      '— re-run with a higher max_derived_axes to buy it'))
+    .concat(!ground.payload
+      ? ['the evidence this document cites was not resolved for the analysts (' + ground.why +
+         '), so each located it itself — this cost turns, not coverage, and no finding above ' +
+         'rests on it']
+      : (ground.payload.unresolved || []).length > 0
+        ? ['the document cites ' + ground.payload.unresolved.length + ' location(s) that ' +
+           'resolve to nothing; every analyst was told, and whether that is a finding is theirs ' +
+           'to rule on rather than this script\'s']
+        : []),
   resumable: {
     runId: 'unknown-to-script: pair with the runId from the Workflow launch result',
-    remaining: unexamined.concat(incomplete),
+    remaining: unexamined.concat(incomplete).concat(axesDropped),
   },
 }
 
@@ -332,6 +587,15 @@ const ratifiable = ambiguities.length === 0 && coverage.complete
 return {
   artifact,
   axes: axes.map((a) => ({ key: a.key, source: a.source || '' })),
+  // What the cap declined to buy, beside what it bought. An axis list that showed only the
+  // axes that ran would read identically whether the repository asked for four or forty.
+  axes_dropped: axesDropped,
+  // The shared-ground read, as a fact rather than as evidence: no finding rests on it, and a
+  // reader deciding whether this probe was cheap for a good reason or for a bad one needs to
+  // see which.
+  shared_ground: ground.payload
+    ? { resolved: true, ...ground.payload.counts, unresolved: ground.payload.unresolved }
+    : { resolved: false, why: ground.why },
   guidance_read: discovered ? (discovered.guidance_read || []) : [],
   findings,
   ambiguities,

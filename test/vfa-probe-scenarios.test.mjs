@@ -8,7 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
+import { carriedEnvelope, runWorkflow, scriptedAgents } from './harness/workflow-host.mjs'
 
 const WF = fileURLToPath(new URL('../workflows/vfa-probe.workflow.js', import.meta.url))
 
@@ -239,4 +239,136 @@ test('every probe reads the repository, not only the document', async () => {
     assert.match(p.prompt, /C:\/repo/,
       `${p.opts.label} was not pointed at the repository it would be implemented in`)
   }
+})
+
+// ---------------------------------------------------------------- shared ground (part 4a)
+//
+// The measured probe spent its bill on sixteen analysts independently LOCATING the same
+// evidence. What is pinned here is that the resolution happens once, reaches every axis, and
+// degrades into "locate it yourself" rather than into a quieter probe.
+
+const groundPayload = (over = {}) => carriedEnvelope({
+  artifact: 'docs/proposal.md',
+  repo: 'C:/repo',
+  read_error: '',
+  files: [{
+    path: 'lib/kb.mjs',
+    lines: 778,
+    cited_at: ['61'],
+    excerpts: [{ from: 51, to: 71, text: '    61\texport const KINDS = [...]' }],
+  }],
+  unresolved: [],
+  counts: { cited: 1, files: 1, excerpts: 1, unresolved: 0 },
+  notes: 'resolved 1 excerpt(s)',
+  ...over,
+})
+
+const withGround = (over = {}) => probeAgents({ ground: groundPayload(), ...over })
+
+test('the document\'s cited evidence is resolved once and reaches every axis', async () => {
+  const { result, prompts } = await runWorkflow(WF, { args: ARGS, agent: withGround() })
+
+  assert.equal(prompts.filter((p) => p.opts.label === 'ground').length, 1,
+    'the citations are resolved once, not once per axis')
+  assert.equal(result.shared_ground.resolved, true)
+
+  for (const p of prompts.filter((x) => /^probe:/.test(x.opts.label))) {
+    assert.match(p.prompt, /WHAT THE DOCUMENT POINTS AT/, `${p.opts.label} got no shared ground`)
+    assert.match(p.prompt, /export const KINDS/, `${p.opts.label} got no excerpt`)
+    assert.match(p.prompt, /is NOT the repository/,
+      `${p.opts.label} was not told the excerpts are a starting point rather than the evidence`)
+  }
+})
+
+test('a citation that resolves to nothing reaches every axis as a finding to rule on', async () => {
+  const { result, prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: withGround({
+      ground: groundPayload({
+        unresolved: [{ path: 'lib/gone.mjs', why: 'missing', detail: 'the document cites lib/gone.mjs and no such file exists in this repository' }],
+        counts: { cited: 2, files: 1, excerpts: 1, unresolved: 1 },
+      }),
+    }),
+  })
+
+  assert.equal(result.shared_ground.unresolved.length, 1)
+  assert.match(prompts.find((p) => p.opts.label === 'probe:yagni').prompt,
+    /CITATIONS THAT RESOLVE TO NOTHING/)
+  assert.match(result.coverage.unreached.join(' '), /resolve to nothing/)
+  assert.equal(result.coverage.complete, true,
+    'a broken citation is a fact about the document, not a hole in this probe')
+})
+
+test('a failed ground read degrades to "locate it yourself" and never quietly narrows', async () => {
+  const { result, prompts } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: probeAgents({ ground: () => { throw new Error('node missing') } }),
+  })
+
+  assert.equal(result.shared_ground.resolved, false)
+  assert.match(prompts.find((p) => p.opts.label === 'probe:ambiguity').prompt,
+    /locating it is yours to do/)
+  assert.equal(result.coverage.complete, true,
+    'an unresolved shared ground costs turns, not coverage')
+  assert.match(result.coverage.unreached.join(' '), /no finding above\s+rests on it/)
+})
+
+// ---------------------------------------------------------------- the derived-axis cap (4b)
+
+const manyAxes = (n) => Array.from({ length: n }, (_, i) => ({
+  key: 'repo' + (i + 1), charge: 'attack thing ' + (i + 1), source: 'CLAUDE.md',
+}))
+
+test('derived axes are capped at eight by default, and the standing four are never capped', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: withGround({ axes: axesResult({ axes: manyAxes(12) }) }),
+  })
+
+  assert.equal(result.axes.length, 12, 'four standing plus eight derived')
+  assert.deepEqual(result.axes.slice(0, 4).map((a) => a.key), STANDING)
+  assert.deepEqual(result.axes_dropped, ['repo9', 'repo10', 'repo11', 'repo12'])
+})
+
+test('a capped axis is named in the coverage block, not in a log line', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: withGround({ axes: axesResult({ axes: manyAxes(10) }) }),
+  })
+
+  assert.match(result.coverage.unreached.join(' '), /repo9: this axis was derived/)
+  assert.ok(result.coverage.resumable.remaining.includes('repo10'),
+    'a caller who wants the dropped axes can re-run for exactly them')
+})
+
+test('a declared narrowing does not read as a coverage failure', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: withGround({ axes: axesResult({ axes: manyAxes(12) }) }),
+  })
+
+  assert.deepEqual(result.coverage.dropped, [],
+    'dropped stays what it means: an axis this probe commissioned and got no report from')
+  assert.equal(result.coverage.complete, true)
+  assert.equal(result.ratifiable, true)
+})
+
+test('the cap is a caller\'s dial, and zero means the standing four alone', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: { ...ARGS, max_derived_axes: 0 },
+    agent: withGround({ axes: axesResult({ axes: manyAxes(3) }) }),
+  })
+
+  assert.deepEqual(result.axes.map((a) => a.key), STANDING)
+  assert.deepEqual(result.axes_dropped, ['repo1', 'repo2', 'repo3'])
+})
+
+test('under the cap nothing is dropped and nothing is said about dropping', async () => {
+  const { result } = await runWorkflow(WF, {
+    args: ARGS,
+    agent: withGround({ axes: axesResult({ axes: manyAxes(2) }) }),
+  })
+
+  assert.deepEqual(result.axes_dropped, [])
+  assert.equal(result.coverage.unreached.length, 0)
 })

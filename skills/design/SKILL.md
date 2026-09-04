@@ -23,12 +23,67 @@ Invoking this skill **is** the user's opt-in for the `Workflow` tool. Do not ask
 - The user asked a question rather than for a design. Use `investigate`.
 - The answer fits in a paragraph. Write the paragraph.
 
+## Where this pass writes what it learns
+
+<!-- vfa:verbatim effort-store -->
+**Efforts — one directory for everything this piece of work produces.** A change moves through
+design, survey, probe and one or more runs, and each phase used to write its output somewhere
+different or nowhere at all. A survey's findings and a probe's findings went nowhere: the only
+record of a probe was a harness temp file, session-scoped and swept. Since design and develop
+are separate sessions by recommendation, everything the first learned that did not reach the
+document was gone before the second opened.
+
+Open one at the start. The user may name it; if they do not, derive the name and use it:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" slug "<the change or question, in the user's words>"
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" open <repo> <slug> --about "<the change or question>" --roots <roots>
+```
+
+Opening is idempotent, and a later phase of the same effort adopts the identity the first one
+recorded rather than restating it in its own words.
+
+Record a survey's or a probe's return by writing the workflow's result object to a file and
+passing the path — **verbatim, never summarised.** The point of the store is what the phase
+actually returned, and a command line is finite while a survey's return is as large as the
+survey was interesting:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" record <repo> <slug> survey|probe --file <path.json>
+```
+
+Link a run and the design document as each comes into being. These are **pointers**: run state
+stays at `.claude/vfa/runs/<runstamp>/` where every other part of this pipeline reads and writes
+it, and a design stays in the source tree, because it is source:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" link <repo> <slug> run --value <runstamp>
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" link <repo> <slug> design --value <path>
+```
+
+Read it back when a later phase opens on the same effort, and pass what it holds as `prior`:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/effort.mjs" read <repo> <slug> --latest survey
+```
+
+**The one rule: a stored survey never collapses a phase.** It is prior context and nothing
+more. Passed as `prior` it reaches a survey's planner alone, where it can only change how the
+ground is decomposed — it is never evidence, it never fills `ground`, and it never answers the
+triage's settled-shape question. The reason is mechanical rather than stylistic: the null
+survey's gate reads one field, an entry's computed freshness, and reads no kind and no
+provenance, so anything that reached it would be admitted on freshness alone with no grading
+whatsoever. The knowledge base at `.claude/vfa/kb/` is the only store whose entries are checked
+against the tree and admitted to that arithmetic. This one is durable scratch, and nothing in
+it is checked against anything.
+<!-- /vfa:verbatim -->
+
 ## Step 1 — Evidence before questions
 
 Run the survey first, scoped to the idea:
 
 ```
-Workflow({ name: 'vf-agentics:vfa-survey', args: { question, roots, notes, intelligence } })
+Workflow({ name: 'vf-agentics:vfa-survey', args: { question, roots, notes, intelligence, prior } })
 ```
 
 `question` is what the design needs to know about the existing system — how the thing it
@@ -56,6 +111,13 @@ answered here, not asked of the human.** The human is asked only what only the h
 intent, priorities, taste, real-world constraints, what they are actually trying to
 accomplish. Asking a person where a function lives, when the survey could have found it,
 spends the scarcest thing in the room to save the cheapest.
+
+`prior` is what an earlier phase of this effort stored, when there is one. It reaches the
+planner and nothing else; see the effort rule above.
+
+**Record the survey's return into the effort as soon as it comes back**, before the interview
+spends any of it. An interview is a long conversation, and a survey that lives only in this
+context dies with it.
 
 Keep `result.coverage`. It travels into the design document as it stands: an unreached
 channel visible at design time is a decision the human can make now, and the same gap
@@ -312,6 +374,21 @@ Three sections carry markers, in a root document and a leaf alike:
 <!-- /vfa:section -->
 ```
 
+A fourth is **optional**: `ground`. Write it when this pass established which paths the change
+lives in — one repo-relative path per line, nothing else in the section. Leave it out when it
+did not; a design with no ground section is a finished design and always was, and "this design
+did not name its ground" is a fact about the design rather than a defect in it.
+
+**What `ground` is, and the input it must never be confused with.** It feeds `develop`'s
+`ground` argument, which is **checked**: the workflow reads a knowledge-base chain over those
+paths and collapses the survey only if every one carries a fresh entry. A wrong path there
+refuses the collapse and says which path and why — it costs a survey nobody needed to skip.
+
+It is **not** `locus`. That input is **declared**: it puts the run on the fix lane, drops the
+survey and the decomposition outright, and fences what the coder may touch, so a wrong value
+misroutes the whole run. The fix lane's locus stays a caller declaration made in the develop
+session, and is never fed from a document.
+
 They exist so everything downstream that consumes a design document does it **mechanically**.
 `lib/programme.mjs --notes` concatenates marked sections byte for byte; the ratified change is
 *extracted*, never composed; and a document missing a required marker fails loudly by name,
@@ -321,6 +398,9 @@ They are also the **completeness signal**. A leaf whose required sections are ab
 design that was never finished — whatever else is in the file — and the programme skill routes
 it straight back to `awaiting-design`. That is the whole recovery mechanism for a session that
 died mid-design: no ceremony, no re-asking, just a document that does not yet parse as done.
+
+**Link the finished document into the effort** the moment it is on disk — a design nobody
+linked is a design the develop session has to be told about by hand.
 
 **Write them last**, as the final act of the pass. A marker present over a half-written section
 is worse than no marker: it says finished.
@@ -372,8 +452,29 @@ out of the document rather than retyping it:
 node "${CLAUDE_PLUGIN_ROOT}/lib/programme.mjs" --section change --file <the design document>
 ```
 
-`--section settled-evidence` prints the planner's payload the same way. Those two strings are
+`--section settled-evidence` prints the planner's payload the same way, and
+`--section ground` prints the ground block when the document carries one. Those strings are
 the whole handoff — `develop` surveys, plans, partitions and implements from them.
+
+### Say how much pipeline the change needs — as advice, not as an argument
+
+A design pass has just spent an interview establishing how big and how settled the change is.
+Handing it over with nothing said about that makes `develop`'s triage re-derive from a change
+string what this conversation already knew.
+
+So write one short paragraph, in the document, naming which of the triage's own three outcomes
+this change looks like — **direct session**, **fix lane**, or **full lane** — and why. Use those
+three words and no others; they are the triage's vocabulary, and inventing a fourth gives the
+develop session something it cannot act on.
+
+Two things this paragraph is not:
+
+- **It is not the `lane` argument.** That input is a closed two-value enum that falls back to
+  `full` on anything it does not recognise. Never pass a lane from here.
+- **It is not a decision.** The triage stays the decision point and the user is asked once, by
+  `develop`. A design that pre-decided the lane would make the fix lane's own coverage block
+  false: it states in words that nothing was searched by this run and nothing was recalled from
+  the knowledge base, which stops being true the moment a design survey supplied the locus.
 
 **Why the extra command instead of copying the paragraph.** The change string is a key, not a
 description: `develop`'s existing-run guard and its resume guard both compare it exactly. A

@@ -660,3 +660,58 @@ test('stateOf answers about one entry without walking anything', () => {
   assert.equal(stateOf(dir, single, []).state, 'fresh',
     'no commit touched the subject, so no anchor has to be read at all')
 })
+
+// ---------------------------------------------------------------- the HEAD sentinel (inc 25)
+//
+// A caller with a tree of its own passes the sha it cut from. A caller with none — the survey,
+// depositing an absence it just observed — has no filesystem and no git, and a model asked for a
+// sha invents one that orders history confidently and wrongly. So the sentinel is resolved in the
+// process standing in the repository, exactly as the anchors are.
+
+test('the HEAD sentinel is resolved where the repository is, not where the caller is', () => {
+  const { dir, head } = repo()
+  const entry = {
+    id: 'absence:1', claim: 'a search of src found nothing', kind: 'absence',
+    about: ['src'], observed_at: 'HEAD', source: { via: 'survey-absence' },
+  }
+  const payload = { entries: [entry] }
+
+  assert.equal(appendEntries(dir, payload, digestEntry(payload)).ok, true)
+
+  const stored = readNode(dir, 'src').entries[0]
+  assert.equal(stored.observed_at, head, 'the sentinel became the commit the repo is on')
+  assert.deepEqual(stored.anchors, [], 'a directory subject contributes no file anchor')
+})
+
+test('an absence about a directory reads fresh until something touches that directory', () => {
+  const { dir } = repo()
+  const entry = {
+    id: 'absence:1', claim: 'a search of src found nothing', kind: 'absence',
+    about: ['src'], observed_at: 'HEAD', source: { via: 'survey-absence' },
+  }
+  appendEntries(dir, { entries: [entry] })
+
+  const before = chainFor(dir, ['src']).chains[0].entries.find((e) => e.id === 'absence:1')
+  assert.equal(before.state, 'fresh')
+
+  write(dir, { 'src/c.js': 'charlie\n' })
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '-qm', 'a hand commit into the searched ground')
+
+  const after = chainFor(dir, ['src']).chains[0].entries.find((e) => e.id === 'absence:1')
+  assert.equal(after.state, 'stale',
+    'the ground moved, so "I looked and it was not there" is a lead rather than a fact')
+})
+
+test('the sentinel is refused where git cannot answer, never written empty', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vfa-kb-nogit-')).split('\\').join('/')
+  mkdirSync(join(dir, 'src'), { recursive: true })
+  writeFileSync(join(dir, 'src', 'a.js'), 'alpha\n', 'utf8')
+
+  const out = appendEntries(dir, { entries: [{
+    id: 'absence:1', claim: 'c', kind: 'absence', about: ['src'], observed_at: 'HEAD',
+  }] })
+
+  assert.equal(out.ok, false)
+  assert.match(out.error, /git could not say what commit/)
+})

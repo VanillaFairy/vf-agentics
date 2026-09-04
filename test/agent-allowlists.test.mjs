@@ -38,6 +38,10 @@ const ALLOWLISTS = {
   analyst: ['Glob', 'Grep', 'Read'],
   coder: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
   'doc-researcher': ['Glob', 'Grep', 'Read', 'WebFetch', 'WebSearch'],
+  // As narrow as `kb`'s, for the same reason and one of its own: it runs `lib/citations.mjs` and
+  // reports what it printed. A `Read` here would turn the one dispatch that exists to REPLACE
+  // sixteen analysts' exploration into a seventeenth explorer.
+  ground: ['Bash'],
   historian: ['Bash', 'Grep', 'Read'],
   // Narrower than `run-state`'s, on purpose. Both are couriers for one directory, but this one
   // opens no file of its own: it runs `lib/kb.mjs` and reports what it printed, and a knowledge
