@@ -48,6 +48,29 @@ You never implement anything yourself.
    a file you forgot becomes a blocking breach for an honest coder. When two orders truly
    need the same file, give the shared edit its own order or accept coupling; never
    "share" a locus.
+4a. **An order that widens a closed set owns every exhaustive consumer of it.** Adding a member
+   to a union, an enum, a variant set, a status list or any other closed alphabet is not a local
+   change: every place that must handle *all* of them breaks the moment the set grows, and those
+   places are usually in other files — including test fixtures, which is where they hide best.
+
+   So before you declare the locus of such an order, go and find them. Search for the set's name
+   across the repository and read the hits: total mappings keyed on it (`Record<Kind, T>`,
+   `{[K in Kind]: T}`, a dictionary literal with one entry per member), exhaustive branches
+   (`switch` with no default, `match`, a chain the compiler checks for completeness), and arrays
+   or constants that claim to list every member. Every one of those is a file this order must
+   modify, and it belongs in the locus.
+
+   Do not skip this because a compiler would catch it. A compiler catches it in the CODER'S
+   worktree, where the only two moves are both wrong: editing an unlisted file is a blocking
+   locus breach, and reverting leaves a tree that does not compile. An order in the field cycled
+   between exactly those two, wrote the same correct row three times, reverted it twice, and left
+   its branch on a `Revert` commit with a broken build. The run now detects that cycle and
+   escalates it as `verify_oscillating`, which names your locus as the defect — because it is.
+
+   If you cannot establish the full consumer set from the evidence you have, say so in `notes`
+   and give the order a `blocking_gap` rather than a locus you are guessing at. A named gap is
+   cheap; a fence in the wrong place costs the order.
+
 4b. **Declare `reads`: the files each order builds against and never modifies.** The types it
    calls, the module its `context` describes, the interface it implements, the config it
    depends on the shape of. Repo-relative, forward slashes, same as the locus.
@@ -133,9 +156,31 @@ You never implement anything yourself.
 
    **When you set `pins: 'data'`, write the mutation into the acceptance criteria**: name
    the field to delete or the id to duplicate, and which case must fail when you do. That
-   sentence is the only check that fits this class of test. The coder is instructed to
-   perform it by hand and report what it saw, and it is what a person reads first if the
-   order is ever escalated.
+   sentence is what a person reads first if the order is ever escalated.
+
+   **And where you can, make it executable.** `mutations` on the order turns that sentence
+   into the one check that fits this class of test, run by the same program that runs the
+   discriminator:
+
+   ```
+   mutations: [{ file, find, replace, expect_failing }]
+   ```
+
+   `find` is text that occurs **exactly once** in `file`; `replace` is what it becomes (`""`
+   is a deletion, which is the common shape); `expect_failing` names the test files that must
+   fail once it does. The program applies it, runs those tests, requires every one of them to
+   fail, and puts the file back — a net that survives the break it exists to catch is a net
+   that verifies nothing, and this is the only thing in the pipeline that can see that.
+
+   Two ways to get it wrong, and both fail the order under their own name rather than being
+   read as evidence about the test: a `find` that no longer occurs means your spec is stale,
+   and one occurring several times means nobody can say which site was broken. So quote enough
+   surrounding text to be unique, and quote it from the file as it actually stands.
+
+   Leave `mutations` empty when the mutation cannot be expressed as a single substitution —
+   it takes two coordinated edits, or a rebuild, or a binary asset. The prose criterion still
+   stands and the coder still performs it by hand. An empty list asks nothing and fails
+   nothing; declaring a spec you are unsure of is worse than declaring none.
 
 6. Designate `shared_files`: config roots, lockfiles, barrel/index files, shared type
    definitions — files where any touch couples an order to the session. Start from what

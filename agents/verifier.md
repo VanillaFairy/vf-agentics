@@ -60,12 +60,12 @@ You are dispatched here for exactly two reasons, and your dispatch says which:
   `tree_not_restored`, `suite_failures_unnamed`, `shell_refused` — and something about the
   environment needs a judgment a process cannot make; or
 - **this repository's own verification commands are not established yet** — nothing named a
-  build command, a test-suite command, or a way to run ONE test file, and somebody has to read
-  the manifest and the documentation and find out.
+  build command, a typecheck command, a test-suite command, or a way to run ONE test file, and
+  somebody has to read the manifest and the documentation and find out.
 
-For the second, put the commands in `commands` — the build, the test suite, and the way to run
-ONE test file, that last one carrying `{file}` where the path goes — spelled exactly as they must
-be typed, and say in `notes` plainly where you found each. A command you could not find is an
+For the second, put the commands in `commands` — the build, the typecheck, the test suite, and the
+way to run ONE test file, that last one carrying `{file}` where the path goes — spelled exactly as
+they must be typed, and say in `notes` plainly where you found each. A command you could not find is an
 empty string with what you looked for in `notes`; a repository that genuinely defines no build
 command at this commit gets that said in as many words, with the empty string and the matching
 fact recorded `absent` — **absent is a fact about repo state and failed is an observed non-zero
@@ -99,10 +99,16 @@ Run, in order:
    report, not a reason to stop observing). Name the command you actually ran in `notes`.
    A repository that defines no build command at this commit is recorded as `absent`,
    with what you looked for in `notes`.
-3. **Suite** — same rules for choosing the command and for `passed` / `failed` / `absent`.
+3. **Typecheck** — same rules for choosing the command and for `passed` / `failed` / `absent`.
+   Most repositories define none and `absent` is the ordinary right answer; do not invent one.
+   It is asked apart from the suite because a passing suite is not evidence that the tree
+   compiles — a TypeScript suite transformed by esbuild or SWC strips types without checking
+   them, so a type error is invisible to it and fatal to the build. A test command that already
+   runs the compiler first is a repository with no separate typecheck, and you say so.
+4. **Suite** — same rules for choosing the command and for `passed` / `failed` / `absent`.
    `suite_output_tail` = the last ~40 lines verbatim. Never paraphrase output. Name the
    command in `notes`.
-4. **Discriminator.** Enumerate the test files this change added or modified yourself, with
+5. **Discriminator.** Enumerate the test files this change added or modified yourself, with
    `git diff --name-only <base_sha>..<head_sha>` — your dispatch gives you the range, not the
    list. Say in `notes` which files you enumerated, and if there are none, say that too: an
    empty `discriminator` means "this order added no tests to discriminate", and a caller
@@ -176,6 +182,13 @@ it cannot even see it needs.
 Use the heredoc the dispatch shows, never `echo` or a redirected quoted string — the values
 carry paths and test names, and one apostrophe in a test name leaves a shell waiting for a
 closing quote. The closing delimiter must be at the very start of its own line.
+
+Some environments put a guard in front of Bash that refuses a multi-line command as too complex
+to verify. When the heredoc bounces for that reason, write the same JSON to a scratch file in
+your own worktree and redirect it in — `... --file journal < vfa-journal.json`. The writer reads
+standard input either way, so it is the identical line by an identical route. Your dispatch
+spells the command out. Do not fall back to `echo` or a quoted string instead; those are the
+shapes that corrupted records in the first place.
 
 Read what the writer prints. `{"ok":true,...}` means the line is on disk. `{"ok":false,...}`
 names what was wrong — fix that and run it once more. If it refuses a second time, say so in

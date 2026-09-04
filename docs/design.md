@@ -322,8 +322,8 @@ approved. The cycle is read from `role` and `deps` — nothing new is asked of a
 
 ## Verification
 
-The four mechanical checks of one work order — the commit series, the build, the test suite, the
-discriminator — are **one program**, `lib/verify.mjs`, run in one process. Nothing in it decides
+The five mechanical checks of one work order — the commit series, the build, the typecheck, the
+test suite, the discriminator — are **one program**, `lib/verify.mjs`, run in one process. Nothing in it decides
 whether an order passed. It observes, and it prints exactly the fields the caller's verdict
 already read, which is the entire safety argument for letting a script do this work.
 
@@ -359,6 +359,18 @@ rather than the work, because an order verified on bytes nothing vouches for is 
 verified. The third buys the investigator. Two rungs, never a loop — a third courier types into
 the same shell as the second.
 
+**A passing suite is not evidence that the tree compiles.** The typecheck is its own answer
+beside the build and the suite, never derived from either, because for most TypeScript projects
+the suite is structurally incapable of giving it: Vitest and Jest transform with esbuild, which
+strips types without checking them, so a missing key in a typed record is invisible to the suite
+and fatal to the build. In the field an order's branch tip carried 826 passing tests over a tree
+`tsc --noEmit` rejected, and the branch was left at a literal `Revert` commit. `absent` is the
+ordinary answer and costs nothing — most repositories define no separate typecheck, and one whose
+test command runs the compiler first is covered by `suite` — but it is a fact somebody
+established, exactly as an absent build is, and it is never inferred from an empty command. It
+does not enter `measured` when absent, so an order with nothing mechanically checked still
+reports the emptiness that IRON LAW §4 exists to surface.
+
 **Absent is never inferred, in either direction.** `absent` means the repository defines no such
 command at this commit; `failed` means a command ran and exited non-zero. A shell cannot tell
 them apart, so the program records `absent` only where somebody declared it. Likewise a test that
@@ -388,7 +400,25 @@ collapses to one, because a runner's banner rules are the single part of a tail 
 Field case: in run `20260902-124933` exactly one of five couriers damaged its payload, it was the
 only one carrying a failing suite's Unicode banner, and the damage was two dropped rule glyphs.
 
-Contract: `docs/superpowers/specs/2026-08-30-increment-11-contracts.md`.
+**A regression net is checked by breaking what it guards.** `pins: 'data'` waives the base
+question for a test written to hold something already correct in place, because that question is
+unanswerable by construction there. But the waiver removes the *only* mechanical question such a
+test was asked, leaving `passes_now` — which a test asserting `true === true` also satisfies. So an
+order may declare `mutations`: a text substitution in one tracked file plus the tests that must
+fail once it is applied. The program applies it, runs them, requires every one to fail, and puts
+the file back.
+
+A substitution rather than a command, and the difference is the safety argument: a command can do
+anything and has no inverse, while a substitution cannot leave the worktree, reverts with one `git
+checkout --`, and can **refuse**. A `find` matching zero times is a stale spec; one matching many
+is ambiguous about which site broke. Both fail the order pointing at the *spec* rather than the
+test, because a spec nothing could apply is not evidence about anything. Declaring no mutation is
+the default and asks nothing, so the prose criterion and the coder's by-hand check remain the
+answer wherever a mutation is not a single substitution.
+
+Contracts: `docs/superpowers/specs/2026-08-30-increment-11-contracts.md`, extended by
+`2026-09-04-increment-22-contracts.md` with the typecheck field and
+`2026-09-04-increment-23-contracts.md` with the executable mutation.
 
 ## Capability layer
 
@@ -451,8 +481,53 @@ Contract: `docs/superpowers/specs/2026-08-30-increment-12-contracts.md`.
 
 ## Lane catalogue
 
-*Empty. Increment 15 fills this section, with the closed lane catalogue and its admission rule;
-increment 16 extends it with the test-migration lane.*
+A lane is **a pre-verified path through ledger-recordable states**. The harness makes a brick
+safe to run; only a proven path makes it safe to mean something. Two lanes exist.
+
+**`full`** is the pipeline as described everywhere else in this document: survey, decompose,
+partition, waves, held cycles, integration. It is the default and nothing about it moved.
+
+**`fix`** is the same run with the survey and the decomposition taken out, for a change the
+caller has already triaged down to one locus. It exists because the triage was telling the truth
+and then throwing the answer away. A ten-session field audit found seven of ten better served by
+a direct session, and named what the pipeline was buying in the other three: **the adversarial
+review and the discriminator, not the survey and the planner.** But triage ended by handing the
+work back to a plain session, so the two-thirds that paid got rebuilt by hand or skipped. The
+lane buys that two-thirds directly.
+
+Three properties make it honest rather than merely cheap.
+
+**It is a lane inside the run, not a second workflow.** Worktrees, the check runner, the review
+loop, the ledger, the resume verdict and the collector are inherited entire. The recordable
+states do not move, which is what makes the lane resumable the day it lands instead of after
+somebody remembers to make it so — and a parallel workflow would have duplicated all of that
+machinery and inherited none of its guarantees.
+
+**The locus is the admission rule, and the lane refuses without one.** What licenses skipping the
+survey is that the caller has already decided which files the change is about — that is precisely
+the judgment a survey would have been bought to make. Asked without a locus, the run refuses at
+input rather than sending a planner to invent a fence from a change string; a fence in the wrong
+place is one the coder may not widen, and it costs the order rather than the dispatch.
+
+**Only phases are dropped, never gates.** The discriminator still proves the test fails without
+the fix. The adversarial reviewer still attacks the series and its criticals still hold the
+order. The mechanical checks still run whole, and the integration review still reads the merged
+head. One dispatch it keeps that it could have dropped is the planner — at low effort, charged to
+write one order rather than to decompose anything — because that is the only place the run
+directory, the plan envelope and the digest manifest are written, and a lane with no resume point
+pays its whole price twice the first time a session limit lands.
+
+`coverage.from_kb` says which lane ran and that nothing was searched. That block must never let a
+lane read like a fresh knowledge-base chain: a chain is a program's finding that the ground is
+recorded, a lane is a caller's judgment that it is known, and presenting the second as the first
+is the laundering the coverage block exists to prevent.
+
+The catalogue is deliberately short. The reserved increment 15 designs two further order-level
+lanes (`tdd`, `docs`) plus series-shape rules over a declared test and implementation locus, and
+increment 16 a test-migration lane; none of that has landed, and an order fitting no lane still
+takes the full path rather than a bespoke graph.
+
+Contract: `docs/superpowers/specs/2026-09-04-increment-24-contracts.md`.
 
 ## Knowledge base
 
@@ -550,8 +625,17 @@ the ground, the arithmetic checks that every named path is covered by a fresh en
 becomes the run's evidence base with the coverage block saying so. A stale chain cannot take that
 path — the refusal is by construction, not by policy.
 
+**A base that does not exist refuses differently from a base having a bad day.** `kb_present` is
+computed on every read, like every other state here, and it separates two facts that used to
+arrive at a caller identically as an empty chain: a repository with no base at all, and a base
+that simply knows nothing about this path. Only the first is a setup fact — the collapse cannot
+fire in that repository for any change, on any day — and a project that has never had a base was
+reading its every refusal as routine staleness while paying for a full survey every run. This
+plugin's own repository was one of them. The message says which case it hit, and names the path.
+
 Contracts: `docs/superpowers/specs/2026-08-30-increment-13-contracts.md` for the core,
-`2026-08-30-increment-14-contracts.md` for survey consumption and the null survey. Increment 18
+`2026-08-30-increment-14-contracts.md` for survey consumption and the null survey,
+`2026-09-04-increment-22-contracts.md` for `kb_present`. Increment 18
 adds the guardian and surface-glob anchor classes, absence entries, `kb init` harvesting and the
 optional `INDEX.md` render for the human layer.
 

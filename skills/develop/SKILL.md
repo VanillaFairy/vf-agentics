@@ -141,8 +141,16 @@ Three properties. The answer only points one way when **all three** hold:
 - **nothing to partition** — no independent pieces to run side by side, and no red/green
   split worth holding, because it is one series of commits by one author.
 
-When all three hold, offer the work back, in these terms: **this fits a direct session with a
-reviewer pass; the pipeline would cost more than it protects.**
+When all three hold, **offer the fix lane** — `lane: 'fix'` with the locus you just named. It
+is the same run with the survey and the decomposition taken out, and it keeps the two things
+the audit found were actually paying: the discriminator and the adversarial review. Say it in
+these terms: **this does not need the full pipeline; the fix lane runs the checks that catch
+things and skips the parts that were buying nothing here.**
+
+A direct session is still the right answer for the smallest work — a rename, a typo, a
+one-line constant — where even four dispatches and a worktree cost more than the change. Offer
+that instead when the change is that small, on the same terms as before: this fits a direct
+session with a reviewer pass.
 
 **Say why, with the numbers.** They are in `docs/2026-08-29-eva-plays-2-field-audit.md`, which
 read ten sessions end to end and asked of each whether a naive "do X" would have served
@@ -153,11 +161,13 @@ best direct session in that audit landed ~1,300 lines, 62 tests and four clean c
 minutes with zero corrections. That comparison is the user's to make, and they can only make
 it if you put it in front of them.
 
-**Say what a direct session should keep.** The audit's other half is that the periphery is
-what paid: adversarial review and the discriminator caught real defects that would otherwise
-have shipped. So the recommendation is not "just write it" — it is write it directly, then
-dispatch a fresh `vf-agentics:reviewer` over the diff, and where the change is a fix, write
-the test that fails first. That is the cheap two-thirds of what the pipeline is for.
+**Say what has to be kept either way.** The audit's other half is that the periphery is what
+paid: adversarial review and the discriminator caught real defects that would otherwise have
+shipped. The fix lane keeps both by construction, which is the whole reason it exists — the
+recommendation used to end by handing the work back, so the two-thirds that pays got rebuilt
+by hand or quietly skipped. If you do send the user to a direct session instead, say the rest
+of it: write it directly, then dispatch a fresh `vf-agentics:reviewer` over the diff, and where
+the change is a fix, write the test that fails first.
 
 **Declining is a recommendation, never a refusal.** The user's "run it anyway" is the end of
 the conversation, not the start of a second round of it — proceed to step 1 and say nothing
@@ -169,6 +179,53 @@ contract other code depends on, anything with independent pieces, or a change th
 reviewed adversarially — all of those are what this pipeline is for. A triage that declines
 those is not saving money, it is declining the work. When the three properties do not all
 hold, say nothing and start the run.
+
+### The fix lane
+
+`lane: 'fix'` is the pipeline with the two phases the triage just proved unnecessary taken
+out. It is a lane inside the same run, not a different tool: the worktree, the check runner,
+the review loop, the ledger, the resume verdict and the collector are all unchanged, so a fix
+lane run resumes after a session limit exactly like any other and is swept by the same
+`lib/gc.mjs` afterwards.
+
+    lane: 'fix', locus: ['src/camera.ts'], regression: true
+
+- **`locus` is required and the lane refuses without it.** What licenses skipping the survey
+  is that you have already decided which files this is about — that is the judgment a survey
+  would have been bought to make. The run refuses at input rather than asking a planner to
+  guess a fence the coder may not widen. Pass the files; the planner confirms them against the
+  repository and widens them if you were short, which is free at plan time and expensive
+  later.
+- **`regression: true` buys one history search.** Pass it when the change is "this used to
+  work". A regression has a commit where the behaviour was right and one where it stopped
+  being, and finding it is usually cheaper than re-deriving the intent from the tree. Leave it
+  off for an ordinary fix — there is no such commit to find, and the search would report that
+  at the price of a dispatch.
+
+What it costs: plan, code, verify, review, merge, plus the history search if you asked for one
+— against the ten to twelve a red/green behaviour costs through the full ladder, and with no
+400–500k-token survey in front of it.
+
+What it does **not** drop: the discriminator still proves the test fails without the fix, the
+adversarial reviewer still attacks the series, the mechanical checks still run whole — build,
+typecheck, suite, commit series — and the integration review still reads the merged head. Those
+are the parts the field audit found were paying for themselves.
+
+One dispatch it keeps that it could have dropped: the planner, at low effort and on sonnet,
+charged to write one order rather than to decompose anything. It is the only place the run
+directory, the plan envelope and the digest manifest are written, and a lane with no resume
+point pays for itself twice the first time a session limit lands mid-run.
+
+**Where not to use it.** Anything with several loci, an unsettled approach, a contract other
+work builds against, or independent pieces worth running side by side. If the planner comes
+back saying the change cannot honestly be one order, it says so in `blocking_gaps` and returns
+the order anyway — that is your cue to consider re-running on the full lane, and it is your
+call rather than the planner's.
+
+**`coverage.from_kb` says the lane ran**, that nothing was searched, and which locus was
+declared. Present it with the result: a run whose ground was named by the caller is a
+different claim from one whose ground was surveyed, and the user is entitled to know which
+they have.
 
 ### The two properties the run can use
 

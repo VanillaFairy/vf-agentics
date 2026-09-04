@@ -389,6 +389,66 @@ test('a stalled verify fix round escalates as verify_failed_repeatedly with a ve
   assert.deepEqual(result.integration.merged, [], 'an escalated order is never merged')
 })
 
+test('a fix round oscillating between two failure states escalates instead of cycling forever',
+  async () => {
+    // The third stall shape, and the one that had no exit. `verify_failed_repeatedly` compares
+    // this round's failing facts with the round IMMEDIATELY before, so A, B, A, B never trips it
+    // — the coder is moving every round, just in a circle.
+    //
+    // The field case is an order that widened a closed union whose total records lived in other
+    // files' fixtures. Its locus did not name them, so the coder had two moves and both were
+    // wrong: edit them (a blocking locus breach) or revert (a tree that no longer compiles). It
+    // wrote the same correct row three times, reverted it twice, and left the branch on a
+    // literal `Revert` commit. Neither move is a defect the coder can fix, because the fence it
+    // is caught against is the plan's.
+    let round = 0
+    const { result } = await run({
+      agent: happyAgents({
+        'verify:': () => {
+          const sha = 'f'.repeat(39) + (++round)
+          // Odd rounds: the edit is outside the locus. Even rounds: it was reverted, so the
+          // breach is gone and the build is broken instead. Neither state ever repeats twice
+          // running, and the pair repeats forever.
+          return round % 2 === 1
+            ? verified({ build: 'passed', series_findings: [
+                { check: 'locus-breach', blocking: true, sha,
+                  message: 'src/fixtures/rows.ts is outside the declared locus' }] })
+            : verified({ build: 'failed' })
+        },
+        'fix:': () => {
+          const sha = 'a'.repeat(39) + round
+          return coded({ head_sha: sha, commits: [{ sha, subject: 'attempt ' + round }] })
+        },
+      }),
+    })
+
+    assert.equal(result.escalations.length, 1)
+    assert.equal(result.escalations[0].reason, 'verify_oscillating')
+    assert.ok(result.escalations[0].unresolved.some((f) => /cycling/.test(f.claim)),
+      'the escalation says which stall this was')
+    assert.ok(result.escalations[0].unresolved.some((f) => /Widen the locus in the plan/.test(f.claim)),
+      'and names the plan as the defect, because a coder may not widen its own fence')
+    assert.deepEqual(result.integration.merged, [], 'an escalated order is never merged')
+    assert.equal(result.coverage.complete, false)
+  })
+
+test('an order that fails once and is then fixed is never called oscillating', async () => {
+  // The negative control. Visiting a failure state once and leaving it is what a fix round IS,
+  // and an escalation that fired on it would end every ordinary round-one failure.
+  let round = 0
+  const { result } = await run({
+    agent: happyAgents({
+      'verify:': () => (++round === 1 ? verified({ build: 'failed' }) : verified()),
+      'fix:': () => coded({ head_sha: 'c'.repeat(40),
+        commits: [{ sha: 'c'.repeat(40), subject: 'fix: the build' }] }),
+    }),
+  })
+
+  assert.deepEqual(result.escalations, [])
+  assert.deepEqual(result.implemented.map((e) => e.id), ['W1'],
+    'a round-one failure that the fix round actually fixes is the ordinary happy path')
+})
+
 test('a fix round that lands commits and moves nothing escalates on the second identical verdict', async () => {
   // The other stall shape. `noProgress` catches a fix round that lands NOTHING; this is the
   // coder that lands commit after commit against a red it cannot move — a flaky test, a

@@ -537,10 +537,33 @@ test('one uncovered path among several refuses the collapse for all of them', as
     }),
   })
 
-  assert.match(logs.join(' '), /does not cover src\/W2\.js \(nothing recorded\)/)
+  assert.match(logs.join(' '), /does not cover src\/W2\.js \(nothing recorded for this path, though the base exists\)/,
+    'a base that exists and does not know this path is a different fact from no base at all')
   assert.ok(!/No survey:/.test(logs.join(' ')),
     'the ground is what the caller named, all of it — a partial chain covers a partial change')
 })
+
+test('a repository with no knowledge base at all is told so, not told its chain is thin',
+  async () => {
+    // The two refusals used to be one message. A project that has never had a base — this
+    // plugin's own repository is one — read every refusal as routine staleness, paid a full
+    // survey every run, and had nothing to tell it the feature it was relying on was not
+    // installed. Only one of these is a setup fact the user can act on once.
+    const { logs } = await runWorkflow(WF, {
+      args: { ...GROUND, ground: ['src/W1.js'] },
+      workflow: () => surveyResult(),
+      agent: cast({ 'kb-ground': carriedChain({ 'src/W1.js': [] }, undefined, false) }),
+    })
+
+    const said = logs.join(' ')
+    assert.match(said, /NO KNOWLEDGE BASE at \.claude\/vfa\/kb/,
+      'the path is named, because that is the whole of what a user needs to act')
+    assert.match(said, /cannot fire here for any change/,
+      'and that it is about every change, not this one')
+    assert.ok(!/nothing recorded for this path/.test(said),
+      'the stale-chain wording would read as routine, which is the confusion being removed')
+    assert.ok(!/No survey:/.test(said), 'and the collapse still refuses, as it must')
+  })
 
 test('a settled shape with no named ground surveys in full and buys no chain', async () => {
   const { prompts } = await runWorkflow(WF, {

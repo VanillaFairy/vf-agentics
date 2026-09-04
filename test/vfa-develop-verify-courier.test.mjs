@@ -81,11 +81,14 @@ const refused = (kind, message) => carriedPayload({
 
 /** What an investigator returns: the same facts, measured by hand, plus what it established. */
 const investigated = (over = {}) => ({
-  stop_reason: 'completed', build: 'passed', suite: 'passed', suite_output_tail: 'ok',
+  // A repository with no separate typecheck, which is the ordinary case: the investigator went
+  // and looked, found none, and says so. That is a fact it established, not a question it ducked.
+  stop_reason: 'completed', build: 'passed', typecheck: 'absent', suite: 'passed',
+  suite_output_tail: 'ok',
   failing_tests: [],
   discriminator: [{ test_id: 'test/w1.test.js', failed_on_base: true, passes_now: true }],
   series_findings: [],
-  commands: { build: 'npm run build', suite: 'npm test', test_one: 'npm test -- {file}' },
+  commands: { build: 'npm run build', typecheck: '', suite: 'npm test', test_one: 'npm test -- {file}' },
   notes: 'read package.json and ran both commands by hand',
   ...over,
 })

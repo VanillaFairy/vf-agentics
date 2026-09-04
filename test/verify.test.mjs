@@ -25,7 +25,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -47,6 +47,7 @@ const options = (over = {}) => parseArgs([
   '--locus', 'src/widget.mjs',
   '--locus', 'test/widget.test.mjs',
   '--build', BUILD,
+  '--typecheck-absent',
   '--suite', SUITE,
   '--test-one', TEST_ONE,
   ...(over.extra || []),
@@ -155,7 +156,7 @@ test('an absent build command is recorded absent only when somebody declared it 
   const declared = verify(parseArgs([
     '--worktree', worktree, '--base', base, '--head', head,
     '--locus', 'src/widget.mjs', '--locus', 'test/widget.test.mjs',
-    '--build-absent', '--suite', SUITE, '--test-one', TEST_ONE,
+    '--build-absent', '--typecheck-absent', '--suite', SUITE, '--test-one', TEST_ONE,
   ]))
 
   assert.equal(declared.build, 'absent')
@@ -178,6 +179,156 @@ test('a build command nobody named escalates rather than reading as a repository
     'a caller that never reads `error` must still fail safe')
   assert.equal(payload.error.kind, 'command_unknown')
   assert.match(payload.error.message, /build/)
+})
+
+// ---------------------------------------------------------------- the typecheck
+
+test('a failing typecheck is recorded beside a PASSING suite, which is the whole point', (t) => {
+  // The field case, reproduced: 826 tests green over a tree `tsc --noEmit` rejected. Vitest and
+  // Jest transform TypeScript with esbuild, which strips types without checking them, so the
+  // suite is structurally incapable of answering this question and answering it anyway is how a
+  // branch tip ships with a broken build under a green report.
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(parseArgs([
+    '--worktree', worktree, '--base', base, '--head', head,
+    '--locus', 'src/widget.mjs', '--locus', 'test/widget.test.mjs',
+    '--build', BUILD, '--typecheck', 'node -e "process.exit(2)"',
+    '--suite', SUITE, '--test-one', TEST_ONE,
+  ]))
+
+  assert.equal(payload.suite, 'passed', 'the suite is green and says nothing about the types')
+  assert.equal(payload.build, 'passed')
+  assert.equal(payload.typecheck, 'failed', 'and the third answer is the one that is not green')
+  assert.equal(payload.stop_reason, 'completed',
+    'a failed typecheck is a measurement outcome, not a broken environment')
+  assert.match(payload.notes, /typecheck output tail:/,
+    'the fix round is shown what failed, not just that something did')
+})
+
+test('a typecheck nobody named escalates rather than reading as a repository with none', (t) => {
+  // The same refusal the build gets, for the same reason and no weaker: defaulting an unnamed
+  // typecheck to `absent` would rebuild the exact hole this field was added to close — a check
+  // that silently does not run. It costs no extra escalation, because the first verification in
+  // a run already escalates to establish the build.
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(parseArgs([
+    '--worktree', worktree, '--base', base, '--head', head,
+    '--locus', 'src/widget.mjs', '--locus', 'test/widget.test.mjs',
+    '--build', BUILD, '--suite', SUITE, '--test-one', TEST_ONE,
+  ]))
+
+  assert.equal(payload.typecheck, 'absent')
+  assert.equal(payload.stop_reason, 'environment_broken')
+  assert.equal(payload.error.kind, 'command_unknown')
+  assert.match(payload.error.message, /typecheck/)
+})
+
+test('a declared-absent typecheck is a fact about the repository, not a fault', (t) => {
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head }))
+
+  assert.equal(payload.typecheck, 'absent')
+  assert.equal(payload.stop_reason, 'completed')
+  assert.equal(payload.error, null)
+  assert.match(payload.notes, /no typecheck command/)
+})
+
+// ---------------------------------------------------------------- the mutation check
+
+const mutations = (specs) => ['--mutations-b64', Buffer.from(JSON.stringify(specs)).toString('base64')]
+
+test('a regression net that catches its own mutation bites, and the tree is put back', (t) => {
+  // The question increment 21 waived the base question for and left to prose. The fixture's test
+  // asserts `label() === 'hi'`; breaking the source is what makes it fail, and a net that fails
+  // under the break is a net.
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head, extra: mutations([
+    { file: 'src/widget.mjs', find: "'hi'", replace: "'bye'",
+      expect_failing: ['test/widget.test.mjs'] },
+  ]) }))
+
+  assert.equal(payload.mutations.length, 1)
+  assert.equal(payload.mutations[0].applied, true)
+  assert.equal(payload.mutations[0].bites, true)
+  assert.deepEqual(payload.mutations[0].observed_failing, ['test/widget.test.mjs'])
+  assert.equal(payload.stop_reason, 'completed')
+
+  assert.equal(git(worktree, 'status', '--porcelain').stdout.trim(), '',
+    'a deliberate break left in the tree sends the next fix round after a defect nobody wrote')
+  assert.equal(readFileSync(join(worktree, 'src', 'widget.mjs'), 'utf8').includes("'hi'"), true)
+})
+
+test('a net that survives the break it exists to catch does NOT bite', (t) => {
+  // The finding this check exists to produce: the tests pass, they passed at base, and they would
+  // pass with the thing they claim to guard broken. Nothing else in the pipeline can see that.
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head, extra: mutations([
+    { file: 'src/widget.mjs', find: 'const label', replace: 'const  label',
+      expect_failing: ['test/widget.test.mjs'] },
+  ]) }))
+
+  assert.equal(payload.mutations[0].applied, true)
+  assert.equal(payload.mutations[0].bites, false)
+  assert.deepEqual(payload.mutations[0].observed_failing, [])
+  assert.equal(payload.stop_reason, 'completed',
+    'a net that does not bite is a measurement outcome, not a broken environment')
+})
+
+test('a stale spec is unapplied, and is never reported as a net that does not bite', (t) => {
+  // The two must not collapse into each other. A `find` that no longer occurs is a defect in the
+  // SPEC — the plan is out of date — and reading it as evidence about the test is the laundering
+  // IRON LAW §2 forbids.
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head, extra: mutations([
+    { file: 'src/widget.mjs', find: "'this text is not in the file'", replace: 'x',
+      expect_failing: ['test/widget.test.mjs'] },
+  ]) }))
+
+  assert.equal(payload.mutations[0].applied, false)
+  assert.equal(payload.mutations[0].bites, false)
+  assert.match(payload.mutations[0].unapplied_reason, /stale/)
+  assert.equal(git(worktree, 'status', '--porcelain').stdout.trim(), '')
+})
+
+test('a spec whose text occurs more than once is refused as ambiguous', (t) => {
+  // Which site was broken decides what the run learned, and a substitution applied to all of them
+  // is a different experiment from the one the plan described.
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head, extra: mutations([
+    { file: 'test/widget.test.mjs', find: 'label', replace: 'nope',
+      expect_failing: ['test/widget.test.mjs'] },
+  ]) }))
+
+  assert.equal(payload.mutations[0].applied, false)
+  assert.match(payload.mutations[0].unapplied_reason, /occurs \d+ times/)
+  assert.equal(git(worktree, 'status', '--porcelain').stdout.trim(), '')
+})
+
+test('a spec naming no failing test asks nothing, and says so', (t) => {
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head, extra: mutations([
+    { file: 'src/widget.mjs', find: "'hi'", replace: "'bye'", expect_failing: [] },
+  ]) }))
+
+  assert.equal(payload.mutations[0].applied, false)
+  assert.match(payload.mutations[0].unapplied_reason, /names no test/)
+})
+
+test('an order declaring no mutation records an empty list and runs nothing', (t) => {
+  const { worktree, base, head } = order(t)
+
+  const payload = verify(options({ worktree, base, head }))
+
+  assert.deepEqual(payload.mutations, [],
+    'every order written before this field existed is this case, and must be untouched')
 })
 
 test('a failing build is an observed exit, and its output travels as evidence', (t) => {
@@ -210,7 +361,7 @@ test('a changed test file with no way to run one test escalates instead of skipp
   const payload = verify(parseArgs([
     '--worktree', worktree, '--base', base, '--head', head,
     '--locus', 'src/widget.mjs', '--locus', 'test/widget.test.mjs',
-    '--build', BUILD, '--suite', SUITE,
+    '--build', BUILD, '--typecheck-absent', '--suite', SUITE,
   ]))
 
   assert.deepEqual(payload.discriminator, [])
@@ -239,7 +390,7 @@ test('a commit outside the declared locus is a blocking finding', (t) => {
   const payload = verify(parseArgs([
     '--worktree', worktree, '--base', base, '--head', head,
     '--locus', 'test/widget.test.mjs',
-    '--build', BUILD, '--suite', SUITE, '--test-one', TEST_ONE,
+    '--build', BUILD, '--typecheck-absent', '--suite', SUITE, '--test-one', TEST_ONE,
   ]))
 
   const breach = payload.series_findings.find((f) => f.check === 'locus-breach')
@@ -331,7 +482,7 @@ test('integration mode measures the merged head and reports honest emptiness', (
   const { worktree } = order(t)
 
   const payload = verify(parseArgs([
-    '--worktree', worktree, '--mode', 'integration', '--build', BUILD, '--suite', SUITE,
+    '--worktree', worktree, '--mode', 'integration', '--build', BUILD, '--typecheck-absent', '--suite', SUITE,
   ]))
 
   assert.equal(payload.stop_reason, 'completed')
@@ -350,7 +501,7 @@ test('the CLI prints one line whose digest covers the payload it carries', (t) =
   const run = spawnSync(process.execPath, [CLI,
     '--worktree', worktree, '--base', base, '--head', head,
     '--locus', 'src/widget.mjs', '--locus', 'test/widget.test.mjs',
-    '--build', BUILD, '--suite', SUITE, '--test-one', TEST_ONE,
+    '--build', BUILD, '--typecheck-absent', '--suite', SUITE, '--test-one', TEST_ONE,
   ], { encoding: 'utf8' })
 
   assert.equal(run.status, 0, 'a payload was printed, which is what this tool produces')
@@ -368,7 +519,7 @@ test('a typed error still travels under a digest, and still exits 0', (t) => {
   const dir = repository(t)
 
   const run = spawnSync(process.execPath, [CLI, '--worktree', dir, '--base', rev(dir, 'HEAD'),
-    '--head', rev(dir, 'HEAD'), '--build', BUILD, '--suite', SUITE], { encoding: 'utf8' })
+    '--head', rev(dir, 'HEAD'), '--build', BUILD, '--typecheck-absent', '--suite', SUITE], { encoding: 'utf8' })
 
   assert.equal(run.status, 0,
     'a refusal is a measurement outcome, and a non-zero exit would read as the tool failing')
@@ -392,7 +543,7 @@ test('the observation is journalled by the process that observed it', (t) => {
   const run = spawnSync(process.execPath, [CLI,
     '--worktree', worktree, '--base', base, '--head', head,
     '--locus', 'src/widget.mjs', '--locus', 'test/widget.test.mjs',
-    '--build', BUILD, '--suite', SUITE, '--test-one', TEST_ONE,
+    '--build', BUILD, '--typecheck-absent', '--suite', SUITE, '--test-one', TEST_ONE,
     '--journal', runDir, '--seq', '7', '--order', 'W1', '--branch', BRANCH,
   ], { encoding: 'utf8' })
 
@@ -411,12 +562,16 @@ test('the observation is journalled by the process that observed it', (t) => {
   assert.equal(line.branch, BRANCH)
   assert.equal(line.head_sha, head)
   assert.equal(line.build, 'passed')
+  assert.equal(line.typecheck, 'absent')
   assert.equal(line.suite, 'passed')
   assert.deepEqual(line.discriminator, parsed.payload.discriminator)
   assert.deepEqual(Object.keys(line).sort(), [
     'base_sha', 'branch', 'build', 'discriminator', 'failing_tests', 'head_sha', 'kind',
-    'order', 'seq', 'series_findings', 'stop_reason', 'suite', 'worktree',
-  ], 'the line shape is increment 7 §4\'s, unchanged')
+    'mutations', 'order', 'seq', 'series_findings', 'stop_reason', 'suite', 'typecheck',
+    'worktree',
+  ], 'the line shape is increment 7 §4\'s, extended by increment 22 §1 with `typecheck` and ' +
+     'increment 23 §2 with `mutations`, and otherwise unchanged — a resume re-derives verdicts ' +
+     'from this line, and both predicates read those fields now')
 })
 
 // ---------------------------------------------------------------- the closed pattern set

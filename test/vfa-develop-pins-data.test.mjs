@@ -226,3 +226,84 @@ test('a build failure is not read as an undecidable discriminator', async () => 
   assert.ok(prompts.some((p) => p.opts.label === 'fix:W1'), 'a broken build is a coder\'s problem')
   assert.ok(!result.escalations.some((e) => e.reason === 'discriminator_undecidable'))
 })
+
+
+// --- the mutation, executed (increment 23) -------------------------------------------------
+
+const SPEC = {
+  file: 'src/assets/core.json',
+  find: '"slices": [1, 2, 3]',
+  replace: '',
+  expect_failing: ['test/unit/assetBundles.test.ts'],
+}
+
+/** The same regression net, with its prose mutation also written as an executable spec. */
+const NET_WITH_SPEC = { ...NET, mutations: [SPEC] }
+
+const bit = (over = {}) => ({
+  file: SPEC.file, applied: true, unapplied_reason: '',
+  expect_failing: SPEC.expect_failing, observed_failing: SPEC.expect_failing, bites: true, ...over,
+})
+
+test('a declared mutation that makes the net bite verifies the order', async () => {
+  const { result, prompts } = await run({ 'verify:': netVerified({ mutations: [bit()] }) },
+    [NET_WITH_SPEC])
+
+  assert.ok(!prompts.some((p) => p.opts.label === 'fix:W1'))
+  assert.deepEqual(result.escalations, [])
+  assert.deepEqual(result.implemented.map((e) => e.id), ['W1'])
+})
+
+test('a net that survives its own mutation fails the order, though every test passes', async () => {
+  // The whole point of the increment. `pins: 'data'` waived the base question, which left this
+  // class of test with NOTHING mechanical asking whether it can fail at all. Here the suite is
+  // green, the discriminator is waived, and the order still does not pass.
+  const { result, prompts } = await run({
+    'verify:': netVerified({ mutations: [bit({ observed_failing: [], bites: false })] }),
+    'fix:': coded({ commits: [], head_sha: A40 }),
+  }, [NET_WITH_SPEC])
+
+  const fix = prompts.find((p) => p.opts.label === 'fix:W1')
+  assert.ok(fix, 'a net that cannot fail is a defect a coder can fix')
+  assert.match(fix.prompt, /did not make the net bite/)
+  assert.match(fix.prompt, /survives the break it exists to catch/)
+  assert.ok(!result.implemented.some((e) => e.id === 'W1'))
+})
+
+test('a mutation the program could not apply is never read as a net that holds', async () => {
+  // The two must not collapse. A stale `find` is a defect in the PLAN's spec and says nothing
+  // about the test, so it fails the order under its own name and points at the spec.
+  const { prompts } = await run({
+    'verify:': netVerified({ mutations: [bit({
+      applied: false, bites: false, observed_failing: [],
+      unapplied_reason: 'the text to replace does not occur in this file, so the spec is stale',
+    })] }),
+    'fix:': coded({ commits: [], head_sha: A40 }),
+  }, [NET_WITH_SPEC])
+
+  const fix = prompts.find((p) => p.opts.label === 'fix:W1')
+  assert.ok(fix)
+  assert.match(fix.prompt, /could not be applied/)
+  assert.match(fix.prompt, /fix the spec, in the plan, rather than the test/,
+    'a spec nobody could apply is not evidence about the test')
+})
+
+test('an order declaring no mutation is verified exactly as it was before', async () => {
+  // Every order written before this field existed is this case, and the field is worth having
+  // only if it costs them nothing.
+  const { result } = await run({ 'verify:': netVerified({ mutations: [] }) })
+
+  assert.deepEqual(result.escalations, [])
+  assert.deepEqual(result.implemented.map((e) => e.id), ['W1'])
+})
+
+test('the coder is shown the mutation its verification will run', async () => {
+  const { prompts } = await run({ 'verify:': netVerified({ mutations: [bit()] }) }, [NET_WITH_SPEC])
+
+  const code = prompts.find((p) => p.opts.label === 'code:W1')
+  assert.match(code.prompt, /EXECUTABLE MUTATION/)
+  assert.match(code.prompt, /src\/assets\/core\.json/,
+    'a coder writing a net it cannot see the break for is writing blind')
+  assert.match(code.prompt, /never the data, which is what the marker exists to protect/,
+    'the one move that would make this check pass dishonestly is named and forbidden')
+})

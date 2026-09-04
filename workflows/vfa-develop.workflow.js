@@ -59,6 +59,28 @@ const WORK_ORDER_ITEM = {
         // correct: the planner had written the right check in prose ("delete this field and
         // that case must fail") and had no field in which to say it.
         pins: { type: 'string', enum: ['behaviour', 'data'] },
+        // The mutation that DOES check a regression net, machine-readable. Increment 21 §3 left
+        // this question to prose in the acceptance criteria and to the coder's hands, and said
+        // outright that executing it was the better answer needing its own design pass.
+        //
+        // A spec is a text substitution in one tracked file, never a command: a command can do
+        // anything and has no inverse, while a substitution cannot leave the worktree, reverts
+        // with one `git checkout --`, and can REFUSE when its `find` matches zero times (a stale
+        // spec) or many (ambiguous about which site broke). Empty is the default and asks
+        // nothing, so every order written before this field resumes exactly as it did.
+        mutations: {
+          type: 'array',
+          items: {
+            type: 'object', additionalProperties: false,
+            required: ['file', 'find', 'replace', 'expect_failing'],
+            properties: {
+              file: { type: 'string' },
+              find: { type: 'string' },       // must occur EXACTLY once in the file
+              replace: { type: 'string' },    // '' is a deletion, which is the common mutation
+              expect_failing: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
         // How much reading this order takes, as the planner judges it. It buys a model tier
         // UNDER the run's dial and never above it — see `judgeFor` / `coderFor`.
         //
@@ -288,8 +310,8 @@ const CODER_RESULT = {
 // increment changed who runs the commands, never what passes.
 const VERIFY = {
   type: 'object', additionalProperties: false,
-  required: ['stop_reason', 'build', 'suite', 'suite_output_tail', 'failing_tests',
-             'discriminator', 'series_findings', 'commands', 'notes'],
+  required: ['stop_reason', 'build', 'typecheck', 'suite', 'suite_output_tail', 'failing_tests',
+             'discriminator', 'mutations', 'series_findings', 'commands', 'notes'],
   properties: {
     stop_reason: { type: 'string', enum: ['completed', 'environment_broken'] },
     // Observed facts, not judgments. 'absent' — the repository defines no such command at
@@ -297,6 +319,13 @@ const VERIFY = {
     // flattening once escalated seven orders whose only defect was a not-yet-landed
     // toolchain. Unmeasurable and failed are different answers (IRON LAW §2).
     build: { type: 'string', enum: ['passed', 'failed', 'absent'] },
+    // Its own answer, never the suite's. An esbuild-transformed TypeScript suite strips types
+    // without checking them, so `suite: 'passed'` over a tree that does not compile is the
+    // normal case rather than the strange one — 826 tests passed at one order's branch tip
+    // while `tsc --noEmit` failed on the fixture that had already caused a revert. 'absent' is
+    // the ordinary answer for a repository with no separate typecheck, including one whose
+    // test command runs `tsc` first; nothing here manufactures a gate out of that.
+    typecheck: { type: 'string', enum: ['passed', 'failed', 'absent'] },
     suite: { type: 'string', enum: ['passed', 'failed', 'absent'] },
     suite_output_tail: { type: 'string' },  // last ~40 lines of real output, verbatim
     // Which tests failed, by FILE and id. The file is the load-bearing half: a red order's
@@ -308,6 +337,18 @@ const VERIFY = {
       type: 'object', additionalProperties: false,
       required: ['file', 'id'],
       properties: { file: { type: 'string' }, id: { type: 'string' } } } },
+    mutations: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['file', 'applied', 'unapplied_reason', 'expect_failing', 'observed_failing', 'bites'],
+      properties: {
+        file: { type: 'string' },
+        applied: { type: 'boolean' },
+        unapplied_reason: { type: 'string' },  // '' when applied; a stale or ambiguous spec otherwise
+        expect_failing: { type: 'array', items: { type: 'string' } },
+        observed_failing: { type: 'array', items: { type: 'string' } },
+        bites: { type: 'boolean' },
+      },
+    } },
     discriminator: { type: 'array', items: {
       type: 'object', additionalProperties: false,
       required: ['test_id', 'failed_on_base', 'passes_now'],
@@ -329,14 +370,28 @@ const VERIFY = {
     // established rather than a shell's exit code read as one.
     commands: {
       type: 'object', additionalProperties: false,
-      required: ['build', 'suite', 'test_one'],
+      required: ['build', 'typecheck', 'suite', 'test_one'],
       properties: {
         build: { type: 'string' },
+        typecheck: { type: 'string' },  // empty is the common answer; most repos define none
         suite: { type: 'string' },
         test_one: { type: 'string' },  // carries {file} where the path goes
       },
     },
     notes: { type: 'string' },
+  },
+}
+
+// The fix lane's one side channel. Search-shaped, so `stop_reason` is an enum and never a
+// self-reported boolean (IRON LAW §2), and `searched` says what ground was actually covered — a
+// history search that ran out of room must not be indistinguishable from one that found nothing.
+const HISTORY = {
+  type: 'object', additionalProperties: false,
+  required: ['stop_reason', 'findings', 'searched'],
+  properties: {
+    stop_reason: { type: 'string', enum: ['exhausted', 'unfinished'] },
+    findings: { type: 'string' },   // commits with sha, date, subject and the path:line that moved
+    searched: { type: 'string' },   // the refs, paths and date ranges actually covered
   },
 }
 
@@ -446,7 +501,11 @@ const seriesClean = (v) => !(v.series_findings || []).some(f => !f || f.blocking
 // the tree builds, and no commit broke its locus. A build that failed makes every downstream
 // signal meaningless — a red order's tests "fail" and a refactor's suite is "broken" for the
 // same uninformative reason.
-const verifiable = (v) => v.stop_reason === 'completed' && v.build !== 'failed' && seriesClean(v)
+// A failed typecheck sits beside a failed build for the same reason, not as a stricter gate: a
+// tree that does not compile makes every downstream signal meaningless, and a suite that passes
+// over it is the misleading case rather than the reassuring one.
+const verifiable = (v) =>
+  v.stop_reason === 'completed' && v.build !== 'failed' && v.typecheck !== 'failed' && seriesClean(v)
 
 /**
  * True when the suite failed and every failure it named sits inside `allowed`.
@@ -475,8 +534,18 @@ const inheritedRed = (v) =>
 // and "this order is not checked".
 const discriminates = (d, wo) => Boolean(d) && d.passes_now && (pinsData(wo) || d.failed_on_base)
 
+// A mutation this order DECLARED and that did not bite. Increment 21 waived the base question
+// for a regression net and left the right question to prose; this is that question executed, and
+// it is the one thing in the pipeline that can tell a net which holds from a net which cannot
+// fail. Both halves are required and neither is enough alone: a spec that could not be APPLIED
+// says nothing about the net — a stale `find` is a defect in the spec, not evidence about the
+// test — so it fails the order under its own name rather than being read as a net that holds.
+// Orders declaring no mutation are unaffected, which is every order written before this existed.
+const mutationsBite = (v) => (v.mutations || []).every((m) => m && m.applied && m.bites)
+
 const plainVerifyOk = (v, wo) => verifiable(v)
   && (v.suite !== 'failed' || inheritedRed(v))
+  && mutationsBite(v)
   && (v.discriminator || []).every(d => discriminates(d, wo))
 
 // A RED order lands tests that MUST fail — that is the entire order. Four inversions, each
@@ -537,6 +606,7 @@ const mergeOk = m => m.stop_reason === 'completed'
 // unnamed failure could be any failure.
 const waveVerifyOk = (v, excused) => v.stop_reason === 'completed'
   && v.build !== 'failed'
+  && v.typecheck !== 'failed'
   && (v.suite !== 'failed' || failuresConfinedTo(v, excused))
 
 // ------------------------------------------------------------- the two digests
@@ -732,11 +802,20 @@ function verifyInvocation(parts) {
   if (verifyCommands.build) flags.push('--build-b64 ' + base64(verifyCommands.build))
   else if (verifyCommands.build_absent) flags.push('--build-absent')
 
+  if (verifyCommands.typecheck) flags.push('--typecheck-b64 ' + base64(verifyCommands.typecheck))
+  else if (verifyCommands.typecheck_absent) flags.push('--typecheck-absent')
+
   if (verifyCommands.suite) flags.push('--suite-b64 ' + base64(verifyCommands.suite))
   else if (verifyCommands.suite_absent) flags.push('--suite-absent')
 
   if (parts.mode !== 'integration' && verifyCommands.test_one) {
     flags.push('--test-one-b64 ' + base64(verifyCommands.test_one))
+  }
+
+  // A `find` string is arbitrary source text — quotes, backslashes, newlines — so it travels the
+  // way every other free text here does rather than as a shell-quoted argument.
+  if (parts.mode !== 'integration' && (parts.mutations || []).length > 0) {
+    flags.push('--mutations-b64 ' + base64(JSON.stringify(parts.mutations)))
   }
 
   // The journal line is written by the program, inside the process that made the measurement.
@@ -862,6 +941,7 @@ function coherentSetup(s) {
 // fact the caller must see, so it travels in the result and keeps coverage.complete false.
 const measuredOf = (v) => [
   v.build !== 'absent' ? 'build' : null,
+  v.typecheck !== 'absent' ? 'typecheck' : null,
   v.suite !== 'absent' ? 'suite' : null,
   (v.discriminator || []).length > 0 ? 'discriminator:' + v.discriminator.length : null,
 ].filter(Boolean)
@@ -939,6 +1019,47 @@ const confirmedDuplicate = input.confirmed_duplicate === true
 const settledShape = input.settled_shape === true
 const ground = (Array.isArray(input.ground) ? input.ground : [])
   .map((p) => String(p || '').split('\\').join('/').replace(/^\.\//, '').replace(/\/+$/, '').trim())
+  .filter(Boolean)
+
+// ---------------------------------------------------------------- the lane
+//
+// `full` is the pipeline as it has always been: survey, decompose, partition, waves. `fix` is the
+// cheap path for a change the caller has already triaged down to one locus.
+//
+// The triage section has been honest about its own numbers for a while — a ten-session field
+// audit of this pipeline found SEVEN of ten better served by a direct session, and identified
+// what the pipeline was actually buying in the other three: the adversarial review and the
+// discriminator, not the survey and the decomposition. But triage ended by handing the work back
+// to a plain session, so the two-thirds that pays got rebuilt by hand or skipped. This lane is
+// that two-thirds, bought on its own.
+//
+// It is a lane INSIDE this workflow rather than a workflow of its own, and that is the whole
+// design. Worktrees, the check runner, the review loop, the ledger, the resume verdict and the
+// collector are unchanged and inherited entire — the recordable states do not move, which is
+// what makes this lane resumable on the day it lands rather than after somebody remembers to
+// make it so. A parallel workflow would have duplicated all of that and inherited none of it.
+//
+// What it drops: the survey, wholly and by declaration rather than by arithmetic — the caller
+// names the locus, which is the judgment the survey would have been buying. What it keeps and
+// why: ONE planner dispatch, at low effort, charged to write a single order rather than to
+// decompose anything. Dropping it entirely would drop the run's plan file with it, and a lane
+// with no resume point is a lane that costs its whole price again after a session limit. One
+// cheap dispatch is a better trade than that, and it is the only place the plan envelope, the
+// digest manifest and `plan.md` are written.
+const LANES = ['full', 'fix']
+const lane = LANES.includes(input.lane) ? input.lane : 'full'
+const fixLane = lane === 'fix'
+
+// A regression has a history and an ordinary fix does not, so the historian is bought on the
+// caller's say-so rather than on a guess about the change string. Wrong in the cheap direction
+// either way: a missed regression costs one search a coder can still do, and a needless one
+// costs a single read-only dispatch.
+const regression = input.regression === true
+
+// The locus the caller triaged down to. It is what the planner would otherwise have derived from
+// a survey, which is why naming it is what licenses skipping one.
+const fixLocus = (Array.isArray(input.locus) ? input.locus : [])
+  .map((p) => String(p || '').split('\\').join('/').replace(/^\.\//, '').trim())
   .filter(Boolean)
 
 // Where the integration worktree branches from. Absent is today's behaviour: the repository's
@@ -1370,7 +1491,10 @@ const knowledgeSection = (wo) => {
 // the caller declares it, and the only thing entitled to declare it is a model that went and
 // looked. Empty with the bit unset therefore means "nobody has established this yet", which is
 // the state that buys the investigator.
-const verifyCommands = { build: '', suite: '', test_one: '', build_absent: false, suite_absent: false }
+const verifyCommands = {
+  build: '', typecheck: '', suite: '', test_one: '',
+  build_absent: false, typecheck_absent: false, suite_absent: false,
+}
 
 // Which of those a VERIFICATION established, in this invocation. Only these are deposited in the
 // knowledge base at run end, and they are deposited as `verify-established`, which is the source
@@ -1396,7 +1520,8 @@ function adoptCommands(v) {
   const found = (v && v.commands) || {}
   const named = (key) => String(found[key] || '').trim()
 
-  for (const [key, what] of [['build', 'build'], ['suite', 'test suite'], ['test_one', 'single-test']]) {
+  for (const [key, what] of [['build', 'build'], ['typecheck', 'typecheck'],
+                             ['suite', 'test suite'], ['test_one', 'single-test']]) {
     const value = named(key)
     if (!value || value === verifyCommands[key]) continue
     verifyCommands[key] = value
@@ -1411,7 +1536,7 @@ function adoptCommands(v) {
   // recording that as "this repository defines none" is the laundering IRON LAW §2 forbids.
   if (v && v.stop_reason !== 'completed') return
 
-  for (const key of ['build', 'suite']) {
+  for (const key of ['build', 'typecheck', 'suite']) {
     if (named(key) || v[key] !== 'absent' || verifyCommands[key + '_absent']) continue
     verifyCommands[key + '_absent'] = true
     commandsEstablished.add(key)
@@ -1458,7 +1583,8 @@ function adoptKbCommands(entries) {
     // A declared absence is a fact about the repository and travels as one. An entry with an
     // empty value and no declaration never reaches here — `lib/kb.mjs` refuses to store one,
     // because "nobody established this" is not something to be adopted.
-    if (cmd.absent === true && (cmd.name === 'build' || cmd.name === 'suite')) {
+    if (cmd.absent === true &&
+        (cmd.name === 'build' || cmd.name === 'typecheck' || cmd.name === 'suite')) {
       seen.add(cmd.name)
       verifyCommands[cmd.name + '_absent'] = true
       log(`The knowledge base records that this repository defines no ${cmd.name} command.`)
@@ -1598,6 +1724,32 @@ if (baseRef && SHA_RE.test(baseRef)) {
         're-resolve it and see whether the world moved; a sha re-resolves to itself, so the ' +
         'drift observation would compare the anchor against the anchor and report a moved ' +
         'tree as unchanged. Pass the branch or tag name instead.',
+      ],
+      from_kb: [],
+      resumable: { runId: RUN_ID, remaining: [] },
+    },
+  })
+}
+
+// The fix lane's one precondition, refused at input for the same reason. The lane skips the
+// survey, and what licenses skipping it is that the caller has already done the work a survey
+// would have bought: deciding which files this change is about. Without a locus there is nothing
+// standing in for that, and a planner asked to invent one from a change string and no evidence
+// would produce a fence in the wrong place — which the coder then cannot widen, and which costs
+// the order. Naming it is cheap; guessing it is the expensive failure.
+if (fixLane && fixLocus.length === 0) {
+  return developResult({
+    coverage: {
+      complete: false,
+      dropped: [],
+      incomplete: [],
+      failed_channels: [],
+      unreached: [
+        'the fix lane was asked for with no locus. Nothing was dispatched. This lane buys its ' +
+        'cheapness by skipping the survey, and the thing a survey would have established is ' +
+        'exactly which files the change is about — so the caller names them, in `locus`, or ' +
+        'the lane has nothing to skip the survey ON. Pass the files this fix touches, or use ' +
+        'the full lane and let the survey find them.',
       ],
       from_kb: [],
       resumable: { runId: RUN_ID, remaining: [] },
@@ -1750,7 +1902,80 @@ function orderFetch(wo) {
     `${acceptanceNote}\n\n`
 }
 
+// Bought only when the caller describes the change as a regression, and only on the fix lane.
+// A regression has a commit where the behaviour was right and one where it stopped being, and
+// finding that commit is usually cheaper than re-deriving the intent from the tree it left.
+function historianPrompt() {
+  return `Find the commit that introduced this regression.
+
+` +
+    `REGRESSION: ${change}
+` +
+    `REPOSITORIES: ${roots}
+` +
+    `WHERE THE CALLER SAYS IT LIVES:
+${listOf(fixLocus)}
+
+` +
+    callerNotes() +
+    `Work backwards from those paths. What you are after is the commit where the behaviour ` +
+    `changed — its sha, its date, its subject, and the path:line that moved — plus what else ` +
+    `that commit touched, because a regression is often the part of a change nobody meant to ` +
+    `ship. Where a plausible candidate turns out not to be it, say so and say why: a ruled-out ` +
+    `commit saves the coder the same search.
+
+` +
+    `NEVER GUESS A COMMIT. A sha you did not read is worse than no sha at all — it sends the ` +
+    `fix at code that was never the problem. If you cannot find it, say that plainly with ` +
+    `stop_reason 'unfinished' and name in \`searched\` what you covered; the coder then searches ` +
+    `for itself, which is what it would have done anyway.
+
+` +
+    `Your Bash is READ-ONLY git — log, show, diff, blame. Never check out, stage, or touch the ` +
+    `tree; you are reading history, not handling it.`
+}
+
 function plannerPrompt(surveyEvidence) {
+  if (fixLane) {
+    // Everything below this branch is about decomposition, dependency graphs and waves, and a
+    // one-order plan has none of those. Handing a scribe eighty lines about provider ordering
+    // invites it to find work that is not there — and the failure mode of this lane is exactly
+    // a planner deciding a fix is really four orders, which is the ladder the caller left.
+    return `Write a ONE-ORDER plan for a change that has already been triaged. You are not ` +
+      `decomposing anything, and finding a second order here is a defect rather than ` +
+      `thoroughness: the caller took this lane precisely to skip that.\n\n` +
+      `CHANGE: ${change}\n` +
+      `REPOSITORIES: ${roots}\n\n` +
+      callerNotes() +
+      `${surveyEvidence}\n\n` +
+      `Return exactly ONE work order, id W1. Its locus is the caller's, confirmed and where ` +
+      `necessary widened against what you actually read. deps is empty, shared_files is empty, ` +
+      `and partition_raw is the single wave that follows: {"waves": [["W1"]], "coupled": []}. ` +
+      `Do not run the partition CLI — one order cannot be coupled to anything, and its ` +
+      `arithmetic is written out for you here.\n\n` +
+      `WHAT YOU MUST STILL DO PROPERLY, because everything downstream is unchanged and reads ` +
+      `these:\n` +
+      `   role — 'none' for an ordinary fix. A fix that can be pinned by a test lands the test ` +
+      `AND the fix in one series, and the discriminator then proves the test fails without the ` +
+      `fix. That gate is most of what this lane is buying; do not plan it away.\n` +
+      `   pins — 'behaviour', unless this is a regression net over data that is already correct.\n` +
+      `   acceptance — independently checkable, each naming how it will be verified. A fix whose ` +
+      `criterion is "it works" is a fix nobody can review. ${acceptanceNote}\n` +
+      `   reads — the files it builds against and never modifies.\n` +
+      `   context — what the coder needs and does not have. No survey ran behind you, so ` +
+      `anything you do not write down was not looked up by anybody.\n\n` +
+      `Then write the run directory exactly as you always do — plan.json with its full ` +
+      `envelope, the digest manifest, plan.md — and return its absolute path in plan_path. That ` +
+      `file is this lane's whole resume point, and is the reason this dispatch exists rather ` +
+      `than being skipped: a run that loses it pays for everything twice after a session limit.` +
+      `\n\n` +
+      `If the change genuinely cannot be done as one order — it needs a contract other work ` +
+      `builds against, or the named locus is really a subsystem — say so in blocking_gaps and ` +
+      `return the one order anyway with the gap named. The caller then decides whether to re-run ` +
+      `on the full lane. That is their call, and not yours to make by quietly planning four ` +
+      `orders.`
+  }
+
   return `Decompose this change into work orders other agents will implement.\n\n` +
     `CHANGE: ${change}\n` +
     `REPOSITORIES: ${roots}\n\n` +
@@ -2207,6 +2432,18 @@ function journalSection(what, fields) {
     `The heredoc rather than echo or a quoted string: the values below carry paths and test ` +
     `names, and one apostrophe in a test name turns a quoted append into a shell that hangs ` +
     `waiting for a closing quote.\n\n` +
+    // F42: a permission layer sitting in front of Bash can refuse a heredoc as too complex to
+    // verify, and in one run two agents met that refusal independently and each invented this
+    // same workaround. A workaround two agents have to invent belongs in the dispatch.
+    `IF THE HEREDOC IS REFUSED — some environments put a guard in front of Bash that will not ` +
+    `pass a multi-line command — write the same JSON to a scratch file and redirect it in ` +
+    `instead. The writer reads standard input either way, so this is the identical line by an ` +
+    `identical route, and it is a fallback rather than a preference only because the heredoc ` +
+    `leaves nothing behind:\n\n` +
+    `node "${pluginRoot}/lib/ledger.mjs" append "${planPath}" --file journal < vfa-journal.json\n\n` +
+    `Put that scratch file inside your own worktree, write the whole line to it in one go, and ` +
+    `do not hand-edit it afterwards — a half-rewritten file is the unreadable record this ` +
+    `writer exists to refuse. Delete it once the writer has accepted the line.\n\n` +
     `The "seq" number is already filled in. Copy it exactly as it stands — it is this run's ` +
     `own ordering, minted by your caller, and it is what lets a record written here be placed ` +
     `against one written elsewhere. Do not renumber it, do not increment it, and never ` +
@@ -2277,8 +2514,22 @@ function roleSection(wo) {
       `They are still required to PASS now, and they are still required to bite. Where an ` +
       `acceptance criterion names the mutation that should make a case fail — delete this ` +
       `field, duplicate that id — perform it by hand, confirm exactly the expected cases ` +
-      `fail, put the tree back, and report what you saw in notes. That is the check that ` +
-      `fits these tests, and nothing mechanical downstream runs it for you.\n\n`
+      `fail, put the tree back, and report what you saw in notes.\n\n` +
+      ((wo.mutations || []).length > 0
+        ? `THIS ORDER ALSO CARRIES AN EXECUTABLE MUTATION, and your verification will run it: ` +
+          `it breaks the named text, requires the named tests to fail, and puts the file back. ` +
+          `So write the net to actually catch that break. If the check comes back saying the ` +
+          `net does not bite, the test is the defect and you fix the test — never the spec, ` +
+          `which is the plan's, and never the data, which is what the marker exists to protect. ` +
+          `If it comes back unapplied — the text does not occur, or occurs several times — the ` +
+          `SPEC is stale against the file and that is a plan defect: say so in concerns rather ` +
+          `than editing the file to make a stale spec fit.\n\n` +
+          `The mutation this order declares:\n` +
+          (wo.mutations || []).map((m) =>
+            `   ${m.file}: replace ${JSON.stringify(m.find)} with ${JSON.stringify(m.replace)} ` +
+            `— then ${(m.expect_failing || []).join(', ')} must fail`).join('\n') + `\n\n`
+        : `Nothing mechanical downstream runs that by-hand check for you: this order declares ` +
+          `no executable mutation, so your report of what you saw is the only record of it.\n\n`)
   }
 
   return ''
@@ -2459,11 +2710,13 @@ function verifierPrompt(wo, state) {
     verifyInvocation({
       worktree: state.worktree, base_sha: state.base_sha, head_sha: state.head_sha,
       locus: wo.locus, journal: true, order: wo.id, branch: state.branch,
+      mutations: wo.mutations || [],
     }) + `\n` +
     rootWarning +
-    `It performs all four checks in one process — the commit series over ` +
-    `${state.base_sha}..HEAD against this order's declared locus, the build, the test suite, ` +
-    `and the discriminator — and prints ONE line of JSON carrying its own digest. It also ` +
+    `It performs every mechanical check in one process — the commit series over ` +
+    `${state.base_sha}..HEAD against this order's declared locus, the build, the typecheck, ` +
+    `the test suite, the discriminator, and any mutation this order declared — and prints ONE ` +
+    `line of JSON carrying its own digest. It also ` +
     `writes this run's journal line itself, inside the process that made the measurement, so ` +
     `you append nothing and you do not "check" that line by rewriting it.\n\n` +
     `Put its ENTIRE stdout into payload_raw, byte for byte, as one string. Do not parse it, ` +
@@ -2551,9 +2804,17 @@ function commandsSection() {
   ].filter(Boolean)
 
   return `NAME THE COMMANDS, in \`commands\`, spelled exactly as they must be typed: the ` +
-    `build, the test suite, and the way to run ONE test file — that one carries {file} where ` +
-    `the path goes. Take them from this repository's own manifest and documentation and say ` +
-    `in notes where you found each.\n\n` +
+    `build, the TYPECHECK, the test suite, and the way to run ONE test file — that one ` +
+    `carries {file} where the path goes. Take them from this repository's own manifest and ` +
+    `documentation and say in notes where you found each.\n\n` +
+    `The typecheck is the one most repositories do not have, and an empty string with the ` +
+    `matching fact recorded absent is the ordinary right answer — do not invent one. It is ` +
+    `asked separately because a passing suite is not evidence that the tree compiles: a ` +
+    `TypeScript suite transformed by esbuild or SWC strips types without checking them, so a ` +
+    `type error is invisible to it and fatal to the build. If the test command already runs ` +
+    `the compiler first, that is a repository with no separate typecheck and you say so; if a ` +
+    `standalone one exists — \`tsc --noEmit\`, \`npm run typecheck\`, the language's ` +
+    `equivalent — name it, because nothing else in this pipeline will ask that question.\n\n` +
     (known.length > 0
       ? `Established earlier in this run, and worth confirming rather than rediscovering:\n` +
         known.join('\n') + `\n\n`
@@ -2868,7 +3129,7 @@ const escalationLine = (wave, wo, reason) => ({
 // re-derives the same verdict from them. Logs written by the older version are still read —
 // dropping the reader would make an upgrade rebuild work its own predecessor had finished.
 
-function reviewerPrompt(wo, state, advisories, concerns, priorBlockers, round) {
+function reviewerPrompt(wo, state, advisories, concerns, discovered, priorBlockers, round) {
   const followUp = priorBlockers.length > 0
 
   const prior = !followUp ? '' :
@@ -2967,6 +3228,16 @@ function reviewerPrompt(wo, state, advisories, concerns, priorBlockers, round) {
     `COMMITS, OLDEST FIRST:\n${commitLines(state.commits)}\n\n` +
     `THE CODER'S OWN CONCERNS — attack these first among equals. The author told you where ` +
     `it is unsure, and that is your cheapest ore:\n${listOf(concerns)}\n\n` +
+    // `discovered` is charged as reusable commands and gotchas for the knowledge base, and its
+    // consumer is the KB deposit. But a coder with a decision it could not settle has filed one
+    // here instead of in `concerns` before now, and because nothing downstream read it, a
+    // stage-blocking defect travelled three green gates and surfaced only at integration review.
+    // Both channels reach the reviewer now, so a misfiling costs a paragraph rather than a run.
+    `WHAT THE CODER DISCOVERED along the way — commands, setup gotchas, and whatever it had to ` +
+    `settle to finish. Most of this is knowledge-base material and none of your business. Read ` +
+    `it anyway for the one item that is not: where an entry names a decision this order had to ` +
+    `make and did not resolve, rule on it. If the decision went wrong that is a finding against ` +
+    `this series like any other; if it went right, say nothing:\n${listOf(discovered)}\n\n` +
     `ADVISORY SERIES FINDINGS (subject style and the like). Context only, and not yours to ` +
     `re-litigate:\n${advisoryLines(advisories)}\n\n` +
     prior +
@@ -3069,6 +3340,23 @@ const plainFailures = (wo, v) => {
     out.push(runtimeFinding(wo.id + '-suite', 'the test suite exited non-zero',
       v.suite_output_tail || ''))
   }
+  // The complement of `mutationsBite`, kept beside it in spirit: a conjunct in a predicate with
+  // no matching finding escalates an order with an empty fix instruction.
+  for (const m of v.mutations || []) {
+    if (m && m.applied && m.bites) continue
+    out.push(runtimeFinding(wo.id + '-mutation-' + (m && m.file ? m.file : '?'),
+      !m || !m.applied
+        ? 'the declared mutation of ' + ((m && m.file) || '?') + ' could not be applied: ' +
+          ((m && m.unapplied_reason) || 'no reason recorded')
+        : 'the declared mutation of ' + m.file + ' did not make the net bite: ' +
+          (m.observed_failing || []).length + ' of ' + (m.expect_failing || []).length +
+          ' expected test(s) failed under it',
+      !m || !m.applied
+        ? 'a spec this program could not apply says nothing about the test — fix the spec, in ' +
+          'the plan, rather than the test'
+        : 'a regression net that survives the break it exists to catch is not a net; the tests ' +
+          'pass and verify nothing'))
+  }
   for (const d of v.discriminator || []) {
     if (discriminates(d, wo)) continue
     out.push(runtimeFinding(wo.id + '-disc-' + d.test_id,
@@ -3155,6 +3443,13 @@ function verifyFailureFindings(wo, v) {
   // repo-state fact recorded in notes, not a defect a fix round could address.
   if (v.build === 'failed') {
     out.push(runtimeFinding(wo.id + '-build', 'the build command exited non-zero', v.notes || ''))
+  }
+  // Its own finding, so the fix round is told which question failed. Folded into the build's,
+  // a coder would go looking for a broken build and find one that works.
+  if (v.typecheck === 'failed') {
+    out.push(runtimeFinding(wo.id + '-typecheck',
+      'the typecheck command exited non-zero — the tree does not compile, whatever the suite says',
+      v.notes || ''))
   }
 
   if (role === 'red') out.push(...redFailures(wo, v))
@@ -3528,6 +3823,17 @@ async function verifyUntilGreen(wo, state, trail) {
   // The failing facts of the previous round, as a comparable key. See the exit below.
   let priorFailureKey = null
 
+  // Every failing-fact set this order has ALREADY been in. The rule below it compares against
+  // the round immediately before, which catches a coder stuck in place and misses one
+  // oscillating: A, B, A, B never repeats consecutively and so never converges either.
+  //
+  // That is not hypothetical. An order widening a closed union owned records living in other
+  // files' fixtures, its locus did not say so, and the coder cycled — edit outside the locus,
+  // blocking breach, revert, tree no longer compiles, edit again. The same correct row was
+  // written three times and reverted twice, nothing detected the cycle, and the branch was left
+  // at a literal `Revert` commit with a broken build.
+  const seenFailureKeys = new Set()
+
   while (true) {
     const call = await measureOrder(wo, state, trail)
     if (call.escalation) return call.escalation
@@ -3536,6 +3842,7 @@ async function verifyUntilGreen(wo, state, trail) {
     state.advisories = (v.series_findings || []).filter((f) => !f.blocking)
 
     if (v.build === 'absent') log(`${wo.id}: no build command exists at this commit — repo state, not a failure.`)
+    if (v.typecheck === 'absent') log(`${wo.id}: no separate typecheck command exists at this commit — repo state, not a failure.`)
     if (v.suite === 'absent') log(`${wo.id}: no test suite exists at this commit — repo state, not a failure.`)
 
     if (verifyOk(v, wo)) {
@@ -3587,6 +3894,31 @@ async function verifyUntilGreen(wo, state, trail) {
           failures.map((f) => f.claim || f.id).join('; '))]),
         trail, state)
     }
+    // A failure state this order already left and has come back to. Not a counter and not a
+    // stricter version of the rule above, which is unchanged and still owns the stuck-in-place
+    // case: the trigger here is that the coder is somewhere it has been before, which means the
+    // constraints it is caught between cannot both be satisfied from inside this locus. That is
+    // a defect in the PLAN — the locus is too narrow for the change the order was given — and no
+    // number of further rounds can widen a fence the coder is forbidden to widen itself.
+    if (seenFailureKeys.has(failureKey)) {
+      const breaches = failures.filter((f) => (f.id || '').endsWith('-series-locus-breach'))
+      log(`ESCALATION ${wo.id}: the fix rounds are cycling between failure states already seen.`)
+      return esc(wo, 'verify_oscillating',
+        failures.concat([runtimeFinding(wo.id + '-oscillating',
+          'the fix rounds are cycling: this exact set of failing facts has occurred before in ' +
+          'this order, so the last round undid what an earlier one fixed' +
+          (breaches.length > 0
+            ? '. A locus breach is among them, which is the shape this usually takes: the order ' +
+              'needs a file its locus does not name, and neither editing it nor reverting it can ' +
+              'be right. Widen the locus in the plan and retry the order — do not ask the coder ' +
+              'to try again'
+            : '. Two constraints on this order are in tension and no commit inside its locus ' +
+              'satisfies both'),
+          failures.map((f) => f.claim || f.id).join('; '))]),
+        trail, state)
+    }
+
+    seenFailureKeys.add(failureKey)
     priorFailureKey = failureKey
 
     // The trail records every round that asked for work, verify rounds included — an
@@ -3653,7 +3985,7 @@ async function reviewLoop(wo, state, trail) {
 
     const call = await dispatch(wo, state, trail, 'reviewer round ' + round + ' for ' + wo.id,
       openBlockers,
-      () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, priorBlockers, round), {
+      () => agent(reviewerPrompt(wo, state, state.advisories, state.concerns, state.discovered, priorBlockers, round), {
         agentType: 'vf-agentics:reviewer', effort: 'high', schema: FINDINGS,
         phase: 'Review', label: `review:${wo.id}#${round}`, ...judgeFor(wo),
       }))
@@ -4561,7 +4893,18 @@ try {
     // therefore not re-searched.
     let nullSurvey = null
 
-    if (settledShape && ground.length > 0) {
+    // The fix lane's collapse, and it is a different KIND of collapse from the null survey below.
+    // That one is arithmetic: the caller names ground, a program checks the base covers it, and
+    // no phase is skipped on anybody's word. This one is a declaration — the caller has triaged
+    // the change to a locus and is saying so — and the honest thing is to record it as such
+    // rather than to dress it as a computed result. `from_kb` says which it was, so a reader can
+    // never mistake a lane for evidence.
+    if (fixLane) {
+      log(`Fix lane: no survey. The caller named the locus (${fixLocus.join(', ')}), which is ` +
+        `the judgment a survey would have been bought to make. Everything downstream — the ` +
+        `discriminator, the review loop, the mechanical checks — runs exactly as it does on the ` +
+        `full lane.`)
+    } else if (settledShape && ground.length > 0) {
       log(`Settled shape with named ground (${ground.join(', ')}): checking whether the ` +
         `knowledge base already covers it.`)
 
@@ -4590,12 +4933,23 @@ try {
           else uncovered.push({ path, stale: entries.filter((e) => e && e.state === 'stale').length })
         }
 
-        if (uncovered.length > 0) {
+        // Two refusals that used to look alike, and only one of them is normal operation. A
+        // stale chain is a base doing its job on a day when the ground moved. No base at all is
+        // a setup fact: the collapse cannot fire in this repository on any day, for any change,
+        // and the caller is paying a full survey every run while reading a message that sounds
+        // routine. It is said once, plainly, with the path — a user can fix that in an afternoon
+        // and cannot fix what they were never told.
+        if (carried.payload.kb_present === false) {
+          log(`Surveying in full: this repository has NO KNOWLEDGE BASE at .claude/vfa/kb, so ` +
+            `the survey collapse cannot fire here for any change — this is a setup fact, not a ` +
+            `stale chain. Runs will keep paying for a full survey until a base exists. It is ` +
+            `written by runs as they go; there is nothing to do by hand.`)
+        } else if (uncovered.length > 0) {
           log(`Surveying in full: the knowledge base does not cover ` +
             uncovered.map((u) => u.path + (u.stale > 0
               ? ` (${u.stale} entr${u.stale === 1 ? 'y' : 'ies'}, none fresh — a lead is not ` +
                 `evidence)`
-              : ' (nothing recorded)')).join(', ') + '.')
+              : ' (nothing recorded for this path, though the base exists)')).join(', ') + '.')
         } else {
           nullSurvey = covered
           log(`No survey: the knowledge base covers every named path with fresh entries, and ` +
@@ -4625,7 +4979,7 @@ try {
     let surveyUnresolved = false
     let surveyFailure = ''
 
-    if (!nullSurvey) {
+    if (!nullSurvey && !fixLane) {
       try {
         survey = await workflow('vf-agentics:vfa-survey', surveyArgs)
       } catch (e) {
@@ -4669,7 +5023,30 @@ try {
       })
     }
 
-    if (nullSurvey) {
+    if (fixLane) {
+      // The lane's account of itself, in the field a reader checks before believing a result.
+      // `complete` is true because nothing was dropped and nothing was left unreached — but the
+      // reason no search ran is a DECLARATION, not arithmetic, and this says so in those words.
+      // A lane and a fresh knowledge-base chain must never read alike here: one is a caller's
+      // judgment that the ground is known, the other is a program's finding that it is recorded.
+      surveyCoverage = {
+        complete: true,
+        dropped: [],
+        incomplete: [],
+        failed_channels: [],
+        unreached: [],
+        from_kb: [
+          'no survey phase ran: this run took the FIX LANE, where the caller names the locus ' +
+          'instead of buying a search for it. NOTHING WAS SEARCHED BY THIS RUN, and nothing was ' +
+          'recalled from the knowledge base either — the evidence for where this change belongs ' +
+          'is the caller\'s own triage. Any claim about ground outside the declared locus is ' +
+          'unsupported by anything this run did.',
+          'declared locus: ' + fixLocus.join(', '),
+        ].concat(regression ? ['a history search ran, because the caller described this change ' +
+          'as a regression'] : []),
+        resumable: { runId: RUN_ID, remaining: [] },
+      }
+    } else if (nullSurvey) {
       // The evidence phase did not run, and this block is the only account anybody gets of
       // that, so it says all of it: which ground the chain covered, at which commits it was
       // observed, and — first, because it is the part a reader would otherwise assume — that
@@ -4728,8 +5105,63 @@ try {
 
     phase('Plan')
 
+    // The fix lane's one optional side channel, and the only dispatch it buys that the full lane
+    // does not. A regression HAS a history — there is a commit where the behaviour was right and
+    // one where it stopped being — and that commit is usually the whole answer, cheaper to find
+    // than to re-derive from the current tree. An ordinary fix has no such commit, so nothing is
+    // bought for one.
+    //
+    // IRON LAW §5: it is a side channel and it gets its `.catch`. A history search that fails
+    // leaves the lane exactly where it was — the coder searches for itself, as it always did —
+    // and the failure is named rather than swallowed.
+    let history = ''
+    if (fixLane && regression) {
+      const found = await agent(historianPrompt(), {
+        agentType: 'vf-agentics:historian', effort: 'medium', model: 'sonnet',
+        schema: HISTORY, phase: 'Plan', label: 'history',
+      }).catch((e) => {
+        log(`WARNING: the history search failed to run: ${e && e.message}`)
+        return null
+      })
+
+      if (found && (found.findings || '').trim()) {
+        history = found.findings
+        log('The history search returned; the coder is given what it found.')
+      } else {
+        log('The history search returned nothing usable; the coder searches history itself.')
+        failedChannels.push('history')
+        extraUnreached.push('this change was described as a regression and the history search ' +
+          'returned nothing usable, so the commit that introduced it was never identified — ' +
+          'the fix rests on the current tree alone')
+      }
+    }
+
     const gaps = (surveyCoverage.unreached || []).concat(surveyCoverage.dropped || [])
-    const evidence = survey
+    const evidence = fixLane
+      ? `NO SURVEY WAS BOUGHT. This run is on the FIX LANE: the caller has already triaged ` +
+        `this change down to one locus and named it, which is the judgment a survey would ` +
+        `have been bought to make. You are not decomposing anything.
+
+` +
+        `THE LOCUS THE CALLER NAMED — this is the fence, and it is theirs rather than yours ` +
+        `to derive:
+${listOf(fixLocus)}
+
+` +
+        (history
+          ? `GIT HISTORY — a history search ran because this change was described as a ` +
+            `regression:
+${history}
+
+`
+          : '') +
+        `Confirm the locus against the repository before you write it down. You have Read, ` +
+        `Grep and Glob: open those files. If the change plainly cannot be done inside them — a ` +
+        `caller naming one file where the fix needs three is the ordinary way this lane goes ` +
+        `wrong — widen the locus and SAY SO in notes. Widening it here is free; discovering it ` +
+        `in the coder's worktree is a locus breach the coder may not fix, and a cycle the run ` +
+        `escalates as verify_oscillating.`
+      : survey
       ? `PER-TOPIC FINDINGS:\n${JSON.stringify(survey.verdicts, null, 1)}\n\n` +
         (survey.history ? `GIT HISTORY:\n${survey.history}\n\n` : '') +
         (survey.docs ? `EXTERNAL DOCUMENTATION:\n${survey.docs}\n\n` : '') +
@@ -4753,9 +5185,15 @@ try {
         : `WARNING: no survey evidence was gathered. Confirm every locus against the ` +
           `repository yourself before declaring it, and say in notes what that leaves uncertain.`
 
+    // The fix lane charges the planner as a SCRIBE rather than as a decomposer: one order, the
+    // locus the caller named, the plan file and its envelope written the one way they are ever
+    // written. `low` effort because there is nothing here to weigh — the judgment this dispatch
+    // would normally be bought for was made by the caller before the run started — and the tier
+    // is not the run's judge tier for the same reason. This is the one dispatch the lane keeps
+    // that it could have dropped, and it keeps it for the resume point.
     planned = await agent(plannerPrompt(evidence), {
-      agentType: 'vf-agentics:planner', effort: 'high',
-      schema: WORK_ORDERS, phase: 'Plan', label: 'plan', ...judge,
+      agentType: 'vf-agentics:planner', effort: fixLane ? 'low' : 'high',
+      schema: WORK_ORDERS, phase: 'Plan', label: 'plan', ...(fixLane ? { model: 'sonnet' } : judge),
     }).catch((e) => {
       log(`WARNING: planning failed: ${e && e.message}`)
       return null

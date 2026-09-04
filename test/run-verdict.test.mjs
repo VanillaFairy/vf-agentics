@@ -71,7 +71,7 @@ const stageLine = (kind, over = {}) => ({
 const verifyObserved = (over = {}) => ({
   kind: 'verify-observed', seq: 3, order: 'W1', branch: 'vfa/20260826-184728-W1',
   worktree: 'C:/wt/W1', base_sha: M40, head_sha: C40, stop_reason: 'completed',
-  build: 'passed', suite: 'passed', failing_tests: [],
+  build: 'passed', typecheck: 'passed', suite: 'passed', failing_tests: [],
   discriminator: [{ test_id: 't', failed_on_base: true, passes_now: true }],
   series_findings: [], ...over,
 })
@@ -625,9 +625,15 @@ test('an unreadable plan is a fact about the reader, not an empty run', () => {
 // --- the small pure helpers --------------------------------------------------------------------
 
 test('measured records what was mechanically CHECKED, and absent is not a check', () => {
-  assert.deepEqual(measuredOf(verifyObserved()), ['build', 'suite', 'discriminator:1'])
-  assert.deepEqual(measuredOf(verifyObserved({ build: 'failed', suite: 'failed', discriminator: [] })),
-    ['build', 'suite'], 'a check that ran and failed still ran')
+  assert.deepEqual(measuredOf(verifyObserved()), ['build', 'typecheck', 'suite', 'discriminator:1'])
+  assert.deepEqual(
+    measuredOf(verifyObserved({ build: 'failed', typecheck: 'failed', suite: 'failed', discriminator: [] })),
+    ['build', 'typecheck', 'suite'], 'a check that ran and failed still ran')
+
+  // The common shape, and the one that must not read as a gap: most repositories define no
+  // separate typecheck, and one whose test command runs `tsc` first is covered by the suite.
+  assert.deepEqual(measuredOf(verifyObserved({ typecheck: 'absent', discriminator: [] })),
+    ['build', 'suite'], 'no typecheck command is a fact about the repository, not a missing check')
 
   // The case that matters, and the one an earlier version of this file got backwards. A
   // docs-only order in a repository with no build and no suite has had NOTHING mechanically
@@ -635,9 +641,29 @@ test('measured records what was mechanically CHECKED, and absent is not a check'
   // ['build','suite'] here cleared that check and let such an order come back inside a run
   // reporting `complete: true` — IRON LAW §4 exactly, a partial result wearing a complete
   // one's label.
-  assert.deepEqual(measuredOf(verifyObserved({ build: 'absent', suite: 'absent', discriminator: [] })),
+  assert.deepEqual(
+    measuredOf(verifyObserved({ build: 'absent', typecheck: 'absent', suite: 'absent', discriminator: [] })),
     [], 'an absent build is a fact about the repository, not a check that ran')
 })
+
+test('a journal line written before typecheck existed resumes under the verdict it was planned under',
+  () => {
+    // The back-compat rule, exercised through the parser rather than around it: a line from an
+    // older version carries no `typecheck` key at all, and reading that as anything but 'absent'
+    // would either invent a check that never ran or fail an order for a question nobody asked.
+    const old = { ...verifyObserved() }
+    delete old.typecheck
+
+    const { entries } = parseJournal(jsonl([old]))
+
+    assert.equal(entries[0].typecheck, 'absent',
+      'a missing field is a run that never asked the question')
+    assert.ok(entries[0].recorded,
+      'an older line is a whole record of what its version measured, not a torn one')
+    assert.deepEqual(measuredOf(entries[0]), ['build', 'suite', 'discriminator:1'])
+    assert.ok(verifyOk(entries[0], order('W1')),
+      'an order green before this field existed is still green on resume')
+  })
 
 test('the workflow copy of measuredOf treats absent the same way this one does', async () => {
   // The two live in separate files because a workflow script cannot import, and they disagreed
@@ -656,6 +682,8 @@ test('the workflow copy of measuredOf treats absent the same way this one does',
     'an absent build must not count as a check that ran, on either side')
   assert.match(body[0], /v\.suite !== 'absent'/,
     'and neither must an absent suite')
+  assert.match(body[0], /v\.typecheck !== 'absent'/,
+    'nor an absent typecheck, which is the ordinary state of most repositories')
   assert.doesNotMatch(body[0], /=== 'absent'/,
     'the inverted form is what the two copies drifted into last time')
 })

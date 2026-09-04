@@ -114,8 +114,9 @@ export function scriptedAgents(script) {
 
 /** Every field lib/verify.mjs prints, in the state it prints them in when nothing was observed. */
 const BLANK_MEASUREMENT = {
-  stop_reason: 'completed', build: 'absent', suite: 'absent', suite_output_tail: '',
-  failing_tests: [], discriminator: [], series_findings: [], notes: '', error: null, journal: null,
+  stop_reason: 'completed', build: 'absent', typecheck: 'absent', suite: 'absent', suite_output_tail: '',
+  failing_tests: [], discriminator: [], mutations: [], series_findings: [], notes: '',
+  error: null, journal: null,
 }
 
 /**
@@ -155,7 +156,7 @@ export function carriedEnvelope(payload, damage, notes = 'ran the command and pa
  * and the rest of each entry is filled in the way the program fills it: fresh unless the scenario
  * says otherwise, a `gotcha` unless it says otherwise, and every field the workflow reads present.
  */
-export function carriedChain(byPath = {}, damage) {
+export function carriedChain(byPath = {}, damage, kbPresent = true) {
   const chains = Object.entries(byPath).map(([path, entries]) => ({
     path,
     nodes: [''],
@@ -181,6 +182,10 @@ export function carriedChain(byPath = {}, damage) {
     chains,
     counts: { fresh: count('fresh'), stale: count('stale'), orphaned: count('orphaned') },
     malformed: 0,
+    // Defaults true: a scenario that says nothing about the base is a repository that has one.
+    // Pass false to model the other case — no base installed at all, where the survey collapse
+    // cannot fire for any change and the refusal is a setup fact rather than a stale chain.
+    kb_present: kbPresent,
     dirty_readable: true,
     notes: 'read ' + chains.length + ' chain(s)',
   }, damage)
