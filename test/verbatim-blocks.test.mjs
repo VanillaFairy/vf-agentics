@@ -42,6 +42,10 @@ const REQUIRED_IDS = [
   // 46 blocking ambiguities delivered as prose, one question per turn, and a user who ruled
   // past a computed gate because reading the findings cost more than the design did.
   'probe-disposition',
+  // Two halves of one cost model: what a dispatcher owes, and what a dispatched agent owes. A
+  // constitution whose copy drifts leaves that one agent paging whole files while the rest work
+  // from the excerpts they were handed, and nothing else would notice.
+  'dispatch-economy', 'dispatched-economy',
 ]
 
 const OPEN = /<!--\s*vfa:verbatim\s+([a-z0-9-]+)\s*-->/g
