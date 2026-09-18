@@ -1201,7 +1201,7 @@ function absenceDeposits() {
 
     const surface = String(found.noMatch || '').replace(/\s+/g, ' ').trim()
     entries.push({
-      id: 'absence:' + fnv1a(path + ' ' + topic.key),
+      id: 'absence:' + fnv1a(path + '\u0000' + topic.key),
       claim: 'an exhausted search of ' + path + ' for ' + topic.key + ' found nothing' +
         (surface ? ': ' + surface : ''),
       kind: 'absence',
