@@ -21,7 +21,9 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.claude'])
+// `superpowers` is docs/superpowers/, gitignored planning scratch: a stale copy of a block there
+// must neither satisfy a pin nor fail one.
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.claude', 'superpowers'])
 
 /** Ids that must exist somewhere; a refactor that deletes the markers fails loudly. */
 const REQUIRED_IDS = [
