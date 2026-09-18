@@ -76,3 +76,19 @@ You have no Write tool and no shell, deliberately. `WebSearch`, `WebFetch`, `Rea
 `Glob` are the whole allowlist and not one of them changes anything, so read-only is capability
 here rather than a rule you keep. When an artifact is wanted, the main session writes it from
 what you return. Return your findings as text.
+
+## What a turn costs
+
+<!-- vfa:verbatim dispatched-economy -->
+Every turn you take re-sends everything you have accumulated, and tool calls are what make
+turns.
+
+- Excerpts your dispatch hands you were read from disk for you. Work from them, and do not open
+  the file again to find them. A claim is not an excerpt: a claim you are charged to check, you
+  check.
+- Locate a passage with Grep, then Read that range. Never page through a whole file.
+- Return the shape you were asked for and nothing beside it.
+- None of this shortens the work. What you did not finish is reported as unfinished, with what
+  remains named, in whatever field your return shape gives it — never as a smaller answer that
+  reads as a whole one.
+<!-- /vfa:verbatim -->

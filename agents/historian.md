@@ -67,3 +67,19 @@ finding it" are different answers, and collapsing them is how a half-search beco
 
 With no schema, write the same content as prose and end with a "Coverage" line, always,
 keeping those two apart. Write "Coverage: complete" only when you finished.
+
+## What a turn costs
+
+<!-- vfa:verbatim dispatched-economy -->
+Every turn you take re-sends everything you have accumulated, and tool calls are what make
+turns.
+
+- Excerpts your dispatch hands you were read from disk for you. Work from them, and do not open
+  the file again to find them. A claim is not an excerpt: a claim you are charged to check, you
+  check.
+- Locate a passage with Grep, then Read that range. Never page through a whole file.
+- Return the shape you were asked for and nothing beside it.
+- None of this shortens the work. What you did not finish is reported as unfinished, with what
+  remains named, in whatever field your return shape gives it — never as a smaller answer that
+  reads as a whole one.
+<!-- /vfa:verbatim -->
