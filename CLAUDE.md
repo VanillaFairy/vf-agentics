@@ -132,6 +132,37 @@ subsumes writing, and every restraint in those six is prose their constitution n
 prose. Locus enforcement stays post-hoc in `lib/commit-series.mjs` — the criterion is **zero
 breaches surviving to review**, never zero breach attempts.
 
+**A dispatch is bought by the turn, and an instruction does not build a mechanism.** Every agent
+here that searches or reads — analyst, coder, doc-researcher, historian, planner, reviewer, scout,
+test-author — carries the `dispatched-economy` block in its constitution, where parallel copies
+share the cached system prompt instead of each paying for a prompt body; the four couriers run one
+command and carry none of it. Whoever decides a dispatch — a skill's session, or you writing a
+workflow — works to this:
+
+<!-- vfa:verbatim dispatch-economy -->
+A dispatch costs context × turns, and every agent pays its own. Tool calls are what make turns;
+parallel agents share only the system prompt, so a prompt body handed to four agents is paid four
+times; and what an agent returns is re-read on every later turn of the session that dispatched
+it.
+
+- Grant tools only where the charge needs the tree. A question answerable from what you hand over
+  goes to an agent without tools and comes back in one turn.
+- Resolve evidence several agents need once — by script wherever that is deterministic — and hand
+  each agent the excerpts inline: never a path to go and read, never a whole source file.
+- Prefer fewer agents with disjoint charges. Split by head only where independence is the point,
+  and say that it is.
+- Ask for a typed return on a fixed shape. Narrative is context you pay for until the session
+  ends.
+- To check a change, re-dispatch narrowed to what changed and name the narrowing in coverage.
+  Never re-run the whole pass.
+<!-- /vfa:verbatim -->
+
+Measured on 2026-09-16, an orchestrator told exactly this still sent four tool-bearing agents that
+each located the same ground for itself: the instruction bought the agent it declined to add, and
+none of the sharing. So where this plugin needs shared ground it is code — `lib/citations.mjs`,
+the survey's `common_ground` — never a sentence asking a model to arrange it. Contract:
+`docs/superpowers/specs/2026-09-18-increment-26-contracts.md`.
+
 **What a run learns outlives the run, and none of it is stored as a status.** The project knowledge
 base at `.claude/vfa/kb/` mirrors the source tree, one append-only `node.jsonl` per node, holding
 anchored observations: what was seen, where, and at which commit. Depth is `LCA(about)` and
