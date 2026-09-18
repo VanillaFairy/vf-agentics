@@ -10,8 +10,8 @@ over a generic codebase. Its runtime artifacts are declarative — agent markdow
 workflow JS, `SKILL.md` — and are validated in three layers: `tools/lint.mjs` judges form, the
 scenario harness (`test/harness/workflow-host.mjs`) executes the workflows' orchestration
 arithmetic with scripted agents, and `test/verbatim-blocks.test.mjs` diffs every contract that
-is restated in prose (`<!-- vfa:verbatim <id> -->` markers) so copies cannot drift. See
-`docs/superpowers/specs/2026-08-08-vf-agentics-design.md`.
+is restated in prose (`<!-- vfa:verbatim <id> -->` markers) so copies cannot drift. The design
+itself — the whole system, as it is today — is `docs/DESIGN.md`.
 
 The development pipeline runs **design → ratified change → develop**. `design` interviews the
 user against surveyed evidence and produces the ratified change; `develop` surveys, plans,
@@ -72,10 +72,11 @@ disk and prints it with its own digest, a courier pastes that stdout, and the sc
 the digest before believing a word of it. `lib/ledger.mjs` is the only writer: it parses, checks
 the caller's digest, and refuses a line it cannot prove intact. Order prose is never
 transported — a coder fetches its own order with `ledger.mjs order` and confirms the digest.
-Contract: `docs/superpowers/specs/2026-08-27-increment-9-contracts.md`.
+Design: `docs/DESIGN.md#the-ledger`.
 
-**Verification travels the same way, because it is a script now.** `lib/verify.mjs` runs the four
-mechanical checks — commit series, build, suite, discriminator — in one process and prints them
+**Verification travels the same way, because it is a script.** `lib/verify.mjs` runs the
+mechanical checks — commit series, build, typecheck, suite, discriminator, and any declared
+mutations — in one process and prints them
 under one digest; the verify dispatch is a courier that pastes that line, and the workflow
 recomputes the digest before believing a field of it. Running a command and copying its exit
 status is not judgment (IRON LAW §8). What stays a model's work is an *escalation*: choosing a
@@ -127,8 +128,8 @@ session limit costs dozens.
 **Capability is one mechanism: the agent's frontmatter tool allowlist. There are no hooks, and
 there will be none** — ruled 2026-08-30 on field experience with the sibling plugin's hook layer
 plus the interference surface (plugin hooks fire in *every* session on the machine). Four agents
-carry no shell and their blindness is a fact about what they can do; six carry `Bash`, a shell
-subsumes writing, and every restraint in those six is prose their constitution now states as
+carry no shell and their blindness is a fact about what they can do; eight carry `Bash`, a shell
+subsumes writing, and every restraint in those eight is prose their constitution states as
 prose. Locus enforcement stays post-hoc in `lib/commit-series.mjs` — the criterion is **zero
 breaches surviving to review**, never zero breach attempts.
 
@@ -160,8 +161,8 @@ it.
 Measured on 2026-09-16, an orchestrator told exactly this still sent four tool-bearing agents that
 each located the same ground for itself: the instruction bought the agent it declined to add, and
 none of the sharing. So where this plugin needs shared ground it is code — `lib/citations.mjs`,
-the survey's `common_ground` — never a sentence asking a model to arrange it. Contract:
-`docs/superpowers/specs/2026-09-18-increment-26-contracts.md`.
+the survey's `common_ground` — never a sentence asking a model to arrange it. Design:
+`docs/DESIGN.md#what-a-dispatch-costs`.
 
 **What a run learns outlives the run, and none of it is stored as a status.** The project knowledge
 base at `.claude/vfa/kb/` mirrors the source tree, one append-only `node.jsonl` per node, holding
@@ -201,32 +202,22 @@ chain is the run's evidence base — stated in `from_kb`, including that nothing
 stale chain, a partly covered one, or one that could not be read all refuse the collapse by
 construction: a phase skipped on the strength of leads is exactly the laundering §2 forbids.
 
-Contracts: `docs/superpowers/specs/2026-08-16-increment-3-contracts.md`, extended by
-`2026-08-16-increment-4-contracts.md`, `2026-08-17-increment-5-contracts.md`,
-`2026-08-20-increment-6-contracts.md`, `2026-08-20-increment-7-contracts.md`,
-`2026-08-21-increment-8-contracts.md`, `2026-08-30-increment-10-contracts.md`,
-`2026-08-30-increment-11-contracts.md`, `2026-08-30-increment-12-contracts.md`,
-`2026-08-30-increment-13-contracts.md`, `2026-08-30-increment-14-contracts.md`,
-`2026-09-04-increment-22-contracts.md`, `2026-09-04-increment-23-contracts.md`,
-`2026-09-04-increment-24-contracts.md` and `2026-09-04-increment-25-contracts.md`. **Any change to
-the plan envelope's field list cites the registry in increment 5 §1, any change to a `state.jsonl`
-line cites increment 6 §2, any change to a `journal.jsonl` line cites increment 7 §4 as extended by
-increments 22 §2 and 23 §2, any change
-to `seq` cites increment 8 §3, any change to the verify payload's field list cites increment
-11 §1b as extended by increments 22 §1 and 23 §2, any change to the knowledge-base entry's field
-list cites increment 13 §1 as extended by increment 25 §2a, any change to
-the coverage block's field list cites increment 14 §3, and any change
-to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the
-same commit** — nothing finds any of those copies for you.
+**The data contracts are registered in `docs/DESIGN.md#data-contracts`** — the plan envelope and
+work order, the `state.jsonl` and `journal.jsonl` lines, `seq`, the verify payload, the resume
+verdict, the knowledge-base entry, the coverage block, the effort store and the programme graph —
+each with the code that owns it and every place it is restated. **Any change to one of those field
+lists updates its entry there and edits every copy the entry names, in the same commit series; any
+change to an agent's `tools:` line edits `test/agent-allowlists.test.mjs` in the same commit** —
+nothing finds any of those copies for you.
 
-**Docs land with the code, in the same commit series.** A behaviour-changing increment ships
-three doc artifacts or it is not done: its `docs/superpowers/specs/<date>-increment-N-contracts.md`,
-its section in `docs/design.md`, and its rows in `docs/2026-08-27-scenario-catalogue.md`. Agent
-constitutions and skill texts count as code here, not as docs. `docs/design.md` is the living
-description of the system **as it is** — everything else in `docs/` is dated by construction, so
-a proposal argues, a contracts doc pins one change, and neither ever describes the running whole.
-It carries empty sections naming the increment that fills each, and `test/design-doc.test.mjs`
-pins that they stay named and non-empty.
+**Docs land with the code, in the same commit series.** `docs/DESIGN.md` is the single design
+document: the whole system **as it is right now**. A behaviour-changing change is not done until
+DESIGN.md says what the code now does. Agent constitutions and skill texts count as code here, not
+as docs. DESIGN.md carries no history, no increment numbers and no links to documents that no
+longer exist — git holds how the system got here. Code, tests, skills and agents point into it as
+`docs/DESIGN.md#<anchor>`, and `test/design-doc.test.mjs` fails on any pointer whose heading is
+gone. `docs/superpowers/` is gitignored scratch for the vf-superpowers planning skills; nothing in
+the repository may point into it.
 
 Run the checks with:
 
@@ -250,8 +241,7 @@ update tooling, so everything *reads* like a version nobody is actually running.
 ## Standing requirements
 
 Stated by the user 2026-08-27; every proposed improvement to this plugin must serve at least
-one. Full rubric and the review that scored against it: `docs/2026-08-27-scenario-catalogue.md`,
-`docs/2026-08-27-adversarial-review.md`, `docs/2026-08-27-actionable-summary.md`.
+one.
 
 1. **Configurable intelligence per task.** Intelligence level is balanced and configurable at
    task granularity — not one dial for the whole run.
@@ -264,7 +254,7 @@ one. Full rubric and the review that scored against it: `docs/2026-08-27-scenari
    of work needs. Applies mostly to work orders.
 5. **Maximum resumability.** Detect early when a session limit is likely to be hit — never
    start lengthy work that is doomed to be killed; split it into smaller steps. See
-   `docs/superpowers/specs/2026-08-27-increment-9-contracts.md` for the current resume design.
+   `docs/DESIGN.md#resume` for the current resume design.
 6. **Deterministic → script.** If something is deterministic, it must be done as a script, not
    a model. Model calls are reserved for judgment.
 
@@ -318,11 +308,11 @@ A law with no enforcement is decoration. Its mechanical consequences:
 
 | Clause | Enforced by |
 |---|---|
-| §1 no counter-based termination | `tools/rules/no-turn-caps.mjs` (T05) |
-| §2 stop_reason enum, not a boolean | `HITS` schema (T15) + `coverage-block` (T06b) |
-| §3 resume, do not truncate | `scoutUntilComplete` in `vfa-survey` (T15) |
-| §4 partial ≠ whole | `tools/rules/coverage-block.mjs` (T06b) + `tools/rules/task-tool-fallback.mjs` + `coverage.from_kb` (increment 14 §3) |
-| §5 side channels get `.catch` | `vfa-survey` (T15), reviewed at T18 |
-| §6 resumable halt | `coverage.resumable` (T15) |
-| §7 escalate, never abandon | agent prompts (T11–T14) |
-| §8 cost via method | model/effort tiering (T11–T14), the intelligence switch (T15) |
+| §1 no counter-based termination | `tools/rules/no-turn-caps.mjs` |
+| §2 stop_reason enum, not a boolean | the `HITS` schema in `vfa-survey` + `tools/rules/coverage-block.mjs` |
+| §3 resume, do not truncate | `scoutUntilComplete` in `vfa-survey` |
+| §4 partial ≠ whole | `tools/rules/coverage-block.mjs` + `tools/rules/task-tool-fallback.mjs` + `coverage.from_kb` |
+| §5 side channels get `.catch` | every side channel in the workflows, `vfa-survey`'s history and docs channels first |
+| §6 resumable halt | `coverage.resumable` |
+| §7 escalate, never abandon | the agent constitutions |
+| §8 cost via method | model and effort tiering, and the intelligence dial (`docs/DESIGN.md#model-tier-earned`) |

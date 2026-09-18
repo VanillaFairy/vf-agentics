@@ -1,40 +1,49 @@
-// test/design-doc.test.mjs — pins that docs/design.md exists and keeps its shape.
+// test/design-doc.test.mjs — pins that docs/DESIGN.md exists, keeps its shape, and that every
+// pointer into it lands on a real heading.
 //
 // Lint family, same stance as test/no-turn-caps.test.mjs and test/iron-law.test.mjs: an
 // invariant enforced against this plugin's own source, mechanically, forever. The invariant
 // here is documentary, and it is the one that erodes without anything failing.
 //
-// The corpus this file exists to fix was dated proposals plus increment contracts plus a root
-// spec frozen on the day it was written — nothing describing the system as it IS. That state
-// is not reached by deleting design.md; it is reached by design.md quietly falling behind while
-// increments land beside it. So what is pinned is not prose but structure: the five sections
-// later increments owe content to are named here, so an increment cannot land while pretending
-// its section does not exist, and an empty stub cannot survive being "filled" with a heading.
-//
-// The section titles are matched EXACTLY. Renaming one is a real decision — it means an
-// increment's home moved — and it should have to appear in this file's diff to happen.
+// DESIGN.md is the single description of the system as it is. Code, tests, skills and agents
+// point into it as `docs/DESIGN.md#<anchor>`, and a renamed heading silently strands every one
+// of those pointers. So the anchors are checked here rather than trusted: a pointer that no
+// longer resolves fails the suite, and so does a link inside the document itself. This is a
+// test rather than a lint rule for the reason test/verbatim-blocks.test.mjs gives — rule modules
+// are pure per-file functions, and this comparison spans files.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const design = await readFile(new URL('../docs/design.md', import.meta.url), 'utf8')
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
+const design = readFileSync(join(ROOT, 'docs', 'DESIGN.md'), 'utf8')
 
-/** The sections increments 11 through 20 owe content to, spelled exactly. */
-const OWED_SECTIONS = [
-  'Verification',
-  'Capability layer',
-  'Lane catalogue',
-  'Knowledge base',
-  'Planning horizon',
-  // Increment 20, and the one section here that no plan reserved: model tiering had no home
-  // in design.md while `coderFor` and `judgeFor` carried the whole argument in code comments.
-  // It is pinned for the same reason as the others — a section that erodes without anything
-  // failing is the failure mode this file exists to catch.
-  'Model tier, earned',
-]
+// `superpowers` is gitignored planning scratch under docs/; nothing in it is part of the design.
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'superpowers'])
+const SOURCE = /\.(md|mjs|js|json)$/
 
-/** The body of one `## <title>` section: everything up to the next heading or the end. */
+/** GitHub's heading anchor: lowercase, punctuation dropped, each space a hyphen. */
+function anchorOf(heading) {
+  return heading.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-')
+}
+
+const headings = [...design.matchAll(/^#{1,6} (.+)$/gm)].map((m) => m[1])
+const anchors = new Set(headings.map(anchorOf))
+
+function sourceFiles(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (SKIP_DIRS.has(entry.name)) continue
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) sourceFiles(full, out)
+    else if (SOURCE.test(entry.name)) out.push(full)
+  }
+  return out
+}
+
+/** The body of one `## <title>` section: everything up to the next `## ` heading or the end. */
 function sectionBody(source, title) {
   const heading = '\n## ' + title + '\n'
   const at = source.indexOf(heading)
@@ -45,27 +54,50 @@ function sectionBody(source, title) {
   return (next === -1 ? rest : rest.slice(0, next)).trim()
 }
 
-test('the living design document exists and describes a system', () => {
-  assert.ok(design.length > 2000,
+test('the design document exists and describes a system', () => {
+  assert.ok(design.length > 20000,
     'a design doc short enough to be a placeholder is a placeholder')
 })
 
-test('every section a later increment owes content to is present, spelled exactly', () => {
-  for (const title of OWED_SECTIONS) {
-    assert.ok(design.includes('\n## ' + title + '\n'),
-      `missing section: ## ${title} — an increment lands with its section, or it is not done`)
+test('no top-level section is a bare heading', () => {
+  // A heading with nothing under it is the failure mode where the structure is satisfied and
+  // the document says nothing.
+  const sections = [...design.matchAll(/^## (.+)$/gm)].map((m) => m[1])
+  assert.ok(sections.length > 10, 'the document has lost its sections')
+  for (const title of sections) {
+    const body = sectionBody(design, title)
+    assert.ok(body && body.length > 20, `## ${title} has no body`)
   }
 })
 
-test('no owed section is a bare heading', () => {
-  // A stub says which increment fills it; a filled one says what the thing does. Either is a
-  // body. A heading with nothing under it is the failure mode where the structure is satisfied
-  // and the document says nothing.
-  for (const title of OWED_SECTIONS) {
-    const body = sectionBody(design, title)
-    assert.ok(body && body.length > 20,
-      `## ${title} has no body — a stub still has to say which increment fills it`)
+test('every heading has its own anchor', () => {
+  // Two headings with one anchor make a pointer ambiguous: GitHub suffixes the second, and a
+  // reader following `#x` lands on whichever came first.
+  const seen = new Map()
+  for (const heading of headings) {
+    const anchor = anchorOf(heading)
+    assert.ok(!seen.has(anchor), `"${heading}" and "${seen.get(anchor)}" share #${anchor}`)
+    seen.set(anchor, heading)
   }
+})
+
+test('every link inside the document resolves', () => {
+  for (const [, anchor] of design.matchAll(/\]\(#([^)]+)\)/g)) {
+    assert.ok(anchors.has(anchor), `DESIGN.md links to #${anchor}, which no heading produces`)
+  }
+})
+
+test('every pointer into the document from the repository resolves', () => {
+  let pointers = 0
+  for (const full of sourceFiles(ROOT)) {
+    const file = relative(ROOT, full).split(sep).join('/')
+    const text = readFileSync(full, 'utf8')
+    for (const [, anchor] of text.matchAll(/DESIGN\.md#([a-z0-9_-]+)/g)) {
+      pointers++
+      assert.ok(anchors.has(anchor), `${file} points at DESIGN.md#${anchor}, which no heading produces`)
+    }
+  }
+  assert.ok(pointers > 0, 'nothing points into the design document — the pointer scan is broken')
 })
 
 test('the doctrine is stated, not merely referenced', () => {

@@ -29,9 +29,8 @@ test('the ratified law section matches its pinned hash', () => {
 
   assert.equal(
     createHash('sha256').update(law).digest('hex'),
-    // Amended 2026-08-30 (increment 14): the §4 enforcement row names `coverage.from_kb`
-    // alongside the lint rules. A result partly recalled from the knowledge base and one
-    // wholly searched are indistinguishable without it, which is the clause itself.
-    '36e5fe52d43ee96a12c8006810f563f99ebba55e1fed01bcb7525b44400984a1',
+    // Amended 2026-09-18: the enforcement table names the files that enforce each clause
+    // instead of plan task ids, whose plans no longer exist. The eight clauses are unchanged.
+    '1a6d0f76cb6bf98c6dbfcee1aefa595424e7c486c0d3dc842d428bdb44920b7e',
   )
 })
