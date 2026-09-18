@@ -732,6 +732,32 @@ declared narrowing and a failure to cover.
 
 Contract: `docs/superpowers/specs/2026-09-04-increment-25-contracts.md` §4.
 
+## What a dispatch costs
+
+Every agent that searches or reads — analyst, coder, doc-researcher, historian, planner, reviewer,
+scout and test-author — closes its constitution with one shared block, `dispatched-economy`.
+Excerpts a dispatch hands it were read for it and are not re-opened; a passage is found with Grep
+and read by range, never by paging a whole file; the return is the shape asked for and nothing
+beside it; and none of that shortens the work. The four couriers — ground, kb, run-state,
+verifier — run one command and carry none of it.
+
+It lives in the constitution because that is where the cache is. Parallel agents share the system
+prompt and nothing else: in the measured probe, fifteen of sixteen analysts opened by reading the
+same 5,059 cached tokens and each wrote its own ~3.2k prompt body fresh, although the bodies were
+identical up to the axis line. A rule in the constitution is paid once per agent type; the same
+rule in a prompt body is paid once per dispatch.
+
+The dispatcher's half, `dispatch-economy`, sits where a dispatch is decided: the develop skill's
+direct-session path, the one place a session dispatches an agent itself, and `CLAUDE.md`, for
+whoever writes a workflow. It is guidance and was measured as guidance. Given four claims resting
+on the same two files, an orchestrator with it dispatched four agents where one without it
+dispatched five — 443,256 tokens against 606,598 — and the whole difference was the agent it did
+not add. Neither built shared ground: every verifier in both arms located the same evidence for
+itself. So the plugin's shared ground is code and never this block — `lib/citations.mjs` for a
+probe, `common_ground` for a survey.
+
+Contract: `docs/superpowers/specs/2026-09-18-increment-26-contracts.md`.
+
 ## Planning horizon
 
 *Empty. Increment 17 fills this section, when later slices become stubs elaborated against merged
