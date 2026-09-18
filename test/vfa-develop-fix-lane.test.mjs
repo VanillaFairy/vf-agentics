@@ -159,12 +159,12 @@ test('the discriminator still gates the order', async () => {
     'fix:': coded({ commits: [], head_sha: A40 }),
   })
 
-  // It routes through increment 21's `discriminator_undecidable` rather than a fix round — a
+  // It routes through `discriminator_undecidable` rather than a fix round — a
   // discriminator standing alone as the only failing fact is not something a further round can
   // move, so a person rules on it. What matters here is that the gate holds at all: this lane
   // inherits the verdict machinery whole, including the parts that decide how to fail.
   assert.ok(!prompts.some((p) => p.opts.label === 'fix:W1'),
-    'buying a round to learn the answer again is what increment 21 stopped doing')
+    'buying a round to learn the answer again is what this escalation exists to prevent')
   assert.equal(result.escalations[0].reason, 'discriminator_undecidable')
   assert.ok(!result.implemented.some((e) => e.id === 'W1'),
     'a test that passes without the fix pins nothing, on this lane as on any other')

@@ -1,4 +1,4 @@
-// test/coverage-block-gaps.test.mjs — the two defects an adversarial audit (T06c) found in
+// test/coverage-block-gaps.test.mjs — the two defects an adversarial audit found in
 // the `coverage-block` rule, pinned. These are gaps, not a rewrite: the main suite in
 // test/coverage-block.test.mjs stays exactly as its author left it, and this file sits
 // alongside it so the audit trail is readable later.
@@ -17,11 +17,11 @@
 //
 // DEFECT 2 (medium) — ES shorthand `coverage` is not recognized. This was written down as an
 // accepted limitation, then hit by the very first real workflow written against the rule
-// (T15's vfa-survey, which had to rename a parameter to `coverageBlock` to get around it).
-// Spec decision D10 reverses that: shorthand counts.
+// (vfa-survey, which had to rename a parameter to `coverageBlock` to get around it).
+// Shorthand counts.
 //
-// Written from the spec by an agent who has seen neither the fix nor the original author's
-// reasoning, on purpose.
+// Written by an agent who had seen neither the fix nor the original author's reasoning, on
+// purpose.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -108,10 +108,10 @@ test('a block comment inside the returned object does not supply the coverage ke
   assertMissingCoverageBlock(check(src, WF))
 })
 
-// --- DEFECT 2: ES shorthand (spec decision D10) ------------------------------------------
+// --- DEFECT 2: ES shorthand --------------------------------------------------------------
 
 test('ES shorthand coverage satisfies the rule', () => {
-  // D10. The workflow really does return a coverage block; `coverage` and `coverage: coverage`
+  // The workflow really does return a coverage block; `coverage` and `coverage: coverage`
   // are the same object. Flagging this pushed the first real workflow into renaming a
   // parameter to appease the linter, which is the linter being wrong.
   const src = ['const coverage = {}', 'return { question, coverage }'].join('\n')

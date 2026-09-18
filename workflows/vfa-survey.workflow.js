@@ -173,9 +173,9 @@ const HITS = {
 
 // History and docs return narrative evidence, so `findings` stays prose. They answer the same
 // coverage contract as the scouts anyway: without it, a channel that stalled halfway is
-// indistinguishable from one that finished, because both arrive as a confident essay. That
-// was increment 1's stated limitation — the side channels reported completeness only as prose
-// nothing read in JS, so a truncated-but-returned channel still left coverage.complete true.
+// indistinguishable from one that finished, because both arrive as a confident essay, and
+// completeness reported only as prose is read by nothing in JS: a truncated-but-returned
+// channel would still leave coverage.complete true.
 const evidenceSchema = (findingsDescription, searchedDescription) => ({
   type: 'object',
   additionalProperties: false,
@@ -463,7 +463,7 @@ const RESUME_NOTE = 'a resume must re-pass `args` alongside resumeFromRunId — 
 // A knowledge base that could not be read leaves a line here rather than in `failed_channels`,
 // and that is deliberate: `failed_channels` is a conjunct of `complete` in this workflow, and an
 // unreadable base costs a survey nothing it was going to have. It searches every topic from
-// scratch, exactly as every survey before this increment did. More work, not less evidence.
+// scratch, exactly as a survey with no knowledge base does. More work, not less evidence.
 function coverageOf(dropped, incomplete, failedChannels, unreached, fromKb = []) {
   return {
     complete:
@@ -513,8 +513,8 @@ phase('Plan')
 // subtree each topic names.
 //
 // A side channel with IRON LAW §5 treatment: a base that cannot be read costs this survey
-// nothing it was going to have. Every topic is then searched from scratch, which is how every
-// survey before this increment ran.
+// nothing it was going to have. Every topic is then searched from scratch, which is how a
+// survey with no knowledge base runs.
 const kbNotes = []
 
 const kbIndex = await (async () => {
@@ -971,8 +971,8 @@ async function scoutUntilComplete(topic) {
     : ''
 
   // What the base holds about this topic's ground, said in the two ways the two states are
-  // worth. The distinction is the whole of increment 14 at this seam, and it is stated
-  // verbatim-clearly rather than left for a scout to infer: fresh entries make this topic a
+  // worth. The distinction is stated verbatim-clearly rather than left for a scout to infer:
+  // fresh entries make this topic a
   // VERIFICATION, and stale ones are places to look that no report may rest on.
   const known = kbForTopic(topic)
 
@@ -1092,7 +1092,7 @@ const findings = await pipeline(
   ).catch((e) => {
     // The only unguarded agent call would be this one. The reconciliation below already
     // assumes a failed item arrives as falsy; catching here makes that true whatever
-    // pipeline() does with a rejection, and keeps the promise in §6 that survey never throws.
+    // pipeline() does with a rejection, and keeps the promise that survey never throws.
     // The topic then falls into `dropped`, so coverage.complete goes false rather than the
     // whole run dying and the caller getting nothing it can reason about.
     log(`${topic.key}: analysis failed (${e && e.message}); reporting the topic as dropped.`)

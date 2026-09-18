@@ -2,7 +2,7 @@
 // across this plugin's declarative artifacts (agents, workflows, skills).
 //
 // This file loads and runs rules. It never judges source itself — every judgement lives
-// in a single-purpose module under tools/rules/. See docs/.../shared/interfaces.md §1.
+// in a single-purpose module under tools/rules/. See docs/DESIGN.md#how-the-plugin-checks-itself.
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'

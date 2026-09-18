@@ -1,11 +1,11 @@
 // test/no-self-verdict.test.mjs — pins the ban on self-reported verdict booleans in workflow
-// schemas (IRON LAW §2, extended to review by this increment).
+// schemas (IRON LAW §2, extended to review).
 //
 // The line this rule draws is verdict names vs. fact names: `approved`/`passed`/`ok`/... are
 // judgments a schema must never let a model set for itself, while `build_ok`/`suite_pass`/...
 // describe an observed command exit status and stay legal. The clean case below is the real
-// VERIFY schema from shared/interfaces.md §5, verbatim — if this rule ever flagged that
-// schema, every increment-2 workflow would trip the lint on day one.
+// VERIFY schema, verbatim — if this rule ever flagged that schema, every workflow carrying it
+// would trip the lint on day one.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -136,9 +136,7 @@ test('does not flag banned words in prose or prompt strings', () => {
   assert.deepEqual(check(src, FILE), [])
 })
 
-test('the real VERIFY schema from shared/interfaces.md section 5 is clean', () => {
-  // Copied verbatim from docs/superpowers/plans/2026-08-08-increment-2-develop-review-loop/
-  // shared/interfaces.md §5.
+test('the real VERIFY schema is clean', () => {
   const src = `
 const VERIFY = {
   type: 'object', additionalProperties: false,

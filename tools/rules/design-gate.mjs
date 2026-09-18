@@ -14,8 +14,8 @@
 //
 // The clause sets are DIFFERENT on purpose, and the difference is the interesting part. The
 // design skill has a HARD GATE because ratification is a human act at a moment where a wrong
-// shape still costs one paragraph. The programme skill has none, because §3.4 of the
-// programme design abolished per-leaf ratification outright: authorization there flows from
+// shape still costs one paragraph. The programme skill has none, because the programme design
+// abolishes per-leaf ratification outright: authorization there flows from
 // the plan artifact existing at all, and that artifact can only come into being through a
 // session with the user. Forcing design's clauses onto it would pin a ceremony the design
 // deliberately removed — which is to say the rule would enforce a bug.

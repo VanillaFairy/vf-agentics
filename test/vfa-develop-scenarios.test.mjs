@@ -617,7 +617,7 @@ test('each wave is recorded to the run state as it completes', async () => {
     'the line type is written explicitly — a reader must not have to infer it from shape')
 })
 
-// --- order-grain durable state (§9.3) ------------------------------------------------------
+// --- order-grain durable state -------------------------------------------------------------
 //
 // The wave line is written when a wave ENDS, and a wave is the longest single stretch in this
 // pipeline. A usage limit landing in the middle of one used to lose every order already
@@ -1257,7 +1257,7 @@ test('a wave the remaining target cannot cover is deferred at the boundary, not 
 // `opts.model`, so that is what these read.
 
 test('a red order implements at opus even when the dial says sonnet', async () => {
-  // The tiering doc states this as an ALWAYS and never waived it. A red order pins the
+  // This is an ALWAYS, never waived. A red order pins the
   // acceptance criteria in failing tests; the green coder is fenced to those criteria and
   // implements a wrong reading faithfully; the reviewer is fenced to the same criteria and
   // has no standing to object. Nothing downstream can catch it.

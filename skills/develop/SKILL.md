@@ -152,9 +152,8 @@ one-line constant — where even four dispatches and a worktree cost more than t
 that instead when the change is that small, on the same terms as before: this fits a direct
 session with a reviewer pass.
 
-**Say why, with the numbers.** They are in `docs/2026-08-29-eva-plays-2-field-audit.md`, which
-read ten sessions end to end and asked of each whether a naive "do X" would have served
-better. Seven of ten: yes. A run buys ~400–500k tokens of survey before a line is written; a
+**Say why, with the numbers.** They come from a field audit that read ten sessions end to end
+and asked of each whether a naive "do X" would have served better. Seven of ten: yes. A run buys ~400–500k tokens of survey before a line is written; a
 TDD'd behaviour costs 10–12 dispatches across its red and green halves; a five-line
 camera-rounding fix carried its own 48-line pinned test through two dedicated worktrees. The
 best direct session in that audit landed ~1,300 lines, 62 tests and four clean commits in 35
@@ -506,14 +505,14 @@ if the session dies in the middle.
       verifier, create a throwaway worktree at the pre-change SHA and point it there —
       never the tree the user is sitting in.** The verifier's discriminator stashes,
       checks out the base SHA, and force-checks-out back; run that against the user's live
-      working tree and it wrecks their uncommitted work. The design spec forbids this in as
-      many words, and that rule lives nowhere else in the runtime files, so it is repeated
-      here rather than assumed. Then drive the SAME review contract via the Agent tool —
-      `vf-agentics:verifier` for facts, then fresh `vf-agentics:reviewer` rounds — under
-      interfaces §7's exit and escalation conditions. The block below is a verbatim copy
-      of that contract, and `test/verbatim-blocks.test.mjs` diffs it against the source —
-      an earlier revision paraphrased it down to "zero criticals → approved" and reopened
-      a hole the contract explicitly closes:
+      working tree and it wrecks their uncommitted work. The plugin's design forbids this
+      outright, and no other runtime file says so, so it is stated here rather than assumed.
+      Then drive the SAME review contract via the Agent tool — `vf-agentics:verifier` for
+      facts, then fresh `vf-agentics:reviewer` rounds — under the review loop's exit and
+      escalation conditions. The block below is a verbatim copy of that contract, whose
+      canonical copy is the plugin's `docs/DESIGN.md#the-review-loop`, and
+      `test/verbatim-blocks.test.mjs` diffs the two — a paraphrase down to "zero criticals →
+      approved" would reopen a hole the contract explicitly closes:
 
       <!-- vfa:verbatim review-loop-exit -->
 - Dispatch a fresh reviewer each round with the work order, the worktree path, the span

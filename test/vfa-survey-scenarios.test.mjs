@@ -526,7 +526,7 @@ test('a plan from before common_ground existed reads as no shared ground, not as
 
 // ------------------------------------------------------ the knowledge base, consumed
 //
-// Increment 14. The mechanism the probe forced: the Plan phase receives the tree INDEX — where
+// The Plan phase receives the tree INDEX — where
 // this repository knows anything, and of what kind — because before a decomposition exists the
 // only known paths are the roots, whose chain is the repository-wide node alone. Chains are then
 // bought per topic, at the subtree each topic named.
@@ -536,7 +536,7 @@ test('a plan from before common_ground existed reads as no shared ground, not as
 // reach no analyst; and a finding resting on either kind is distinguishable from one this run
 // searched for, because `from_kb` says so and is computed here rather than claimed by a model.
 //
-// Contract: docs/superpowers/specs/2026-08-30-increment-14-contracts.md.
+// Design: docs/DESIGN.md#knowledge-base-consumption.
 
 test('the index is read before the decomposition, at courier grade, and reaches the planner', async () => {
   const { prompts } = await run({
@@ -696,7 +696,7 @@ test('a knowledge base that cannot be read costs the survey nothing it was going
   assert.ok(!labelsOf(prompts).includes('kb-chain'))
 
   // An unreadable base means MORE searching, not less evidence: every topic is searched from
-  // scratch, exactly as every survey before this increment ran. So it is not a failed channel
+  // scratch, exactly as a survey with no knowledge base runs. So it is not a failed channel
   // here — `failed_channels` is a conjunct of `complete` in this workflow — and the loss is
   // recorded where a reader looks for provenance.
   assert.deepEqual(result.coverage.failed_channels, [])
@@ -763,7 +763,7 @@ test("a channel's evidence of absence travels with its findings", async () => {
   assert.equal(result.coverage.complete, true)
 })
 
-// ------------------------------------------- prior context (increment 25 §3)
+// ------------------------------------------------------------- prior context
 //
 // An effort's stored survey is durable scratch. The whole rule is where it may go: one prompt,
 // and no gate. What is pinned here is the "no gate" half, which is invisible by reading.
@@ -797,7 +797,7 @@ test('prior context changes no count: every topic is still searched', async () =
   assert.equal(result.coverage.complete, true)
 })
 
-// ------------------------------------------- absence deposits (increment 25 §2)
+// ------------------------------------------------------------- absence deposits
 
 const recorded = { stop_reason: 'recorded', path: '.claude/vfa/kb', notes: 'written' }
 const EMPTY = (over = {}) => HITS({ hits: [], no_match: 'no retry helper anywhere under src/a', ...over })

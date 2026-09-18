@@ -1,4 +1,4 @@
-// test/commit-series.test.mjs — pins contract §3: `parseLog` (the delimited `git log`
+// test/commit-series.test.mjs — pins `parseLog` (the delimited `git log`
 // reader) and `analyzeSeries` (the mechanical checks a verifier runs before any expensive
 // reviewer round). The commit series is the review artifact, so these two functions decide
 // what the reviewer is even asked to look at. A false negative here buys an Opus round on
@@ -15,51 +15,41 @@
 // and a commit with no name-only output (a merge) emits ONLY the header line and its
 // newline — no blank line, no paths — with the next \x01 following directly.
 //
-// WHAT THIS FILE DELIBERATELY DOES NOT PIN. These are the places contract §3 really does
-// leave more than one honest reading open, so nothing below asserts a choice:
+// WHAT THIS FILE DELIBERATELY DOES NOT PIN. These are the places that really do leave more
+// than one honest reading open, so nothing below asserts a choice:
 //
 //   * Finding ORDER — neither within a commit nor across commits is specified, and
-//     SPEC-DECISIONS ruling 2 confirms that consumers must not depend on it. Every
+//     consumers must not depend on it. Every
 //     whole-result assertion below goes through `idsOf()`, which sorts. Nothing here
 //     requires findings in the order the contract happens to list the checks.
 //   * Message WORDING. The tests ask that a message exists, is not blank, and — where a
 //     human reading the verifier's report needs it — that it names the file it is about.
 //     Never the sentence itself.
-//   * The CLI wrapper. §3 is explicit that only `parseLog` and `analyzeSeries` are
-//     unit-tested; the CLI is exercised end-to-end at T11.
+//   * The CLI wrapper. Only `parseLog` and `analyzeSeries` are unit-tested.
 //
-// HISTORY — this list used to be a great deal longer, and the reasoning behind it still
-// holds: when the file was first written those questions genuinely were open, and guessing
-// at them would have turned a guess into the specification. What changed is that the
-// supervisor has since ratified every one of them in SPEC-DECISIONS.md. They are now
-// pinned here, each in a test that names its ruling:
+// SETTLED READINGS, each pinned in its own test:
 //
 //   * A commit breaching on several files emits ONE FINDING PER OFFENDING FILE, each
-//     naming its own file (ruling 3, case 8).
-//   * `squash!` IS a wip subject. §3's regex was defective and has been corrected to
-//     /^(wip\b|fixup!|squash!|temp\b|tmp\b)/i — see the note above case 10 (ruling 1).
-//   * An empty locus `[]` permits NOTHING: every file touched is a breach (ruling 6).
+//     naming its own file (case 8).
+//   * `squash!` IS a wip subject. The regex is
+//     /^(wip\b|fixup!|squash!|temp\b|tmp\b)/i — see the note above case 10.
+//   * An empty locus `[]` permits NOTHING: every file touched is a breach.
 //   * Locus comparison is case-SENSITIVE, and a locus entry never stands for a directory
-//     prefix (rulings 7 and 8).
-//   * `empty-commit` does NOT suppress the subject checks on the same commit (ruling 9,
-//     case 14).
+//     prefix.
+//   * `empty-commit` does NOT suppress the subject checks on the same commit (case 14).
 //   * `parseLog` returns paths and subjects VERBATIM. Separator normalisation belongs to
 //     `analyzeSeries` at comparison time, so a parseLog fixture may now contain a
-//     backslash and is expected to keep it (ruling 10).
+//     backslash and is expected to keep it.
 //   * A file-path line is any line that is not exactly `''`, with NO trimming — a
-//     whitespace-only line is a path (ruling 11).
-//   * `and-subject` matching is case-SENSITIVE (ruling 5).
+//     whitespace-only line is a path.
+//   * `and-subject` matching is case-SENSITIVE.
 //   * `subject-length` counts UTF-16 code units, i.e. plain JS `String.length`
-//     (ruling 12). This one was flagged inline at case 12 rather than in the list above.
+//     (case 12).
 //
-// One of those pins behaviour the spec owner accepted with its eyes open rather than
-// behaviour anyone would call obviously right: case-sensitive locus comparison is a known
-// hazard on Windows and macOS, recorded as exactly that in SPEC-DECISIONS.md. It is pinned
-// so that changing it means reopening the decision, not quietly "fixing" a test.
-//
-// CURRENTLY RED, ON PURPOSE. The last section of this file — CRLF line endings, ruling 13 —
-// describes behaviour §3 now requires and the parser does not yet have. Those two tests are
-// expected to fail until the parser is changed. Everything before them passes.
+// One of those pins behaviour accepted with eyes open rather than behaviour anyone would
+// call obviously right: case-sensitive locus comparison is a known hazard on Windows and
+// macOS, accepted as exactly that. It is pinned so that changing it means reopening the
+// decision, not quietly "fixing" a test.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -225,10 +215,10 @@ test('parseLog is pure — the same text parses the same way whatever ran before
   assert.deepEqual(parseLog(TWO_COMMITS), first)
 })
 
-// --- parseLog returns what git gave it, unedited (ruling 10) -----------------------------
+// --- parseLog returns what git gave it, unedited -----------------------------------------
 
 test('a backslash path comes back with its backslashes, and so does the subject', () => {
-  // Ruling 10: parseLog is a pure parser, and separator normalisation belongs to
+  // parseLog is a pure parser, and separator normalisation belongs to
   // analyzeSeries at comparison time. A parser that helpfully rewrites `\` to `/` is
   // invisible to every analyzeSeries test in this file, because those normalise anyway —
   // this is the only place the difference shows.
@@ -244,10 +234,10 @@ test('a backslash path comes back with its backslashes, and so does the subject'
   ])
 })
 
-// --- what counts as a file-path line (ruling 11) -----------------------------------------
+// --- what counts as a file-path line -----------------------------------------------------
 
 test('an all-whitespace line is a file path, and it keeps its whitespace', () => {
-  // Ruling 11: a file-path line is any line where `line !== ''`. No trimming, in either
+  // A file-path line is any line where `line !== ''`. No trimming, in either
   // direction — the empty line git puts before the name list is dropped, a whitespace-only
   // line is not. Real git never emits one, so this is defensive; it is worth pinning
   // because a parser that trims would also quietly rewrite the paths that legitimately
@@ -386,7 +376,7 @@ test('a locus entry that merely starts with the touched path does not cover it',
   assert.deepEqual(idsOf(analyzeSeries(commits, LOCUS)), [`${SHA_A} locus-breach true`])
 })
 
-// --- an empty locus permits nothing (ruling 6) -------------------------------------------
+// --- an empty locus permits nothing ------------------------------------------------------
 
 /** Two ordinary in-tree files, judged against a locus that declares nothing at all. */
 const EMPTY_LOCUS_COMMITS = [
@@ -394,7 +384,7 @@ const EMPTY_LOCUS_COMMITS = [
 ]
 
 test('with an empty locus every file a commit touches is a breach', () => {
-  // Ruling 6: the locus enumerates every file an order may touch, so `[]` permits nothing.
+  // The locus enumerates every file an order may touch, so `[]` permits nothing.
   // The other reading — `[]` means "no constraint" — silently disables the one fence this
   // check exists to provide, and every other analyzeSeries fixture in this file hands over
   // a non-empty locus, so nothing else here would notice.
@@ -427,15 +417,15 @@ test('no commits and an empty locus is still just the empty-series finding', () 
   assert.deepEqual(idsOf(analyzeSeries([], [])), [' empty-series true'])
 })
 
-// --- locus comparison is case-sensitive (ruling 7) ---------------------------------------
+// --- locus comparison is case-sensitive --------------------------------------------------
 
 test('a path that differs from its locus entry only in case is outside the locus', () => {
-  // Ruling 7, following §2's "exact string equality": no casefolding anywhere.
+  // Exact string equality: no casefolding anywhere.
   //
-  // This pins a hazard the spec owner accepted KNOWINGLY, not a behaviour anyone thinks is
-  // ideal. On Windows and macOS `LIB/Commit-Series.mjs` and `lib/commit-series.mjs` are the
-  // same file on disk, and SPEC-DECISIONS.md records that under "Known hazard, accepted
-  // deliberately" — changing it means changing the independence contract itself. The test
+  // This pins a hazard accepted KNOWINGLY, not a behaviour anyone thinks is ideal. On
+  // Windows and macOS `LIB/Commit-Series.mjs` and `lib/commit-series.mjs` are the same file
+  // on disk, a known hazard accepted deliberately — changing it means changing the
+  // independence contract itself. The test
   // exists so that a later reader who finds the behaviour surprising has to reopen the
   // decision rather than quietly relax a comparison.
   const commits = [commit(SHA_A, 'add the parser', ['LIB/Commit-Series.mjs'])]
@@ -454,7 +444,7 @@ test('a commit path written with backslashes matches a POSIX locus entry', () =>
 })
 
 test('a locus entry written with backslashes matches a POSIX commit path', () => {
-  // §3 says the comparison normalises, not that one side is trusted to arrive clean.
+  // The comparison normalises; neither side is trusted to arrive clean.
   const commits = [commit(SHA_A, 'add the parser', ['lib/commit-series.mjs'])]
 
   assert.deepEqual(analyzeSeries(commits, ['lib\\commit-series.mjs']), [])
@@ -462,17 +452,16 @@ test('a locus entry written with backslashes matches a POSIX commit path', () =>
 
 // --- case 10: wip subjects ---------------------------------------------------------------
 //
-// HOW THE CONTRACT REGEX GOT FIXED, because the fix is the reason these tests look the way
-// they do. §3 originally said /^(wip|fixup!|squash!|temp|tmp)\b/i, which cannot match
-// 'fixup! x': `\b` after the `!` needs a word character next, and a space is not one. Same
-// for 'squash! rework the parser'. The contract and the required behaviour contradicted
-// each other outright, and the spec owner resolved it in SPEC-DECISIONS ruling 1 by moving
-// the boundary inside the alternatives that actually need it. §3 now reads:
+// WHERE THE WORD BOUNDARY SITS, because it is the reason these tests look the way they do.
+// A trailing boundary — /^(wip|fixup!|squash!|temp|tmp)\b/i — cannot match 'fixup! x':
+// `\b` after the `!` needs a word character next, and a space is not one. Same for
+// 'squash! rework the parser'. So the boundary sits inside the alternatives that actually
+// need it:
 //
 //     /^(wip\b|fixup!|squash!|temp\b|tmp\b)/i
 //
-// So the `!` forms flag, `squash!` included, and both are pinned below rather than left
-// pending. Deleting `\b` outright was considered and rejected: it would flag 'wipe stale
+// So the `!` forms flag, `squash!` included, and both are pinned below. Deleting `\b`
+// outright is wrong the other way: it would flag 'wipe stale
 // cache' and 'template rendering', which the tests below require to stay clean.
 
 test('WIP, fixup! and tmp subjects are each a blocking wip-subject finding', () => {
@@ -507,7 +496,7 @@ test('a subject that merely begins with those letters is not a wip subject', () 
 })
 
 test('a squash! subject is a blocking wip-subject finding', () => {
-  // Ruling 1's own worked example. `squash!` is in the corrected alternation exactly like
+  // The worked example. `squash!` is in the alternation exactly like
   // `fixup!`, and nothing else in this subject could trip a check.
   const commits = [commit(SHA_A, 'squash! rework the parser', ['lib/commit-series.mjs'])]
 
@@ -522,7 +511,7 @@ test('the bare squash! prefix is what matches, not the words following it', () =
   assert.deepEqual(idsOf(analyzeSeries(commits, LOCUS)), [`${SHA_A} wip-subject true`])
 })
 
-// --- case 10b: checkpoint commits (increment 10) -------------------------------------------
+// --- case 10b: checkpoint commits ----------------------------------------------------------
 //
 // A checkpoint is the deliberate stop: a coder that notices it is running long commits its
 // work in progress rather than leaving a dirty tree nothing vouches for. It is a legitimate
@@ -627,7 +616,7 @@ test('a subject joining two concerns with " and " is an advisory and-subject fin
 })
 
 test('the letters "and" inside a word do not trip the AND test', () => {
-  // §3 says the subject must CONTAIN ' and ' — spaces included. A bare /and/ turns
+  // The subject must CONTAIN ' and ' — spaces included. A bare /and/ turns
   // "command" and "sandbox" into findings and trains the coder to ignore this check.
   const commits = [
     commit(SHA_A, 'update the command handler', ['lib/commit-series.mjs']),
@@ -638,7 +627,7 @@ test('the letters "and" inside a word do not trip the AND test', () => {
 })
 
 test('a capitalised " And " does not trip the AND test', () => {
-  // Ruling 5: case-SENSITIVE, the literal reading of §3's "contains ' and '". The check is
+  // Case-SENSITIVE, the literal reading of "contains ' and '". The check is
   // advisory and crude on purpose, and a missed `And` costs nothing — which is precisely
   // why nothing else would notice if the match quietly went case-insensitive. The lowercase
   // half of this pair is the first test in this section.
@@ -656,8 +645,8 @@ test('an 80-character subject is an advisory subject-length finding', () => {
 })
 
 test('a subject of exactly 72 characters is not longer than 72 characters', () => {
-  // §3: "subject longer than 72 characters". 72 is not longer than 72. This is the test
-  // a >= 72 implementation fails. (Flagged to the spec owner as a boundary to confirm.)
+  // The rule is "subject longer than 72 characters". 72 is not longer than 72. This is the
+  // test a >= 72 implementation fails.
   const commits = [commit(SHA_A, subjectOfLength(72), ['lib/commit-series.mjs'])]
 
   assert.deepEqual(analyzeSeries(commits, LOCUS), [])
@@ -682,7 +671,7 @@ test('36 astral characters are 72 code units, and 72 is not over the line', () =
 })
 
 test('37 astral characters are 74 code units and flag, though only 37 code points', () => {
-  // Ruling 12: the limit counts JS String.length, i.e. UTF-16 code units. Every other
+  // The limit counts JS String.length, i.e. UTF-16 code units. Every other
   // length fixture in this file is plain ASCII, where code points and code units agree, so
   // a `[...subject].length` implementation sails past all of them — it counts 37 here and
   // waves the subject through. This is the one fixture where the two readings diverge.
@@ -750,8 +739,8 @@ test('a later commit is analysed too, not just the first', () => {
 // --- invariants of the finding itself ----------------------------------------------------
 
 test('every finding carries exactly the four fields the verifier schema allows', () => {
-  // §5's series_findings is additionalProperties:false over {sha, check, message,
-  // blocking}, and the verifier copies findings in verbatim. An extra key fails the run.
+  // The verifier schema's series_findings is additionalProperties:false over {sha, check,
+  // message, blocking}, and the verifier copies findings in verbatim. An extra key fails the run.
   const found = [
     ...analyzeSeries([], LOCUS),
     ...analyzeSeries(
@@ -777,9 +766,9 @@ test('every finding carries exactly the four fields the verifier schema allows',
 test('all six check ids produce a finding, and every one has just those four fields', () => {
   // The test above reaches four of the six ids: `empty-commit` and `and-subject` never
   // fire on its fixture, so an implementation that attaches a fifth key to either of them
-  // passes it. §5's series_findings is additionalProperties:false and the verifier copies
-  // findings in verbatim, so that fifth key fails a real run — which makes "every id, not
-  // just the convenient ones" the thing worth asserting.
+  // passes it. The verifier schema's series_findings is additionalProperties:false and the
+  // verifier copies findings in verbatim, so that fifth key fails a real run — which makes
+  // "every id, not just the convenient ones" the thing worth asserting.
   const found = [
     ...analyzeSeries([], LOCUS), // empty-series
     ...analyzeSeries(
@@ -836,18 +825,14 @@ test('analyzeSeries is pure — the same series gives the same answer whatever r
 })
 
 // =========================================================================================
-// CRLF line endings (ruling 13) — RED
+// CRLF line endings
 // =========================================================================================
 //
-// These two tests FAIL against the implementation as it stands, and are committed that way
-// on purpose. They describe behaviour §3 now requires and the parser does not yet have; a
-// separate change makes them pass. Everything above this line is green.
-//
-// §3: a single trailing \r is stripped from each line before the line is interpreted, so
+// A single trailing \r is stripped from each line before the line is interpreted, so
 // CRLF text parses identically to LF. Emptiness is judged AFTER that strip, which is what
 // makes a line of "\r" empty rather than a file path.
 //
-// Ruling 13 spells out why this was fixed rather than filed alongside the case-sensitivity
+// This is fixed rather than filed alongside the case-sensitivity
 // hazard, and the second test is the reason. On CRLF input a completely clean, fully
 // in-locus series comes back with four blocking locus-breach findings: every path keeps its
 // \r so none of them matches its locus entry, and git's blank separator line becomes a file

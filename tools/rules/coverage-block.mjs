@@ -1,7 +1,7 @@
 // tools/rules/coverage-block.mjs — enforces IRON LAW §4.
 //
 // "A partial result must never be indistinguishable from a whole one." The coverage block
-// (interfaces.md §5) is the only thing that tells them apart, so a workflow that returns
+// is the only thing that tells them apart, so a workflow that returns
 // nothing, or returns a result without one, hands its caller an answer that looks complete
 // no matter how much evidence was dropped on the way.
 //
@@ -18,24 +18,23 @@
 //   V3 (that line)  a bare `return` — an early exit with no result and no coverage
 //
 // The block's field list is { complete, dropped, incomplete, failed_channels, unreached,
-// resumable }, plus `from_kb` since increment 14 — the provenance of anything a result recalled
+// resumable }, plus `from_kb` — the provenance of anything a result recalled
 // from the project knowledge base rather than searched for today. It is deliberately NOT demanded
 // here, and this rule's behaviour is unchanged by it: absence must read as "nothing came from
 // cache", so a workflow that never touches the base is correct to omit it, and a rule insisting on
 // an empty array would turn the safe default into a lint failure. What a change to that field list
-// must cite is docs/superpowers/specs/2026-08-30-increment-14-contracts.md §3, and the question it
-// must answer is the one that section was written against: does this field let a reader tell a
-// partial result from a whole one? A field that does not is decoration on the one structure
-// IRON LAW §4 rests on.
+// must cite is docs/DESIGN.md#coverage-block, and the question it must answer is: does this
+// field let a reader tell a partial result from a whole one? A field that does not is
+// decoration on the one structure IRON LAW §4 rests on.
 //
 // Both spellings of the key count: `coverage:` and ES shorthand `coverage`, the latter in
 // every position it can occupy — first key, last key, somewhere in the middle, with or
-// without a trailing comma, on one line or written out one key per line (D10/D11). The first
+// without a trailing comma, on one line or written out one key per line. The first
 // real workflow written against this rule had to rename a parameter to work around the
 // shorthand form being rejected, which is the linter being wrong rather than the workflow.
 //
 // Deliberately NOT flagged, because catching them needs a real parser and this repo has no
-// dependencies. All four are covered by human review at T18:
+// dependencies. All four are left to human review:
 //   - `return { ...base }`            -> a coverage key that arrives only through a spread
 //                                        lives in another object the rule cannot follow
 //   - `if (!x) return`                -> an inline bare return shares its line with code

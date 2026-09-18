@@ -7,8 +7,7 @@
 // It is the wrong question for a test written to pin EXISTING CORRECT DATA. "The shipped
 // bundle is still valid" was true at base too — that is the point of the assertion — and the
 // only way to make it fail there would be to break the data first. Run 20260902-124933 held a
-// correct test-only order for two fix rounds and needed a human to override the gate:
-// docs/2026-09-03-discriminator-false-positive-regression-nets.md.
+// correct test-only order for two fix rounds and needed a human to override the gate.
 //
 // Two mechanisms are pinned here, and they are deliberately independent. `pins: 'data'` lets
 // the plan say what kind of test it commissioned, so the base question is not asked at all.
@@ -228,7 +227,7 @@ test('a build failure is not read as an undecidable discriminator', async () => 
 })
 
 
-// --- the mutation, executed (increment 23) -------------------------------------------------
+// --- the mutation, executed ----------------------------------------------------------------
 
 const SPEC = {
   file: 'src/assets/core.json',
@@ -255,9 +254,9 @@ test('a declared mutation that makes the net bite verifies the order', async () 
 })
 
 test('a net that survives its own mutation fails the order, though every test passes', async () => {
-  // The whole point of the increment. `pins: 'data'` waived the base question, which left this
-  // class of test with NOTHING mechanical asking whether it can fail at all. Here the suite is
-  // green, the discriminator is waived, and the order still does not pass.
+  // The whole point of executing the mutation. `pins: 'data'` waived the base question, which
+  // left this class of test with NOTHING mechanical asking whether it can fail at all. Here the
+  // suite is green, the discriminator is waived, and the order still does not pass.
   const { result, prompts } = await run({
     'verify:': netVerified({ mutations: [bit({ observed_failing: [], bites: false })] }),
     'fix:': coded({ commits: [], head_sha: A40 }),

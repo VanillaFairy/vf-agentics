@@ -43,7 +43,7 @@ test('an identifier value is left to the harness, not guessed at', () => {
   assert.deepEqual(check(src, WF), [])
 })
 
-test('ES shorthand stays accepted (spec decision D10)', () => {
+test('ES shorthand stays accepted', () => {
   const src = ['const coverage = buildCoverage()', 'return { question, coverage }'].join('\n')
   assert.deepEqual(check(src, WF), [])
 })

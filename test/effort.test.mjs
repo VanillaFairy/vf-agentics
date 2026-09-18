@@ -9,7 +9,7 @@
 //   reading      every list is derived from what is on disk, never from a stored status
 //   discipline   the path guard, and the notes that say this store proves nothing
 //
-// Contract: docs/superpowers/specs/2026-09-04-increment-25-contracts.md §1.
+// Design: docs/DESIGN.md#efforts.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

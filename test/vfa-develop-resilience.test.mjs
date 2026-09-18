@@ -1,4 +1,4 @@
-// test/vfa-develop-resilience.test.mjs — the interruption story (proposal §5.4, §5.1, §9).
+// test/vfa-develop-resilience.test.mjs — the interruption story.
 //
 // The field incident this file exists for, 2026-08-17: a complex develop run died on a session
 // limit. Its retry started from scratch. So did the next one. The plan sat resumable on disk
@@ -189,7 +189,7 @@ test('a resume buys ONE verdict courier, at the frontmatter tier, and no loader 
     'the recorder appends one small JSON line — the frontmatter default stays authoritative')
 })
 
-// --- base_ref (§5.4) -----------------------------------------------------------------------
+// --- base_ref ------------------------------------------------------------------------------
 
 test('base_ref reaches the integration setup as the base to branch from', async () => {
   const { prompts } = await fresh({ base_ref: 'vfa/programme-eva-plays-2' })
@@ -230,7 +230,7 @@ test('no base_ref keeps the previous behaviour exactly', async () => {
   assert.match(promptFor(prompts, 'integration-setup'), /current HEAD/)
 })
 
-// --- the envelope tags (§5.1) --------------------------------------------------------------
+// --- the envelope tags ---------------------------------------------------------------------
 
 test('programme and slice reach the planner verbatim, to be recorded', async () => {
   const { prompts } = await fresh({ programme: '2026-08-15-eva-plays-2', slice: 'walk' })
@@ -274,7 +274,7 @@ test('a caller who re-tags a resumed run is obeyed, and never in silence', async
   assert.ok(logs.some((l) => /Override: programme 2026-08-15-eva-plays-2/.test(l)))
 })
 
-// --- order-grain state (§9.3) --------------------------------------------------------------
+// --- order-grain state ---------------------------------------------------------------------
 
 test('an approved order is recorded before the wave it belongs to closes', async () => {
   const { prompts } = await fresh({})
@@ -393,7 +393,7 @@ test('a wave line still names its type explicitly', async () => {
     'a reader must not have to infer the line type from its shape')
 })
 
-// --- salvage (§9.4) ------------------------------------------------------------------------
+// --- salvage -------------------------------------------------------------------------------
 //
 // What an interrupted predecessor left, as git holds it. This is the fixture the whole ladder
 // is driven from: `resumed({}, { git: gitFacts([FOUND_W2]) })` is a resume whose W2 branch
@@ -616,7 +616,7 @@ test('an order-approved line does not count as a merge', async () => {
   assert.deepEqual(result.integration.merged, ['W2'])
 })
 
-// --- the salvage ladder (increment 6 §1) ---------------------------------------------------
+// --- the salvage ladder --------------------------------------------------------------------
 //
 // A stage is adopted where two independent records agree: the run's own log says it closed,
 // and git still holds the head it closed over. Every test below is one rung, and the pair of
@@ -901,7 +901,7 @@ test('an approval recorded before `measured` existed still salvages, and says wh
   assert.match(note, /nothing readable supports a claim/)
 })
 
-// --- the observation journal (increment 7) -------------------------------------------------
+// --- the observation journal ---------------------------------------------------------------
 //
 // state.jsonl records what the workflow DECIDED; journal.jsonl records what an agent SAW,
 // appended by that agent inside the dispatch that saw it. The recorder dispatch the journal
@@ -1171,7 +1171,7 @@ test('a line that never says what the build did is not a green measurement', asy
 
 test('a vacuous measurement the verifier actually stated is still honoured', async () => {
   // The other side of the same line: a repository with no build and no suite at this commit
-  // is a real, observed answer, and increment 3 keeps it passing while flagging it.
+  // is a real, observed answer, and it keeps passing while flagged.
   const { prompts } = await journalled([
     journalLine({ build: 'absent', suite: 'absent', discriminator: [] }),
   ])
@@ -1197,7 +1197,7 @@ test('a 0.13.0 log still resumes: order-verified state lines are still read', as
   assert.ok(prompts.some((p) => (p.opts.label || '').startsWith('review:W2')))
 })
 
-// --- carried-forward escalations (increment 6 §5) ------------------------------------------
+// --- carried-forward escalations -----------------------------------------------------------
 
 /** A wave line that also records W2 as escalated. */
 const escalatedLine = () => ({ ...waveLine(), escalated: ['W2'] })
@@ -1247,7 +1247,7 @@ const carried = async (fixture) => {
 test('a journalled green AFTER an escalation supersedes it — the counter orders them', async () => {
   // The case the shared counter exists for: a retry measured the order green and died before
   // its review. Both files carry one run-wide sequence now, so "a later success clears an
-  // earlier escalation" — increment 6 §1's rule, previously applicable only within
+  // earlier escalation" — a rule that without the counter applies only within
   // state.jsonl — finally reaches across them, and this is a comparison rather than a guess.
   const { result, prompts } = await resumed({}, {
     state: [{ ...escalatedLine(), seq: 4 }],
@@ -1267,7 +1267,7 @@ test('a journalled green BEFORE an escalation stands, and is REPORTED as ordered
   //
   // The counter separates these two, so the report must say so. Calling a pair the log orders
   // "unordered" pushes a human toward retry_escalated on an input where the log already
-  // answered — the same class of error as guessing, and the one increment 7 §5 names.
+  // answered — the same class of error as guessing.
   const esc = await carried({
     state: [{ ...escalatedLine(), seq: 9 }],
     journal_raw: journalLine({ seq: 4 }) + '\n',

@@ -241,9 +241,9 @@ test('a declared-absent typecheck is a fact about the repository, not a fault', 
 const mutations = (specs) => ['--mutations-b64', Buffer.from(JSON.stringify(specs)).toString('base64')]
 
 test('a regression net that catches its own mutation bites, and the tree is put back', (t) => {
-  // The question increment 21 waived the base question for and left to prose. The fixture's test
-  // asserts `label() === 'hi'`; breaking the source is what makes it fail, and a net that fails
-  // under the break is a net.
+  // The right question for a regression net, which is excused the base question. The
+  // fixture's test asserts `label() === 'hi'`; breaking the source is what makes it fail, and
+  // a net that fails under the break is a net.
   const { worktree, base, head } = order(t)
 
   const payload = verify(options({ worktree, base, head, extra: mutations([
@@ -569,9 +569,8 @@ test('the observation is journalled by the process that observed it', (t) => {
     'base_sha', 'branch', 'build', 'discriminator', 'failing_tests', 'head_sha', 'kind',
     'mutations', 'order', 'seq', 'series_findings', 'stop_reason', 'suite', 'typecheck',
     'worktree',
-  ], 'the line shape is increment 7 §4\'s, extended by increment 22 §1 with `typecheck` and ' +
-     'increment 23 §2 with `mutations`, and otherwise unchanged — a resume re-derives verdicts ' +
-     'from this line, and both predicates read those fields now')
+  ], 'the line shape is the one docs/DESIGN.md#journal-lines names — a resume re-derives ' +
+     'verdicts from this line, and both predicates read `typecheck` and `mutations`')
 })
 
 // ---------------------------------------------------------------- the closed pattern set

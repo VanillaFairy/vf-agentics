@@ -13,9 +13,8 @@ export const meta = {
 
 // ---------------------------------------------------------------- schemas
 //
-// Copied verbatim from shared/interfaces.md §1, §4, §5 and §6, and from increment 3's
-// §1–§3. Scripts cannot import, so these literals are the contract's only representation
-// here — they are diffed against the interfaces docs, never re-derived from memory.
+// Scripts cannot import, so these literals are the contract's only representation here.
+// Where each one is restated: docs/DESIGN.md#data-contracts.
 //
 // No minItems / maxItems / minLength / maxLength anywhere: structured outputs do not support
 // them, so a bound written here would silently do nothing or turn a good result into a
@@ -59,9 +58,7 @@ const WORK_ORDER_ITEM = {
         // correct: the planner had written the right check in prose ("delete this field and
         // that case must fail") and had no field in which to say it.
         pins: { type: 'string', enum: ['behaviour', 'data'] },
-        // The mutation that DOES check a regression net, machine-readable. Increment 21 §3 left
-        // this question to prose in the acceptance criteria and to the coder's hands, and said
-        // outright that executing it was the better answer needing its own design pass.
+        // The mutation that DOES check a regression net, machine-readable.
         //
         // A spec is a text substitution in one tracked file, never a command: a command can do
         // anything and has no inverse, while a substitution cannot leave the worktree, reverts
@@ -306,8 +303,8 @@ const CODER_RESULT = {
 // The same facts, measured BY HAND. This is the investigator's shape now, not the ordinary
 // verifier's: the checks are a script, and a model performs them only when the script could not
 // — a typed error it printed, or a repository whose verification commands nobody has established
-// yet. The fields are unchanged, because the verdict predicates below read them and this
-// increment changed who runs the commands, never what passes.
+// yet. The fields are unchanged, because the verdict predicates below read them and moving the
+// checks into a script changed who runs the commands, never what passes.
 const VERIFY = {
   type: 'object', additionalProperties: false,
   required: ['stop_reason', 'build', 'typecheck', 'suite', 'suite_output_tail', 'failing_tests',
@@ -439,7 +436,7 @@ const FINDINGS = {
 
 // ------------------------------------------------------------- derived verdicts
 //
-// interfaces §5, verbatim. The verifier reports facts; these lines are the only place they
+// docs/DESIGN.md#verification. The verifier reports facts; these lines are the only place they
 // become a pass or a failure.
 
 const roleOf = (wo) => (wo && wo.role) || 'none'
@@ -534,8 +531,8 @@ const inheritedRed = (v) =>
 // and "this order is not checked".
 const discriminates = (d, wo) => Boolean(d) && d.passes_now && (pinsData(wo) || d.failed_on_base)
 
-// A mutation this order DECLARED and that did not bite. Increment 21 waived the base question
-// for a regression net and left the right question to prose; this is that question executed, and
+// A mutation this order DECLARED and that did not bite. A regression net is excused the base
+// question, so this is the right question for it, executed, and
 // it is the one thing in the pipeline that can tell a net which holds from a net which cannot
 // fail. Both halves are required and neither is enough alone: a spec that could not be APPLIED
 // says nothing about the net — a stale `find` is a defect in the spec, not evidence about the
@@ -821,7 +818,7 @@ function verifyInvocation(parts) {
   // The journal line is written by the program, inside the process that made the measurement.
   // Three nested arrays copied out of a payload and into a shell heredoc is the transcription
   // hazard the program exists to remove, and there is no window at all between the observation
-  // and the record. The line's SHAPE is unchanged (increment 7 §4 stands); only its writer moved.
+  // and the record. The line's shape is unchanged; only its writer moved.
   if (parts.journal && planPath) {
     flags.push('--journal "' + posix(planPath) + '"', '--seq ' + nextSeq(),
       '--order ' + parts.order, '--branch ' + parts.branch)
@@ -1010,7 +1007,7 @@ const retryEscalated = Array.isArray(input.retry_escalated) ? input.retry_escala
 const confirmedDuplicate = input.confirmed_duplicate === true
 
 // The two halves of the null-survey decision, and they are deliberately different KINDS of
-// input (increment 14 §4).
+// input.
 //
 // `settled_shape` is the judgment half and it stays in the caller's seat: whether a change's
 // approach is decided rather than something the change has to discover is exactly the question
@@ -1100,22 +1097,22 @@ let envelopeBase = { branch: '', sha: '' }
 // The dial is derived from the model the calling session runs, never chosen by it — the
 // skills' `intelligence-tier` block maps fable → max, opus → normal, sonnet and below → low —
 // unless the user names a position outright. So a sonnet session judges with sonnet, which
-// puts the judges on the same model as the coder and leaves open the hole
-// `docs/2026-08-17-intelligence-tiering.md` §2 names: a defective work order implemented
-// faithfully clears verification, then clears a review fenced to the same defective criteria.
+// puts the judges on the same model as the coder and leaves a known hole open: a defective work
+// order implemented faithfully clears verification, then clears a review fenced to the same
+// defective criteria.
 // That is the honest reading of "judged at the tier of the session driving it". The
 // alternative — a cheap session quietly buying opus judgment — is the self-assessment the
 // derivation rule exists to forbid, and the develop skill owes the user a sentence about the
 // cost instead.
 //
 // `coderTier` is deliberately NOT this table, and it does not follow the judges up. At `max`
-// the coder goes to OPUS, not fable: the tiering doc's §3 step 1 calls fable-judged,
-// opus-implemented "the coherent one the coupled dial cannot currently express", and the field
-// praise the coder tier rests on was of opus as implementer, not of fable. Doubling the price
+// the coder goes to OPUS, not fable: fable-judged, opus-implemented is the coherent pairing the
+// coupled dial cannot express, and the field praise the coder tier rests on was of opus as
+// implementer, not of fable. Doubling the price
 // of the pipeline's volume tier bought nothing that praise ever described.
 //
-// Below `max` it spreads {} and the coder keeps its frontmatter model, which is what lets the
-// doc's other half — pinning agents/coder.md to opus — land later without touching this line.
+// Below `max` it spreads {} and the coder keeps its frontmatter model, which is what lets a
+// change to agents/coder.md's model land without touching this line.
 // The coder's output is gated by the verifier and by fresh adversarial reviewers rather than
 // by its own brilliance; what it must not be is `inherit`, which in the field billed every
 // coding agent at whatever model the interactive session happened to run.
@@ -1190,8 +1187,8 @@ const outputIsTheYardstick = (order) =>
 /**
  * Which model implements this order.
  *
- * The floor from `outputIsTheYardstick` sits under the dial at EVERY dial position, which
- * `docs/2026-08-17-intelligence-tiering.md` §6.3 states as an ALWAYS and §7 never waived.
+ * The floor from `outputIsTheYardstick` sits under the dial at EVERY dial position, as an
+ * ALWAYS that is never waived.
  * `light` still drops to sonnet, but never through that floor: a red order is never light.
  *
  * A second, later-arriving reason floors it the same way: a fix dispatched in review round 2
@@ -1271,7 +1268,7 @@ let orderById = new Map()
 
 // A coupled order, as the session receives it. The session implements these itself, so it needs
 // the criteria and the context — and on a RESUME this script does not hold them: the verdict
-// carries an order's arithmetic and leaves its prose on disk (increment 9 §2c). So the entry
+// carries an order's arithmetic and leaves its prose on disk. So the entry
 // carries a `fetch` command instead of silently arriving with `acceptance` absent, which is how
 // a session ends up implementing against a title and a locus.
 const coupledOrder = (id) => {
@@ -1368,7 +1365,7 @@ const kbPath = (p) => String(p || '').split('\\').join('/')
  *
  * Stale entries ride nothing. A stale entry is a lead — worth a look when somebody is going
  * looking, worth nothing to a coder mid-order who has an acceptance criterion to satisfy — and
- * increment 14's survey is where leads belong. Orphaned entries are about ground that is gone.
+ * the survey is where leads belong. Orphaned entries are about ground that is gone.
  */
 function kbFor(wo) {
   const seen = new Set()
@@ -1429,7 +1426,7 @@ function kbDeposits() {
     }
   }
 
-  // The durable half of increment 11's escalation. A command a verification established this run
+  // The durable half of the command investigation. A command a verification established this run
   // is written down as a `command` entry, so the next run reads it instead of buying the same
   // investigator again — and it is written with `via: verify-established`, which is the source the
   // reader admits and a coder's report can never wear.
@@ -1552,9 +1549,9 @@ function adoptCommands(v) {
 /**
  * Adopt the commands a PREVIOUS run established, from the knowledge base's `command` entries.
  *
- * This is the durable half increment 11 §3 named and deliberately did not buy: established
- * commands used to live for the invocation, so a resumed run re-investigated once at its first
- * order. A `command` entry is that investigation, written down.
+ * This is the durable half of the command investigation: without it, established commands live
+ * for the invocation only, so a resumed run re-investigates once at its first order. A `command`
+ * entry is that investigation, written down.
  *
  * Two gates, and both are the anti-laundering rule made mechanical rather than restated. The
  * entry must be **fresh** — the manifests it is anchored to have not moved since it was
@@ -1598,10 +1595,10 @@ function adoptKbCommands(entries) {
   }
 }
 
-// interfaces §8. Every exit path goes through this function, so a caller never receives
-// undefined and never receives a bare error string — it always receives something whose
-// coverage block says what did and did not happen. `checkpoint` is null except on the
-// evidence-checkpoint exit, where it carries the path to the persisted plan.
+// docs/DESIGN.md#completeness-the-coverage-block. Every exit path goes through this function,
+// so a caller never receives undefined and never receives a bare error string — it always
+// receives something whose coverage block says what did and did not happen. `checkpoint` is
+// null except on the evidence-checkpoint exit, where it carries the path to the persisted plan.
 function developResult(parts) {
   return {
     change,
@@ -1644,7 +1641,7 @@ function coverageOf(parts) {
       && (surveyCoverage ? surveyCoverage.complete === true : true),
     // This workflow has no topic-shaped work: an order that produced nothing produced an
     // escalation instead, and those are carried above. The two keys stay for shape
-    // compatibility with the increment-1 coverage block every skill in this plugin reads.
+    // compatibility with the coverage block every skill in this plugin reads.
     dropped: [],
     incomplete: [],
     failed_channels: parts.failedChannels || [],
@@ -1655,7 +1652,7 @@ function coverageOf(parts) {
       .concat((parts.failedChannels || []).map(channelNote)),
     // Provenance, inherited rather than re-derived: whatever the evidence phase rested on the
     // knowledge base for is what this run rested on, and the one place that is decided is the
-    // evidence phase. A null survey (increment 14 §4) writes its whole account here, because
+    // evidence phase. A null survey writes its whole account here, because
     // then there IS no nested survey and this block is the only thing a reader gets.
     from_kb: (surveyCoverage && surveyCoverage.from_kb) || [],
     resumable: {
@@ -1765,7 +1762,7 @@ if (fixLane && fixLocus.length === 0) {
 
 // ---------------------------------------------------------------- escalations
 //
-// interfaces §7. Escalations are data: nothing throws its way out of this pipeline, and
+// Escalations are data: nothing throws its way out of this pipeline, and
 // nothing is dropped silently. A budget error, a null agent return, a blocked coder and a
 // non-convergent review loop all reach the caller in this one shape.
 
@@ -3700,7 +3697,7 @@ const stalledClaim = (fix, headBefore) =>
       'defect it was sent at may belong to another order'
     : 'a fix round ended at ' + (fix.head_sha || headBefore) + ' with no new commit'
 
-// interfaces §6: a fix verdict is `fixed`, `not_fixed` or `regressed`. The last two both say
+// A fix verdict is `fixed`, `not_fixed` or `regressed`. The last two both say
 // the defect is still there, and the review loop treats them identically.
 const unfixedVerdict = (v) => v.status === 'not_fixed' || v.status === 'regressed'
 
@@ -3954,18 +3951,18 @@ async function verifyUntilGreen(wo, state, trail) {
   }
 }
 
-// The review loop — interfaces §7 made literal.
+// The review loop — docs/DESIGN.md#the-review-loop made literal.
 //
 // Two exits, both computed. Zero OPEN criticals ends it. Non-convergence escalates it:
-// either a fix round that lands nothing (§7.3a), or the same finding id reported unfixed in
-// two CONSECUTIVE rounds (§7.3b). `round` exists for the audit trail and appears in no exit
+// either a fix round that lands nothing, or the same finding id reported unfixed in
+// two CONSECUTIVE rounds. `round` exists for the audit trail and appears in no exit
 // condition — IRON LAW §1.
 //
 // "Open" is deliberately wider than "reported this round". A round that rules a prior
 // critical not_fixed or regressed has said, in its own words, that the defect is still in
 // the tree — and a reviewer is also told not to pad a round, so it may well not restate a
 // finding it has just ruled on. Reading `findings` alone would then let a known-unfixed
-// critical exit the loop as approved, and would leave §7.3(b) unreachable, since a marker
+// critical exit the loop as approved, and would leave the stuck exit unreachable, since a marker
 // needs the id in both places. So the verdicts are folded in here: a prior critical stays
 // open until a round rules it `fixed`. The charter asks the reviewer to re-report it too;
 // this is the half that does not depend on the model doing so.
@@ -4029,7 +4026,7 @@ async function reviewLoop(wo, state, trail) {
     // than anyone's claim about them.
     if (open.length === 0) return null
 
-    // §7.3(b): the same id reported not_fixed or regressed in two consecutive rounds. The
+    // Stuck: the same id reported not_fixed or regressed in two consecutive rounds. The
     // marker was set at the end of last round; this round confirms it.
     const stuck = verdicts.some((v) => unfixedVerdict(v) && unfixedLastRound.includes(v.id))
 
@@ -4038,7 +4035,7 @@ async function reviewLoop(wo, state, trail) {
       return esc(wo, 'review_not_converging', open, trail, state)
     }
 
-    // §7.3(c): the churn exit — the mirror of `stuck`. A round that ruled every prior blocker
+    // The churn exit — the mirror of `stuck`. A round that ruled every prior blocker
     // fixed and still minted new blocking findings on material earlier rounds accepted. The
     // fixes are landing; the reviewer pool is not converging; another round buys another
     // sample, not a resolution. In the field one contract order paid eleven rounds this way
@@ -4082,7 +4079,7 @@ async function reviewLoop(wo, state, trail) {
 
     const fix = fixCall.value
 
-    // §7.3(a): nothing landed, so the next round would read the same code and say the same
+    // No progress: nothing landed, so the next round would read the same code and say the same
     // thing about it.
     if (noProgress(fix, headBefore)) {
       log(`ESCALATION ${wo.id}: the fix round landed no new commit against ${open.length} critical(s).`)
@@ -4103,7 +4100,7 @@ async function reviewLoop(wo, state, trail) {
     if (stalled) return stalled
 
     // Everything still open goes to the next reviewer, so it rules on it again; and the ids
-    // ruled unfixed this round arm the §7.3(b) marker for the round after.
+    // ruled unfixed this round arm the stuck marker for the round after.
     priorBlockers = open
     unfixedLastRound = verdicts.filter(unfixedVerdict).map((v) => v.id)
   }
@@ -4880,7 +4877,7 @@ try {
     // ------------------------------------------------- 1b. is a survey earned at all?
     //
     // The survey is the first phase whose PRESENCE is derived rather than assumed, and this is
-    // where that derivation lives (increment 14 §4). Two halves, deliberately of two kinds.
+    // where that derivation lives. Two halves, deliberately of two kinds.
     //
     // The judgment half arrived as `settled_shape` from the caller — whether the approach is
     // decided or is something this change has to discover is not a question arithmetic can
@@ -5493,7 +5490,7 @@ ${history}
 
   // --------------------------------------------- 3c. the integration worktree
   //
-  // The design spec's stated reason for "the workflow never merges" is that merging would
+  // The reason behind "the workflow never merges" (docs/DESIGN.md#develop) is that merging would
   // mutate the tree the user is sitting in. A worktree the workflow creates and owns does
   // not do that, so the invariant is restated precisely rather than broken: the workflow
   // never touches the user's branch or working tree. Advancing the user's branch is still
@@ -5772,7 +5769,7 @@ ${history}
     // real and was superseded.
     //
     // From the journal there is no ordering to have. The escalation is in one append-only
-    // file and the measurement in another, and increment 6 §1's rule has nothing to apply
+    // file and the measurement in another, and the clearing rule has nothing to apply
     // across them. Both readings are live: a retry that measured green and died before its
     // review is stranded work, and a green measurement followed by a review that would not
     // converge is an escalation that must stand. Guessing "cleared" is the worse guess — it
@@ -5794,8 +5791,8 @@ ${history}
     //   from the journal — ordered when the counter separates them, and genuinely not when it
     //     does not (both at 0, from before the counter existed).
     //
-    // Telling the ambiguous story about an ordered pair is the defect increment 7 §5 names in
-    // its own words: it pushes a human toward `retry_escalated` on an input where the log
+    // Telling the ambiguous story about an ordered pair is a defect too: it pushes a human
+    // toward `retry_escalated` on an input where the log
     // already answered, which is the same class of error as guessing.
     const ordered = green && (green.source === 'state' || green.seq < prior.seq)
 
@@ -5946,8 +5943,8 @@ ${history}
   // dispatch N times for a payload that could arrive once.
   //
   // A side channel, and it gets IRON LAW §5 treatment: a knowledge base that cannot be read must
-  // not cost work already paid for. The run continues exactly as every run before this increment
-  // did — coders open with what this run has discovered and nothing else — and the loss travels
+  // not cost work already paid for. The run continues exactly as a run with no knowledge base
+  // does — coders open with what this run has discovered and nothing else — and the loss travels
   // in `failed_channels`. It does not make the run incomplete: the base is advisory by
   // construction, and nothing is verified on it.
 

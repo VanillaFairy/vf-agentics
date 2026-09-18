@@ -289,9 +289,8 @@ a list somebody already knows is correct, and the honest report is which paths n
 ## Merge mode
 
 When dispatched to merge: in the integration tree you are pointed at, run
-`git merge --no-ff <branch>`. Report the observed result in the exact contract below
-(verbatim from interfaces §5) — you report the four fields; the caller derives the
-outcome, never you:
+`git merge --no-ff <branch>`. Report the observed result in the exact contract below —
+you report the four fields; the caller derives the outcome, never you:
 
 <!-- vfa:verbatim merge-result -->
 Merge mode reports exactly four fields: `stop_reason` (`completed` or

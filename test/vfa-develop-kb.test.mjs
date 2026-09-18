@@ -1,6 +1,6 @@
 // test/vfa-develop-kb.test.mjs — the knowledge base's two seams inside a run.
 //
-// Increment 13 adds exactly two dispatches to `vfa-develop`, and everything worth pinning is
+// The knowledge base adds exactly two dispatches to `vfa-develop`, and everything worth pinning is
 // about who receives what:
 //
 //   3e, before the first order   one chain read for every locus this plan touches. Fresh entries
@@ -14,7 +14,7 @@
 // receives no entry, and the one thing it does take from the base carries a source that only a
 // verification can have written.
 //
-// Contract: docs/superpowers/specs/2026-08-30-increment-13-contracts.md.
+// Design: docs/DESIGN.md#inside-a-run.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -434,7 +434,7 @@ test('a command a verification established this run is deposited as a command en
   const entries = deposited(prompts)
   const build = entries.find((e) => e.id === 'command:build')
 
-  assert.ok(build, 'the durable half of the escalation increment 11 deliberately did not buy')
+  assert.ok(build, 'an established command is written down for the next run')
   assert.equal(build.kind, 'command')
   assert.deepEqual(build.command, { name: 'build', value: 'npm run build', absent: false })
   assert.equal(build.source.via, 'verify-established',
@@ -464,7 +464,7 @@ test('a command adopted from the base is not deposited again', async () => {
 
 // ── the null survey: the first phase whose PRESENCE is derived ───────────────────────────────
 //
-// Increment 14 §4. Two halves of two kinds. The judgment — is this change's shape settled —
+// Two halves of two kinds. The judgment — is this change's shape settled —
 // stays in the caller's seat and arrives as a flag; the arithmetic — does the base cover every
 // path the caller named, with entries a program found still standing — is computed here and is
 // never anybody's claim. Both must hold. A survey skipped on the strength of leads would be the

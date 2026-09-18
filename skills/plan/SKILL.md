@@ -74,7 +74,7 @@ The decisions worth their own question:
   indistinguishable from a `consumes` somebody forgot.
 - **`advance`.** `gated` stops after every slice and presents; `standing` proceeds through
   implementation on its own. It is explicit and never inferred. Recommend `gated` unless the
-  user asks otherwise; §6.3 of the programme skill lists exactly what `standing` still stops
+  user asks otherwise; step 4 of the programme skill lists exactly what `standing` still stops
   for, and it is a long list.
 
 ## Step 2 — Write `programme.json`

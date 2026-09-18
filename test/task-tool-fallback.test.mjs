@@ -79,7 +79,7 @@ test('check is stateless: the same source always yields the same violations', ()
 
 test('every skill shipped in this plugin satisfies the rule', () => {
   // The rule is only worth having if the plugin's own skills pass it. This is the integration
-  // check every rule task in increment 1 ended with.
+  // check every rule's suite ends with.
   const root = fileURLToPath(new URL('..', import.meta.url))
   const skills = readdirSync(new URL('../skills', import.meta.url), { withFileTypes: true })
     .filter((e) => e.isDirectory())

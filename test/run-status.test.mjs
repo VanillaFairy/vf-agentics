@@ -97,7 +97,7 @@ test('waves_recorded counts waves, not lines', () => {
   assert.deepEqual(run.merged, ['W1', 'W2'])
 })
 
-// --- the observation journal (increment 7) -------------------------------------------------
+// --- the observation journal ---------------------------------------------------------------
 
 const mergeObserved = (order, head = 'ccccccc') => ({
   kind: 'merge-observed', order, branch: 'vfa/x-' + order, head_sha: head,
@@ -337,7 +337,7 @@ test('an unreadable run still carries the two columns, so a reader can group it'
   assert.equal(run.slice, '')
 })
 
-// --- two line types in one log (§9.3) ------------------------------------------------------
+// --- two line types in one log -------------------------------------------------------------
 //
 // `order-approved` lines are written the instant an order's review closes, long before the
 // wave they belong to ends. Every count here has to keep asking the question it means to ask:

@@ -170,8 +170,9 @@ So when the evidence supports it, **recommend staging and let the user rule.** T
 A design that stays a single change keeps today's shape exactly, and that is the common case.
 A staged one becomes a **programme**: this skill writes the root design and the first slice's
 leaf, `/vf-agentics:plan` turns it into a graph with the user, and `/vf-agentics:programme`
-drives it. Read §4 of the layer's design before recommending it, so you can say what the user
-is agreeing to.
+drives it. Read the programme section of this plugin's design
+(`${CLAUDE_PLUGIN_ROOT}/docs/DESIGN.md#programmes`) before recommending it, so you can say what
+the user is agreeing to.
 
 **A slice is a deliverable, not a layer.** Each one ends with something a person can use. A
 "data-model slice" nobody can experience is containment wearing a slice's name — it has all the

@@ -6,20 +6,19 @@
 // and is non-empty. This file tests the shipped tree, and asks the question the rule cannot:
 // which tools, exactly.
 //
-// The frontmatter allowlist is the only capability mechanism this harness gives us. Hooks were
-// ruled out on 2026-08-30 (docs/2026-08-30-reasonable-derivation-review.md, postscript), so there
-// is no fence, no interceptor, and nothing that inspects a command — an agent can do precisely
-// what its list grants and nothing else, and every other separation in the pipeline is prose
-// backed by a post-hoc audit. The sibling plugin `../reasonable` carried the warning as a comment
-// in its own charters: weakening one of these silently breaks an adversarial separation. A
-// comment is not a mechanism. This file is.
+// The frontmatter allowlist is the only capability mechanism this harness gives us. Hooks are
+// ruled out, so there is no fence, no interceptor, and nothing that inspects a command — an
+// agent can do precisely what its list grants and nothing else, and every other separation in
+// the pipeline is prose backed by a post-hoc audit. The sibling plugin `../reasonable` carried
+// the warning as a comment in its own charters: weakening one of these silently breaks an
+// adversarial separation. A comment is not a mechanism. This file is.
 //
 // So the map below is the contract, and the friction is the feature. Widening an allowlist,
 // narrowing one, or adding an agent with no entry here fails `node --test` rather than shipping
 // quietly — and changing one means editing this file in the same commit, which puts the decision
 // in a diff a reviewer reads instead of in a frontmatter line nobody diffs twice.
 //
-// Contract: docs/superpowers/specs/2026-08-30-increment-12-contracts.md §2.
+// Design: docs/DESIGN.md#capability-layer.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -89,7 +88,7 @@ for (const name of files) {
 test('the pinned roster is exactly the roster on disk', () => {
   // Both directions. A new constitution with no entry here would otherwise ship with whatever
   // allowlist its author typed, unreviewed — which is the case this whole file exists for, since
-  // the next agents to be born (increment 15's lanes) are defined by what they cannot do.
+  // the lane agents are defined by what they cannot do.
   assert.deepEqual(
     [...shipped.keys()].sort(),
     Object.keys(ALLOWLISTS).sort(),
@@ -106,8 +105,8 @@ test('every allowlist matches its pin exactly', () => {
       [...tools].sort(),
       [...pinned].sort(),
       `agents/${name}.md grants ${tools.join(', ')} — pinned as ${pinned.join(', ')}. ` +
-        `Widening an allowlist is a capability change: state why in the contracts doc and ` +
-        `edit this file in the same commit.`,
+        `Widening an allowlist is a capability change: state why in ` +
+        `docs/DESIGN.md#capability-layer and edit this file in the same commit.`,
     )
   }
 })

@@ -7,7 +7,7 @@
 //   the three    resolved / out_of_range / missing, kept apart
 //   discipline   nothing outside the repository is read, and a dead citation is a FINDING
 //
-// Contract: docs/superpowers/specs/2026-09-04-increment-25-contracts.md §2.
+// Design: docs/DESIGN.md#what-a-probe-costs.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

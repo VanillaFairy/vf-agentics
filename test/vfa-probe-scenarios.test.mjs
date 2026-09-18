@@ -241,7 +241,7 @@ test('every probe reads the repository, not only the document', async () => {
   }
 })
 
-// ---------------------------------------------------------------- shared ground (part 4a)
+// -------------------------------------------------------------------------- shared ground
 //
 // The measured probe spent its bill on sixteen analysts independently LOCATING the same
 // evidence. What is pinned here is that the resolution happens once, reaches every axis, and

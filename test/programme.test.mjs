@@ -675,7 +675,7 @@ test('a slice with no predecessors says so rather than emitting an empty list', 
 
 // ------------------------------------------------------------ the optional ground section
 //
-// Increment 25 §3. The trap this pins is retroactive: `LEAF_SECTIONS` is the completeness
+// The trap this pins is retroactive: `LEAF_SECTIONS` is the completeness
 // predicate, so a fourth name added there re-derives every design already on disk as unfinished
 // on the next read of the programme.
 

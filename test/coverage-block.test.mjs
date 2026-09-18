@@ -9,9 +9,9 @@
 // plus the comments that quote all three. Most of the tests below are those cases, because
 // the naive scan passes the easy ones and then fails on the very first real workflow.
 //
-// Where the spec allows more than one honest reading (an inline `if (x) return`, a
+// Where more than one honest reading exists (an inline `if (x) return`, a
 // `return` followed by an object on the NEXT line, `return { ...base, coverage }`), this
-// file deliberately asserts nothing. Those are open spec questions, not test gaps.
+// file deliberately asserts nothing. Those are open questions, not test gaps.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -227,7 +227,7 @@ test('a coverage key that exists only inside a quoted string does not satisfy th
 
 test('a return that exists only inside a prompt is not the workflow returning', () => {
   // Count deliberately unpinned here — whether a file with no real return draws one
-  // finding or two is a single spec decision, pinned once in the V1 test above.
+  // finding or two is a single decision, pinned once in the V1 test above.
   const src = [
     'const p = `Then return { coverage: { complete: true } } to the caller.`',
     'const verdicts = []',
@@ -332,8 +332,8 @@ test('a commented-out bare return is not a bare return', () => {
 //
 // The rule asks that AT LEAST ONE returned object carries coverage, not that every
 // result-path return does. Telling a script-level return from a helper's return needs a
-// real parser and this repo has no dependencies; early-error paths are covered by human
-// review at T18. Both tests below pin the weaker rule so it does not get over-implemented,
+// real parser and this repo has no dependencies; early-error paths are left to human
+// review. Both tests below pin the weaker rule so it does not get over-implemented,
 // and between them they rule out "just check the first return" and "just check the last".
 
 test('a helper returning a plain object is fine when the script return carries coverage', () => {

@@ -1,7 +1,7 @@
 // test/kb.test.mjs — the knowledge base against real repositories.
 //
 // Like test/run-verdict-git.test.mjs and test/verify.test.mjs, this builds small real git repos
-// rather than mocking git. The whole point of increment 13's freshness rule is an arithmetic
+// rather than mocking git. The whole point of the freshness rule is an arithmetic
 // over COMMITS, and the case that killed the previous design — a commit made by a hand outside
 // any run, with no ledger line anywhere to see it — is only observable against a real repo.
 //
@@ -14,7 +14,7 @@
 //   the writer   digest-checked, base64-transported, path-disciplined, anchors measured here
 //   compaction   newest-id-wins, shadowed and orphaned lines dropped
 //
-// Contract: docs/superpowers/specs/2026-08-30-increment-13-contracts.md.
+// Design: docs/DESIGN.md#knowledge-base.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -180,7 +180,7 @@ test('a commit elsewhere in the repository leaves the entry fresh', () => {
 })
 
 test('A HAND COMMIT demotes the entry — the case a ledger-keyed design certified fresh', () => {
-  // The whole reason the proposal's event-keyed amendment names GIT rather than the run ledger.
+  // The whole reason freshness is keyed to GIT rather than the run ledger.
   // This commit is made by a person, outside any run: there is no run directory, no state.jsonl,
   // and nothing in this repository has ever recorded a vfa run. Ledger arithmetic would find no
   // event and report the entry fresh; git finds the commit.
@@ -245,7 +245,7 @@ test('an entry with one surviving subject is judged on that one', () => {
 })
 
 test('an anchor class this version cannot check never reads as clean', () => {
-  // Increment 18's guardians and surface globs travel through the writer untouched. Until the
+  // Guardians and surface globs travel through the writer untouched. Until the
   // checker knows how to attest one, an entry carrying one is a lead: unchecked and clean are
   // different answers (IRON LAW §2).
   const { dir, head } = repo()
@@ -461,7 +461,7 @@ test('the reported entry carries the state and leaves the anchors behind', () =>
 
 // ── the index: where this repository knows anything, bought before any path is known ─────────
 //
-// Increment 14's mechanism fix. Before a decomposition runs, the only known paths are the
+// Before a decomposition runs, the only known paths are the
 // question's roots, whose chain is the level-0 node alone — so a planner handed "the chain at
 // the roots" is handed almost nothing. The index says where knowledge SITS, the decomposition
 // names subtrees against it, and the chains are bought per topic afterwards.

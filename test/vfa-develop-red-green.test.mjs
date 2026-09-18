@@ -1,4 +1,4 @@
-// test/vfa-develop-red-green.test.mjs — the RED/GREEN work-order split (increment 4, H2).
+// test/vfa-develop-red-green.test.mjs — the RED/GREEN work-order split.
 //
 // A work order may declare `role: 'red' | 'green'`. A RED order lands tests that MUST fail —
 // that is its entire purpose — so the ordinary verification verdict, which treats a failing
